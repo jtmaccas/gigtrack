@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { supabase, signInAnonymouslyIfNeeded } from "./supabase.js";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -5837,6 +5838,7 @@ function OrderSessionScreen({ onBack, onFinish, atoRate }) {
 export default function GigTrack() {
   const [screen, setScreen]     = useState("loading");
   const [user, setUser]         = useState(null);
+  const [authUser, setAuthUser] = useState(null); // Supabase auth user (cloud identity)
   const [trips, setTrips]       = useState([]);
   const [kmPref, setKmPref]     = useState("active");
   const [atoRate, setAtoRate]   = useState(ATO_RATE_PER_KM);
@@ -5873,6 +5875,30 @@ export default function GigTrack() {
       return () => mq.removeEventListener("change", handler);
     }
   }, [theme]);
+
+  // ── Supabase auth: sign in anonymously on boot (cloud identity) ──
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const u = await signInAnonymouslyIfNeeded();
+        if (mounted) {
+          setAuthUser(u);
+          if (u) console.log("[GigTrack] Supabase auth user:", u.id);
+        }
+      } catch (e) {
+        console.warn("[GigTrack] Supabase auth failed (offline?):", e.message);
+      }
+    })();
+    // Subscribe to future auth state changes (sign in/out)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted) setAuthUser(session?.user || null);
+    });
+    return () => {
+      mounted = false;
+      subscription?.unsubscribe();
+    };
+  }, []);
 
   // ── Boot ──
   useEffect(() => {
