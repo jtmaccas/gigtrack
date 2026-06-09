@@ -44,22 +44,59 @@ function tripToRow(trip, userId) {
 // Push a single shift to Supabase (upsert by id).
 // Returns { ok: true } on success, { ok: false, error } on failure.
 export async function syncShift(trip) {
+  console.log("[GigTrack] syncShift called for trip id:", trip.id);
   try {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return { ok: false, error: "no_auth" };
+    if (!user) {
+      console.warn("[GigTrack] syncShift: no auth user");
+      return { ok: false, error: "no_auth" };
+    }
+    console.log("[GigTrack] syncShift: auth user", user.id);
 
     const row = tripToRow(trip, user.id);
-    const { error } = await supabase
+    console.log("[GigTrack] syncShift: sending row", row);
+
+    const { data, error } = await supabase
       .from("shifts")
-      .upsert(row, { onConflict: "id" });
+      .upsert(row, { onConflict: "id" })
+      .select();
 
     if (error) {
-      console.warn("[GigTrack] syncShift failed:", error.message);
+      console.error("[GigTrack] syncShift FAILED:", error.message, error);
       return { ok: false, error };
     }
+    console.log("[GigTrack] syncShift OK:", data);
     return { ok: true };
   } catch (e) {
-    console.warn("[GigTrack] syncShift threw:", e.message);
+    console.error("[GigTrack] syncShift THREW:", e);
+    return { ok: false, error: e };
+  }
+}
+
+// Delete a shift from Supabase by id.
+// RLS ensures the user can only delete their own shifts.
+export async function deleteShiftCloud(id) {
+  console.log("[GigTrack] deleteShiftCloud called for id:", id);
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      console.warn("[GigTrack] deleteShiftCloud: no auth user");
+      return { ok: false, error: "no_auth" };
+    }
+
+    const { error } = await supabase
+      .from("shifts")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      console.error("[GigTrack] deleteShiftCloud FAILED:", error.message, error);
+      return { ok: false, error };
+    }
+    console.log("[GigTrack] deleteShiftCloud OK");
+    return { ok: true };
+  } catch (e) {
+    console.error("[GigTrack] deleteShiftCloud THREW:", e);
     return { ok: false, error: e };
   }
 }

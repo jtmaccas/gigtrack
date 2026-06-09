@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, signInAnonymouslyIfNeeded } from "./supabase.js";
-import { syncShift } from "./cloudSync.js";
+import { syncShift, deleteShiftCloud } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -6124,6 +6124,8 @@ export default function GigTrack() {
             DB.set("gt_deleted_seeds", [...deletedSeeds, id]);
           }
         }
+        // Cloud delete — fire and forget. Local delete is the source of truth.
+        deleteShiftCloud(id);
         setConfirm(null);
         showToast("Shift deleted");
         setScreen("log");
