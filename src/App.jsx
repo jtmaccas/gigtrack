@@ -5233,7 +5233,7 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, fuelEfficiency, onFuelEfficiency, fuelPrice, onFuelPrice, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme }) {
+function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, fuelEfficiency, onFuelEfficiency, fuelPrice, onFuelPrice, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -5483,14 +5483,34 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
           <div>
             <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data &amp; Security</div>
             <SettingsSectionCard>
-              {/* Backup & Sync */}
-              <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",opacity:0.5,pointerEvents:"none"}}>
-                <div className="settings-item-left">
-                  <div className="settings-item-label">Backup &amp; Sync</div>
-                  <div className="settings-item-sub">Cloud sync — coming soon</div>
+              {/* Account / cloud sign-in */}
+              {authUser && !authUser.is_anonymous ? (
+                <div
+                  className="settings-item"
+                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                  onClick={onSignOut}
+                >
+                  <div className="settings-item-left">
+                    <div className="settings-item-label">Signed in</div>
+                    <div className="settings-item-sub" style={{fontSize:"11px"}}>
+                      {authUser.email || "—"} · tap to sign out
+                    </div>
+                  </div>
+                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
                 </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
+              ) : (
+                <div
+                  className="settings-item"
+                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                  onClick={onSignIn}
+                >
+                  <div className="settings-item-left">
+                    <div className="settings-item-label">Sign in to save your data</div>
+                    <div className="settings-item-sub">Access your shifts from any device</div>
+                  </div>
+                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+                </div>
+              )}
 
               {/* Export Data */}
               <div
@@ -6344,6 +6364,9 @@ export default function GigTrack() {
           onUpgrade={() => setScreen("paywall")}
           theme={theme}
           onTheme={setTheme}
+          authUser={authUser}
+          onSignIn={() => showToast("Sign-in coming next pass — placeholder for now")}
+          onSignOut={() => showToast("Sign-out coming next pass — placeholder for now")}
         />
       )}
       <ConfirmDialog
