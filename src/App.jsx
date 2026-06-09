@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile } from "./supabase.js";
-import { syncShift, deleteShiftCloud, reconcileShifts } from "./cloudSync.js";
+import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -6120,6 +6120,20 @@ export default function GigTrack() {
               setScreen("home");
               // Reset reconciliation so it re-runs with the new user_id
               reconciledRef.current = false;
+
+              // Fetch cloud shifts and merge with local (cloud is source of truth on sign-in)
+              const cloudShifts = await fetchAllShifts();
+              if (cloudShifts.length > 0) {
+                const localTrips = DB.get("gt_trips") || [];
+                const localIds = new Set(localTrips.map(t => t.id));
+                const newOnes = cloudShifts.filter(t => !localIds.has(t.id));
+                const merged = [...localTrips, ...newOnes];
+                DB.set("gt_trips", merged);
+                setTrips(merged);
+                if (newOnes.length > 0) {
+                  console.log(`[GigTrack] sign-in: pulled ${newOnes.length} new shifts from cloud`);
+                }
+              }
             } else {
               // First-time sign-in (no profile yet) — show toast, stay on current screen
               showToast(`Signed in as ${newUser.email || "your account"}`);
