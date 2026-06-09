@@ -5973,12 +5973,8 @@ export default function GigTrack() {
       DB.set("gt_migrated_seed_activekm_1p2x_v1", true);
     }
 
-    // Merge SEED_SHIFTS — only add seeds whose id isn't already in trips AND hasn't been deleted previously
-    const deletedSeeds = DB.get("gt_deleted_seeds") || [];
-    const existingIds = new Set(t.map(x => x.id));
-    const seedsToAdd = SEED_SHIFTS.filter(s => !existingIds.has(s.id) && !deletedSeeds.includes(s.id));
-    const mergedTrips = seedsToAdd.length ? [...t, ...seedsToAdd] : t;
-    if (seedsToAdd.length) DB.set("gt_trips", mergedTrips);
+    // Note: SEED_SHIFTS no longer auto-merged for new users.
+    // Anyone with seed shifts already in localStorage keeps them; future installs start empty.
     const k = DB.get("gt_kmpref") || "active";
     const r = DB.get("gt_atorate") || ATO_RATE_PER_KM;
     const tg = DB.get("gt_targets") || DEFAULT_TARGETS;
@@ -5988,7 +5984,7 @@ export default function GigTrack() {
     const rg = DB.get("gt_region");
     const a = DB.get("gt_activeshift") || null;
     const ls = DB.get("gt_live_status") || null;
-    setTrips(mergedTrips);
+    setTrips(t);
     setKmPref(k);
     setAtoRate(r);
     setTargets(tg);
