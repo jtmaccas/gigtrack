@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
@@ -1614,6 +1614,52 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
             Continue with Free plan
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── WELCOME SCREEN ─── First screen for fresh installs. Choose: sign in or create.
+function WelcomeScreen({ onCreate, onSignIn }) {
+  return (
+    <div className="setup-wrap">
+      <GTBrand size={40} fontSize={24} />
+      <div className="setup-sub" style={{marginBottom:"32px"}}>Your gig earnings, your ATO deductions — all in one place.</div>
+
+      <div style={{width:"100%",maxWidth:"360px",display:"flex",flexDirection:"column",gap:"10px"}}>
+
+        {/* Primary: Create account */}
+        <button
+          onClick={onCreate}
+          style={{
+            width:"100%",padding:"16px",
+            background:"var(--green)",color:"#0B0F14",
+            border:"none",borderRadius:"13px",cursor:"pointer",
+            fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",
+            letterSpacing:".01em",
+          }}
+        >Get started →</button>
+
+        {/* Secondary: Sign in to existing */}
+        <button
+          onClick={onSignIn}
+          style={{
+            width:"100%",padding:"15px",
+            background:"transparent",
+            border:"0.5px solid var(--border2)",
+            color:"var(--text)",borderRadius:"13px",cursor:"pointer",
+            fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"600",
+          }}
+        >I already have an account</button>
+
+      </div>
+
+      <div style={{
+        marginTop:"36px",fontFamily:"'Inter',sans-serif",
+        fontSize:"11px",color:"var(--muted2)",
+        textAlign:"center",maxWidth:"300px",lineHeight:"1.5",
+      }}>
+        Designed for Australian Uber Eats &amp; DoorDash drivers. Free to use forever — Pro features available.
       </div>
     </div>
   );
@@ -6036,7 +6082,49 @@ export default function GigTrack() {
       setAuthUser(prev => {
         // Detect anonymous → real account upgrade (magic link sign-in success)
         if (prev?.is_anonymous && newUser && !newUser.is_anonymous) {
-          showToast(`Signed in as ${newUser.email || "your account"}`);
+          // Async — fetch profile and route appropriately
+          (async () => {
+            const profile = await fetchProfile();
+            if (profile) {
+              // Returning user — hydrate state from profile
+              const u = {
+                name: profile.name,
+                email: profile.email,
+                startOdo: profile.start_odo,
+                isGuest: !!profile.is_guest,
+                isPro: !!profile.is_pro,
+              };
+              DB.set("gt_user", u);
+              setUser(u);
+              if (profile.region) {
+                setRegion(profile.region);
+                DB.set("gt_region", profile.region);
+              }
+              if (profile.km_pref) {
+                setKmPref(profile.km_pref);
+                DB.set("gt_kmpref", profile.km_pref);
+              }
+              if (profile.weekly_goal != null) {
+                setWeeklyGoal(profile.weekly_goal);
+                DB.set("gt_weeklygoal", profile.weekly_goal);
+              }
+              if (profile.fuel_eff != null) {
+                setFuelEfficiency(profile.fuel_eff);
+                DB.set("gt_fuel_efficiency", profile.fuel_eff);
+              }
+              if (profile.fuel_price != null) {
+                setFuelPrice(profile.fuel_price);
+                DB.set("gt_fuel_price", profile.fuel_price);
+              }
+              showToast(`Welcome back, ${profile.name || newUser.email}!`);
+              setScreen("home");
+              // Reset reconciliation so it re-runs with the new user_id
+              reconciledRef.current = false;
+            } else {
+              // First-time sign-in (no profile yet) — show toast, stay on current screen
+              showToast(`Signed in as ${newUser.email || "your account"}`);
+            }
+          })();
         }
         return newUser;
       });
@@ -6146,7 +6234,7 @@ export default function GigTrack() {
     }
     if (u && !a) { setUser(u); setScreen("home"); }
     else if (u && a) { setUser(u); }
-    else setScreen("setup");
+    else setScreen("welcome");
   }, []);
 
   const showToast = (msg) => {
@@ -6190,6 +6278,16 @@ export default function GigTrack() {
     DB.set("gt_kmpref", data.kmPref);
     if (data.region) { setRegion(data.region); DB.set("gt_region", data.region); }
     setScreen("home");
+    // Sync profile to cloud — fire-and-forget
+    saveProfile({
+      name: u.name,
+      region: data.region,
+      kmPref: data.kmPref,
+      weeklyGoal: weeklyGoal,
+      isPro: u.isPro,
+      isGuest: u.isGuest,
+      startOdo: u.startOdo,
+    }).catch(() => {});
   };
 
   const handleStartTimer = () => {
@@ -6325,6 +6423,12 @@ export default function GigTrack() {
   return (
     <>
       <style>{css}</style>
+      {screen === "welcome" && (
+        <WelcomeScreen
+          onCreate={() => setScreen("setup")}
+          onSignIn={() => setSignInOpen(true)}
+        />
+      )}
       {screen === "setup" && <SetupScreen onComplete={handleSetupComplete} />}
       {screen === "paywall" && (
         <PremiumPaywallScreen
