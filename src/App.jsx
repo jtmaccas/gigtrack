@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, signInAnonymouslyIfNeeded } from "./supabase.js";
-import { syncShift, deleteShiftCloud } from "./cloudSync.js";
+import { syncShift, deleteShiftCloud, reconcileShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -5900,6 +5900,16 @@ export default function GigTrack() {
       subscription?.unsubscribe();
     };
   }, []);
+
+  // ── Boot-time cloud reconciliation: push any local shifts not yet in cloud ──
+  const reconciledRef = useRef(false);
+  useEffect(() => {
+    if (reconciledRef.current) return;          // already done this session
+    if (!authUser) return;                       // wait for auth
+    if (!trips || trips.length === 0) return;    // wait for localStorage hydration
+    reconciledRef.current = true;
+    reconcileShifts(trips).catch(() => {});      // fire-and-forget
+  }, [authUser, trips]);
 
   // ── Boot ──
   useEffect(() => {

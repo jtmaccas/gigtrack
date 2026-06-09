@@ -100,3 +100,51 @@ export async function deleteShiftCloud(id) {
     return { ok: false, error: e };
   }
 }
+
+// One-shot reconciliation on app boot.
+// Fetches cloud-side shift IDs for the current user, then pushes
+// any local shifts that aren't yet in the cloud.
+// Quiet on failure — will retry next boot.
+export async function reconcileShifts(localTrips) {
+  console.log("[GigTrack] reconcileShifts: starting…");
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      console.warn("[GigTrack] reconcileShifts: no auth user, skipping");
+      return { ok: false, pushed: 0 };
+    }
+
+    // Fetch all cloud shift IDs for this user
+    const { data: cloudRows, error } = await supabase
+      .from("shifts")
+      .select("id")
+      .eq("user_id", user.id);
+
+    if (error) {
+      console.warn("[GigTrack] reconcileShifts: cloud query failed", error.message);
+      return { ok: false, pushed: 0 };
+    }
+
+    const cloudIds = new Set((cloudRows || []).map(r => r.id));
+    const toPush = (localTrips || []).filter(t => !cloudIds.has(t.id));
+
+    if (toPush.length === 0) {
+      console.log("[GigTrack] reconcileShifts: nothing to push, all up to date");
+      return { ok: true, pushed: 0 };
+    }
+
+    console.log(`[GigTrack] reconcileShifts: pushing ${toPush.length} shifts…`);
+
+    let pushed = 0;
+    for (const trip of toPush) {
+      const r = await syncShift(trip);
+      if (r.ok) pushed++;
+    }
+
+    console.log(`[GigTrack] reconcileShifts: pushed ${pushed}/${toPush.length}`);
+    return { ok: true, pushed };
+  } catch (e) {
+    console.warn("[GigTrack] reconcileShifts: threw", e.message);
+    return { ok: false, pushed: 0 };
+  }
+}
