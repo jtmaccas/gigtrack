@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
@@ -6030,8 +6030,16 @@ export default function GigTrack() {
       }
     })();
     // Subscribe to future auth state changes (sign in/out)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (mounted) setAuthUser(session?.user || null);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      const newUser = session?.user || null;
+      setAuthUser(prev => {
+        // Detect anonymous → real account upgrade (magic link sign-in success)
+        if (prev?.is_anonymous && newUser && !newUser.is_anonymous) {
+          showToast(`Signed in as ${newUser.email || "your account"}`);
+        }
+        return newUser;
+      });
     });
     return () => {
       mounted = false;
@@ -6484,7 +6492,17 @@ export default function GigTrack() {
           onTheme={setTheme}
           authUser={authUser}
           onSignIn={() => setSignInOpen(true)}
-          onSignOut={() => showToast("Sign-out coming next pass — placeholder for now")}
+          onSignOut={() => {
+            setConfirm({
+              title: "Sign out?",
+              sub: "Your shifts will remain on this device. You can sign back in anytime to access them on other devices.",
+              onConfirm: async () => {
+                setConfirm(null);
+                await signOut();
+                showToast("Signed out");
+              },
+            });
+          }}
         />
       )}
       <ConfirmDialog
