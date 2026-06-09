@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
@@ -2423,6 +2423,123 @@ function PlatformPickerModal({ open, onPick, onClose }) {
             fontSize:"13px",fontWeight:"500",
           }}
         >Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SIGN-IN MODAL ─── Sends a magic link to the user's email.
+function SignInModal({ open, onSendLink, onClose }) {
+  const [email, setEmail] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | sending | sent | error
+  const [errMsg, setErrMsg] = useState("");
+
+  if (!open) return null;
+
+  const handleSend = async () => {
+    const trimmed = email.trim();
+    if (!trimmed || !trimmed.includes("@")) {
+      setErrMsg("Enter a valid email address");
+      setStatus("error");
+      return;
+    }
+    setStatus("sending");
+    setErrMsg("");
+    const result = await onSendLink(trimmed);
+    if (result?.ok) {
+      setStatus("sent");
+    } else {
+      setErrMsg(result?.error?.message || "Couldn't send the link. Check your connection and try again.");
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
+      display:"flex",alignItems:"flex-end",justifyContent:"center",
+      zIndex:1000,backdropFilter:"blur(4px)",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background:"var(--surface)",borderTopLeftRadius:"20px",borderTopRightRadius:"20px",
+        width:"100%",maxWidth:"480px",padding:"20px 18px 28px",
+        boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
+      }}>
+        <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
+
+        {status === "sent" ? (
+          <>
+            <div style={{textAlign:"center",fontSize:"42px",marginBottom:"12px"}}>📬</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px",textAlign:"center"}}>Check your email</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"22px",lineHeight:"1.5",textAlign:"center"}}>
+              We sent a sign-in link to <strong style={{color:"var(--text)"}}>{email.trim()}</strong>.<br/>
+              Click the link to finish signing in.
+            </div>
+            <button
+              onClick={onClose}
+              style={{
+                width:"100%",padding:"14px",background:"var(--green)",color:"#0B0F14",
+                border:"none",borderRadius:"12px",cursor:"pointer",
+                fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+              }}
+            >Done</button>
+          </>
+        ) : (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Sign in to save your data</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",lineHeight:"1.5"}}>
+              Enter your email and we'll send a magic sign-in link — no password needed.
+              All your existing shifts will be linked to your account.
+            </div>
+
+            <div style={{marginBottom:"14px"}}>
+              <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>Email address</div>
+              <input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={e => { setEmail(e.target.value); if (status === "error") setStatus("idle"); }}
+                onKeyDown={e => { if (e.key === "Enter") handleSend(); }}
+                disabled={status === "sending"}
+                style={{
+                  width:"100%",padding:"13px 14px",
+                  background:"var(--elevated)",border:`0.5px solid ${status==="error"?"var(--red-border)":"var(--border)"}`,
+                  borderRadius:"11px",color:"var(--text)",
+                  fontFamily:"'Inter',sans-serif",fontSize:"15px",
+                  fontVariantNumeric:"tabular-nums",
+                  outline:"none",
+                }}
+              />
+              {status === "error" && (
+                <div style={{fontSize:"11px",color:"var(--red)",marginTop:"6px",fontFamily:"'Inter',sans-serif"}}>{errMsg}</div>
+              )}
+            </div>
+
+            <button
+              onClick={handleSend}
+              disabled={status === "sending"}
+              style={{
+                width:"100%",padding:"14px",
+                background: status==="sending" ? "var(--muted2)" : "var(--green)",
+                color:"#0B0F14",border:"none",borderRadius:"12px",
+                cursor: status==="sending" ? "default" : "pointer",
+                fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+              }}
+            >{status === "sending" ? "Sending…" : "Send magic link →"}</button>
+
+            <button
+              onClick={onClose}
+              style={{
+                width:"100%",marginTop:"10px",padding:"13px",
+                background:"transparent",border:"none",cursor:"pointer",
+                color:"var(--muted2)",fontFamily:"'Inter',sans-serif",
+                fontSize:"13px",fontWeight:"500",
+              }}
+            >Cancel</button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -5877,6 +5994,7 @@ export default function GigTrack() {
   const [confirm, setConfirm]   = useState(null);
   const [liveStatus, setLiveStatus] = useState(null); // {online, platform, zone, since}
   const [platformPickerOpen, setPlatformPickerOpen] = useState(false);
+  const [signInOpen, setSignInOpen] = useState(false);
   const toastTimer = useRef(null);
 
   // ── Theme management ──
@@ -6365,7 +6483,7 @@ export default function GigTrack() {
           theme={theme}
           onTheme={setTheme}
           authUser={authUser}
-          onSignIn={() => showToast("Sign-in coming next pass — placeholder for now")}
+          onSignIn={() => setSignInOpen(true)}
           onSignOut={() => showToast("Sign-out coming next pass — placeholder for now")}
         />
       )}
@@ -6389,6 +6507,11 @@ export default function GigTrack() {
           setPlatformPickerOpen(false);
           showToast("You're online — visible to drivers in your zone");
         }}
+      />
+      <SignInModal
+        open={signInOpen}
+        onClose={() => setSignInOpen(false)}
+        onSendLink={async (email) => await sendMagicLink(email)}
       />
       {showNav && (
         <BottomNav

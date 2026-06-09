@@ -36,3 +36,30 @@ export const signInAnonymouslyIfNeeded = async () => {
   }
   return data.user;
 };
+
+// Send a magic link to the given email.
+// If the user is currently signed in anonymously, Supabase will automatically
+// upgrade that anonymous session to the real account when they click the link.
+export const sendMagicLink = async (email) => {
+  const redirectTo = window.location.origin; // works for localhost and Vercel
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: {
+      emailRedirectTo: redirectTo,
+      shouldCreateUser: true,
+    },
+  });
+  if (error) {
+    console.error("[GigTrack] sendMagicLink failed:", error);
+    return { ok: false, error };
+  }
+  return { ok: true };
+};
+
+// Sign out — clears the local session and creates a fresh anonymous one.
+export const signOut = async () => {
+  const { error } = await supabase.auth.signOut();
+  if (error) console.warn("[GigTrack] signOut error:", error);
+  // Create a fresh anonymous session so the app stays usable
+  await supabase.auth.signInAnonymously();
+};
