@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, signInAnonymouslyIfNeeded } from "./supabase.js";
+import { syncShift } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -6085,6 +6086,22 @@ export default function GigTrack() {
     DB.set("gt_trips", updated);
     setEditId(null);
     setTimerPrefill(null);
+
+    // Cloud sync — fire and forget. If it fails (offline, etc), the synced
+    // flag stays false and Pass 4's reconciliation will catch it on next boot.
+    syncShift(record).then(result => {
+      if (result.ok) {
+        // Mark this shift as synced in localStorage
+        const synced = trips.map(t => t.id === record.id ? { ...record, _synced: true } : t);
+        // If it was a new insert, the trip we want is in `updated` but not yet in state
+        const finalList = isEdit
+          ? synced
+          : [...trips, { ...record, _synced: true }];
+        DB.set("gt_trips", finalList);
+        setTrips(finalList);
+      }
+    });
+
     setTimeout(() => {
       if (isEdit) { setDetailId(record.id); setScreen("detail"); }
       else setScreen("home");
