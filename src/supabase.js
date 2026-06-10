@@ -121,3 +121,22 @@ export const fetchProfile = async () => {
     return null;
   }
 };
+
+// Atomically increments screenshot_imports_used and returns the new total.
+// Server-side, so it can't be tampered with by the client.
+// Returns the new count, or null on failure.
+export const incrementScreenshotImportsUsed = async () => {
+  console.log("[GigTrack] incrementScreenshotImportsUsed called");
+  try {
+    const { data, error } = await supabase.rpc("increment_screenshot_imports");
+    if (error) {
+      console.warn("[GigTrack] incrementScreenshotImportsUsed error:", error.message);
+      return null;
+    }
+    console.log("[GigTrack] incrementScreenshotImportsUsed OK, new count:", data);
+    return data;
+  } catch (e) {
+    console.warn("[GigTrack] incrementScreenshotImportsUsed threw:", e);
+    return null;
+  }
+};

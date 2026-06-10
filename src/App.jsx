@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
@@ -1428,19 +1428,21 @@ function RatioBar({ ratio, label }) {
 // ─── SETUP FLOW ───
 // ─── PREMIUM FEATURES DEFINITION ─────────────────
 const PREMIUM_FEATURES = [
-  { icon:"📍", title:"Local Benchmarks",          desc:"See how you stack up against real GigTrack drivers in your region — weekly averages for hourly rate, $ per delivery, and shift score." },
-  { icon:"🧾", title:"ATO PDF Export",             desc:"One-tap export of your full shift log as a print-ready ATO tax report. Includes deductions, totals, and every shift detail." },
-  { icon:"🎯", title:"Weekly Earnings Goal",       desc:"Set a weekly earnings target and track your progress live on the home screen with a visual goal bar." },
-  { icon:"⚡", title:"Custom Scoring Targets",     desc:"Dial in your own hourly rate, $/delivery, and active time targets so your shift score reflects your personal benchmarks." },
+  { icon:"📷", title:"Unlimited Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. Free users get 3 imports — Pro unlocks unlimited." },
+  { icon:"♾️", title:"Unlimited Shifts",               desc:"Log as many shifts as you like. Free is capped at 20 lifetime shifts." },
+  { icon:"📍", title:"Local Benchmarks &amp; Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
+  { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
+  { icon:"📊", title:"CSV Export for Accountants",     desc:"PDF export is free, but CSV export — perfect for sending raw shift data to your accountant — is Pro only." },
+  { icon:"⚡", title:"Custom Scoring Targets",          desc:"Dial in your own hourly rate, $/delivery, and active time targets so your shift score reflects your personal benchmarks." },
 ];
 
 // ─── PREMIUM PAYWALL SCREEN ────────────────────────
 // Used both during onboarding and from Settings → Go Premium
 function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
   const [billing, setBilling] = useState("monthly"); // "monthly" | "annual"
-  const monthlyPrice = 4.99;
-  const annualTotal  = 44.99;
-  const annualPrice  = annualTotal / 12; // ≈ $3.75/mo
+  const monthlyPrice = 7.99;
+  const annualTotal  = 69.99;
+  const annualPrice  = annualTotal / 12; // ≈ $5.83/mo
   const saving = Math.round((1 - annualPrice / monthlyPrice) * 100);
 
   return (
@@ -1502,14 +1504,6 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
           borderRadius:"16px",
           position:"relative",
         }}>
-          <div style={{
-            position:"absolute",top:"-9px",left:"50%",transform:"translateX(-50%)",
-            fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",
-            letterSpacing:".08em",textTransform:"uppercase",
-            background:"var(--green)",color:"#0B0F14",
-            padding:"3px 10px",borderRadius:"6px",
-          }}>7-day free trial</div>
-
           <div style={{fontFamily:"'Inter',sans-serif",fontSize:"42px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.03em",lineHeight:"1",fontVariantNumeric:"tabular-nums",marginTop:"6px"}}>
             ${billing==="annual" ? annualPrice.toFixed(2) : monthlyPrice.toFixed(2)}
             <span style={{fontSize:"16px",color:"var(--muted)",fontWeight:"500"}}>/mo</span>
@@ -1598,7 +1592,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
             cursor:"pointer",letterSpacing:".01em",
           }}
         >
-          Start 7-day free trial →
+          Upgrade to Pro →
         </button>
         {fromOnboarding && (
           <button
@@ -1794,18 +1788,10 @@ function SetupScreen({ onComplete }) {
               borderRadius:"16px",padding:"18px",cursor:"pointer",position:"relative",
             }}
           >
-            <div style={{
-              position:"absolute",top:"-9px",right:"14px",
-              fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",
-              letterSpacing:".08em",textTransform:"uppercase",
-              background:"var(--green)",color:"#0B0F14",
-              padding:"3px 9px",borderRadius:"6px",
-            }}>7-day free trial</div>
-
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"6px"}}>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"17px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.01em"}}>Pro</div>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",fontVariantNumeric:"tabular-nums"}}>
-                $4.99<span style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"500"}}>/mo</span>
+                $7.99<span style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"500"}}>/mo</span>
               </div>
             </div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginBottom:"12px"}}>
@@ -1828,7 +1814,7 @@ function SetupScreen({ onComplete }) {
               fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
               textAlign:"center",letterSpacing:".01em",
             }}>
-              Start free trial →
+              See Pro features →
             </div>
           </div>
 
@@ -2813,7 +2799,7 @@ function WeeklyGoalCard({ trips, weeklyGoal }) {
 }
 
 // ─── HOME SCREEN ───
-function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, activeShift, onStartTimer, onEndTimer, onPauseTimer, onResumeTimer, onOrderSession, weeklyGoal, onResumeShiftScreen, region, isPro = false, onUpgrade, onLogShift, onDetail, liveStatus = null, onGoOnline, onGoOffline }) {
+function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, activeShift, onStartTimer, onEndTimer, onPauseTimer, onResumeTimer, onOrderSession, weeklyGoal, onResumeShiftScreen, region, isPro = false, benchmarksUnlocked = false, benchmarkDaysRemaining = 0, onUpgrade, onLogShift, onDetail, liveStatus = null, onGoOnline, onGoOffline }) {
   const { fyStart } = getFYBounds();
   const { weekStart, weekEnd } = getWeekBounds();
   const fyTrips = trips.filter(t => new Date(t.ts) >= fyStart);
@@ -3054,19 +3040,82 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
           </div>
         )}
 
-        {/* Live drivers in zone */}
-        <div style={{padding:"14px 16px 0"}}>
-          <LiveDriverCard
-            region={region}
-            onGoToSettings={onSettings}
-            liveStatus={liveStatus}
-            onGoOnline={onGoOnline}
-            onGoOffline={onGoOffline}
-          />
-        </div>
+        {/* Live drivers + Benchmarks — gated for free users after 3-day grace */}
+        {benchmarksUnlocked ? (
+          <>
+            {/* Grace-period warning banner (free users still in their 3-day window) */}
+            {!isPro && benchmarkDaysRemaining > 0 && benchmarkDaysRemaining <= 3 && (
+              <div
+                onClick={onUpgrade}
+                style={{
+                  margin:"14px 16px 0",padding:"10px 12px",
+                  background:"var(--amber-dim)",
+                  border:"1px solid var(--amber-border)",
+                  borderRadius:"10px",cursor:"pointer",
+                  display:"flex",alignItems:"center",gap:"8px",
+                }}
+              >
+                <span style={{fontSize:"15px"}}>⏰</span>
+                <div style={{flex:1}}>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>
+                    {benchmarkDaysRemaining === 1 ? "Last day" : `${benchmarkDaysRemaining} days left`} of free benchmarks
+                  </div>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"1px"}}>
+                    Tap to keep live drivers &amp; benchmarks after the trial ends.
+                  </div>
+                </div>
+                <span style={{fontSize:"12px",color:"var(--muted2)"}}>›</span>
+              </div>
+            )}
 
-        {/* Benchmarks — Pro only */}
-        {isPro && <div style={{padding:"14px 16px 0"}}><BenchmarkCard region={region} onGoToSettings={onSettings} /></div>}
+            {/* Live drivers in zone */}
+            <div style={{padding:"14px 16px 0"}}>
+              <LiveDriverCard
+                region={region}
+                onGoToSettings={onSettings}
+                liveStatus={liveStatus}
+                onGoOnline={onGoOnline}
+                onGoOffline={onGoOffline}
+              />
+            </div>
+
+            {/* Benchmarks */}
+            <div style={{padding:"14px 16px 0"}}>
+              <BenchmarkCard region={region} onGoToSettings={onSettings} />
+            </div>
+          </>
+        ) : (
+          /* Locked state — free user whose 3-day grace has expired */
+          <div style={{padding:"14px 16px 0"}}>
+            <div
+              onClick={onUpgrade}
+              style={{
+                background:"var(--surface)",
+                border:"1px dashed var(--border)",
+                borderRadius:"12px",
+                padding:"20px 16px",
+                cursor:"pointer",
+                textAlign:"center",
+              }}
+            >
+              <div style={{fontSize:"28px",marginBottom:"8px"}}>🔒</div>
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>
+                Local benchmarks &amp; live drivers
+              </div>
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11.5px",color:"var(--muted)",lineHeight:"1.5",marginBottom:"12px",maxWidth:"260px",margin:"0 auto 12px"}}>
+                See how you stack up against drivers in your region — hourly rate, $ per delivery, plus live driver count.
+              </div>
+              <div style={{
+                display:"inline-block",padding:"8px 16px",
+                background:"var(--green)",color:"#0B0F14",
+                borderRadius:"9px",
+                fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",
+              }}>
+                Upgrade to Pro →
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ATO cap warning */}
         {showWarning && (
@@ -3298,7 +3347,7 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
               {allFailed ? "Couldn't read screenshot" : `${parsedCount}/${totalParseable} fields detected`}
             </div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>
-              Edit any field, then save. Active km is usually only on Uber Eats.
+              Edit any field, then save.
             </div>
           </div>
         </div>
@@ -3888,7 +3937,7 @@ function VoiceEntryScreen({ onBack, onParsed }) {
 }
 
 // ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
-function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScreenshotImport, isPro = false, onUpgrade }) {
+function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScreenshotImport, isPro = false, onUpgrade, shiftsRemaining, screenshotsRemaining }) {
   // Detect Web Speech API support
   const voiceSupported = typeof window !== "undefined" &&
     ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
@@ -3901,6 +3950,30 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScree
       </div>
       <div className="scroll-area">
         <div className="log-shift-list">
+
+          {/* Free tier remaining banner */}
+          {!isPro && shiftsRemaining != null && shiftsRemaining <= 5 && (
+            <div
+              onClick={onUpgrade}
+              style={{
+                background: shiftsRemaining === 0 ? "var(--red-dim)" : "var(--amber-dim)",
+                border: `1px solid ${shiftsRemaining === 0 ? "var(--red-border)" : "var(--amber-border)"}`,
+                borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",cursor:"pointer",
+                display:"flex",alignItems:"center",gap:"10px",
+              }}
+            >
+              <div style={{fontSize:"18px"}}>{shiftsRemaining === 0 ? "🔒" : "⚠️"}</div>
+              <div style={{flex:1}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",color:"var(--text)"}}>
+                  {shiftsRemaining === 0 ? "Free shift limit reached" : `${shiftsRemaining} free shifts left`}
+                </div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginTop:"2px"}}>
+                  Tap to upgrade for unlimited shifts.
+                </div>
+              </div>
+              <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+            </div>
+          )}
 
           {/* 1 — Start Shift Timer */}
           <div className="log-entry-card featured" onClick={onStartTimer}>
@@ -3934,7 +4007,19 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScree
               <span style={{fontSize:"22px"}}>📷</span>
             </div>
             <div className="log-entry-text">
-              <div className="log-entry-title">Import from screenshot</div>
+              <div className="log-entry-title">
+                Import from screenshot
+                {!isPro && screenshotsRemaining != null && (
+                  <span style={{
+                    marginLeft:"8px",fontSize:"10px",fontWeight:"700",
+                    background: screenshotsRemaining === 0 ? "var(--red-dim)" : "var(--green-dim)",
+                    color: screenshotsRemaining === 0 ? "var(--red)" : "var(--green)",
+                    padding:"2px 7px",borderRadius:"5px",letterSpacing:".04em",
+                  }}>
+                    {screenshotsRemaining === 0 ? "LIMIT REACHED" : `${screenshotsRemaining} LEFT`}
+                  </span>
+                )}
+              </div>
               <div className="log-entry-desc">Upload an Uber Eats or DoorDash summary — we'll read the values for you.</div>
             </div>
             <div className="log-entry-arrow">›</div>
@@ -3997,6 +4082,77 @@ function PlatformPill({ platform }) {
   if (platform === "uber_eats") return <LogoItem Logo={UberEatsLogo} name="Uber Eats" />;
   if (platform === "doordash")  return <LogoItem Logo={DoorDashLogo} name="DoorDash" />;
   return <span style={{color:"var(--muted2)",fontSize:"14px"}}>—</span>;
+}
+
+// ─── MANUAL FIELD ROW ─── Compact editable row matching screenshot-review aesthetic.
+// status: "ok" (green tick), "error" (red X — only shown after save attempt for empty required),
+// or null/undefined (no indicator — for optional fields).
+function ManualFieldRow({ status, label, sublabel, value, onChange, type = "text", placeholder = "", suffix = "", prefix = "", disabled = false, min, max, step }) {
+  const showOk    = status === "ok";
+  const showError = status === "error";
+  const showDot   = !showOk && !showError;
+
+  let bg, color, content;
+  if (showOk)    { bg = "var(--green-dim)"; color = "var(--green)"; content = "✓"; }
+  else if (showError) { bg = "var(--red-dim)"; color = "var(--red)"; content = "✕"; }
+  else { bg = "var(--elevated)"; color = "var(--muted2)"; content = ""; }
+
+  return (
+    <div style={{
+      display:"flex",alignItems:"center",gap:"10px",
+      padding:"10px 13px",
+      background:"var(--surface)",
+      border:`0.5px solid ${showOk ? "var(--green-border)" : showError ? "var(--red-border)" : "var(--border)"}`,
+      borderRadius:"11px",
+    }}>
+      <div style={{
+        width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+        background: bg,color: color,
+        display:"flex",alignItems:"center",justifyContent:"center",
+        fontSize:"12px",fontWeight:"700",
+      }}>{content}</div>
+      <div style={{minWidth:"95px",flex:"0 0 auto"}}>
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>{label}</div>
+        {sublabel && <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"1px"}}>{sublabel}</div>}
+      </div>
+      <div style={{flex:1,display:"flex",alignItems:"center",gap:"4px"}}>
+        {prefix && (
+          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{prefix}</span>
+        )}
+        <input
+          type={type}
+          inputMode={type === "number" ? "decimal" : undefined}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          disabled={disabled}
+          min={min} max={max} step={step}
+          style={{
+            flex:1,minWidth:0,
+            background:"transparent",border:"none",outline:"none",
+            color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
+            fontWeight:"700",fontVariantNumeric:"tabular-nums",
+            textAlign:"right",letterSpacing:"-.005em",padding:0,
+            colorScheme: type === "date" ? "dark" : undefined,
+          }}
+        />
+        {suffix && (
+          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{suffix}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Small group divider — "EARNINGS", "TIME", etc.
+function ManualGroupHeader({ children }) {
+  return (
+    <div style={{
+      fontSize:"10px",fontWeight:"700",color:"var(--muted2)",
+      letterSpacing:".08em",textTransform:"uppercase",
+      marginTop:"18px",marginBottom:"8px",
+    }}>{children}</div>
+  );
 }
 
 // ─── NEW / EDIT SHIFT ───
@@ -4074,10 +4230,12 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     : (editTrip ? String(editTrip.dels) : "")
   );
   const [expenses, setExpenses] = useState(editTrip ? String(editTrip.expenses) : "0");
+  const [notes, setNotes] = useState(editTrip?.notes ? editTrip.notes : "");
   const [platform, setPlatform] = useState(
     voicePrefill?.platform || orderPrefill?.platform || editTrip?.platform || null
   );
   const [errors, setErrors] = useState({});
+  const [saveAttempted, setSaveAttempted] = useState(false);
   const [valMsg, setValMsg] = useState("");
 
   const n = (v) => Math.max(0, parseFloat(v) || 0);
@@ -4113,6 +4271,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   const deduction = deductKm * (atoRate || ATO_RATE_PER_KM);
 
   const validate = () => {
+    setSaveAttempted(true);
     const e = {};
     if (!totalEarned.trim() || isNaN(parseFloat(totalEarned))) e.totalEarned = true;
     if (derivedTotalMin <= 0) e.onlineTime = true;
@@ -4142,6 +4301,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
       activeMins: derivedActiveMin || null,
       activeKm: activeKmInput !== "" ? n(activeKmInput) : null,
       platform: platform || null,
+      notes: notes.trim() || null,
       ...inputs, ...c, deduction: derivedTotalKm * (atoRate || ATO_RATE_PER_KM),
     };
     onSaved(record, isEdit);
@@ -4184,279 +4344,344 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
           </div>
         )}
 
-        {/* Shift Date & Time */}
-        <div className="section">
-          <div className="section-label">Shift Date &amp; Time</div>
-          <div className="input-row">
-            <div className="input-label">When did this shift take place?</div>
-            <input
-              className="input-field"
-              type="datetime-local"
-              value={shiftDate}
-              onChange={e => setShiftDate(e.target.value)}
-              style={{colorScheme:"dark"}}
+        {/* ─── COMPACT FORM ─── matches screenshot-review aesthetic ── */}
+        <div style={{padding:"4px 14px 0"}}>
+
+          {/* ── EARNINGS ── */}
+          <ManualGroupHeader>Earnings</ManualGroupHeader>
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+            <ManualFieldRow
+              status={saveAttempted && !totalEarned.trim() ? "error" : (totalEarned.trim() && !isNaN(parseFloat(totalEarned)) ? "ok" : null)}
+              label="Total earned" sublabel="required"
+              value={totalEarned}
+              onChange={(v) => { setTotalEarned(v); if (saveAttempted) setErrors(e => ({...e, totalEarned: false})); }}
+              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
+            />
+            <ManualFieldRow
+              label="Tips" value={tip}
+              onChange={setTip}
+              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
+            />
+            <ManualFieldRow
+              label="Bonuses" value={bonus}
+              onChange={setBonus}
+              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
             />
           </div>
-        </div>
+          {(n(totalEarned) > 0 || n(tip) > 0 || n(bonus) > 0) && (
+            <div style={{
+              marginTop:"6px",padding:"8px 13px",
+              background:"var(--elevated)",
+              borderRadius:"9px",
+              fontSize:"11px",color:"var(--muted)",
+              display:"flex",justifyContent:"space-between",alignItems:"center",
+            }}>
+              <span>Base pay (auto)</span>
+              <strong style={{color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>{fmt$(derivedBase)}</strong>
+            </div>
+          )}
 
-        {/* Earnings */}
-        <div className="section">
-          <div className="section-label">Earnings</div>
-          <div className="input-group">
-            <div className="input-row">
-              <div className="input-label">Total Earned ($) <span className="req">*</span></div>
-              <input className={`input-field${errors.totalEarned ? " err" : ""}`} type="number" min="0" step="0.01" placeholder="0.00" value={totalEarned} onChange={e => { setTotalEarned(e.target.value); setErrors(v => ({...v,totalEarned:false})); }} />
-            </div>
-            <div className="input-row">
-              <div className="input-label">Tip Amount ($)</div>
-              <input className="input-field" type="number" min="0" step="0.01" placeholder="0.00" value={tip} onChange={e => setTip(e.target.value)} />
-            </div>
-            <div className="input-row">
-              <div className="input-label">Bonus ($)</div>
-              <input className="input-field" type="number" min="0" step="0.01" placeholder="0.00" value={bonus} onChange={e => setBonus(e.target.value)} />
-            </div>
-            <div className="calc-row">
-              <div className="calc-label">Base Pay (auto)</div>
-              <div className="calc-value">{fmt$(derivedBase)}</div>
-            </div>
-            <div className="calc-row" style={{borderTop:"none",paddingTop:0}}>
-              <div className="calc-label">Total Earned</div>
-              <div className="calc-value" style={{color:"var(--green)"}}>{fmt$(calc.totalEarned)}</div>
-            </div>
-          </div>
-        </div>
+          {/* ── TIME ── */}
+          <ManualGroupHeader>Time</ManualGroupHeader>
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
 
-        {/* Time */}
-        <div className="section">
-          <div className="section-label">Time on Shift <span className="req">*</span></div>
-          <div className="input-group">
-
-            {/* Online Time */}
-            <div>
-              <div className="input-label" style={{marginBottom:"8px"}}>
-                Online Time <span className="req">*</span>
-                <span style={{color:"var(--muted2)",fontSize:"10px",fontWeight:400,marginLeft:"6px"}}>total time on shift</span>
+            {/* Online — hours + minutes side by side */}
+            <div style={{
+              display:"flex",alignItems:"center",gap:"10px",
+              padding:"10px 13px",background:"var(--surface)",
+              border:`0.5px solid ${saveAttempted && derivedTotalMin <= 0 ? "var(--red-border)" : (derivedTotalMin > 0 ? "var(--green-border)" : "var(--border)")}`,
+              borderRadius:"11px",
+            }}>
+              <div style={{
+                width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+                background: saveAttempted && derivedTotalMin <= 0 ? "var(--red-dim)" : (derivedTotalMin > 0 ? "var(--green-dim)" : "var(--elevated)"),
+                color:    saveAttempted && derivedTotalMin <= 0 ? "var(--red)"     : (derivedTotalMin > 0 ? "var(--green)"     : "var(--muted2)"),
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px",fontWeight:"700",
+              }}>{saveAttempted && derivedTotalMin <= 0 ? "✕" : (derivedTotalMin > 0 ? "✓" : "")}</div>
+              <div style={{minWidth:"95px"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Online time</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"1px"}}>required</div>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
-                <div className="input-row">
-                  <div className="input-label">Hours</div>
-                  <input
-                    className={`input-field${errors.onlineTime ? " err" : ""}`}
-                    type="number" min="0" max="23" placeholder="e.g. 2"
-                    value={onlineHrs}
-                    onChange={e => { setOnlineHrs(e.target.value); setErrors(v => ({...v,onlineTime:false})); }}
-                  />
-                </div>
-                <div className="input-row">
-                  <div className="input-label">Minutes</div>
-                  <input
-                    className={`input-field${errors.onlineTime ? " err" : ""}`}
-                    type="number" min="0" max="59" placeholder="e.g. 2"
-                    value={onlineMins}
-                    onChange={e => { setOnlineMins(e.target.value); setErrors(v => ({...v,onlineTime:false})); }}
-                  />
-                </div>
-              </div>
-              {derivedTotalMin > 0 && (
-                <div className="calc-row" style={{marginTop:"6px"}}>
-                  <div className="calc-label">Total Online Time</div>
-                  <div className="calc-value">{derivedTotalMin} min ({(derivedTotalMin/60).toFixed(1)} hrs)</div>
-                </div>
-              )}
-            </div>
-
-            {/* Active Time */}
-            <div style={{borderTop:"1px solid #252530",paddingTop:"14px"}}>
-              <div className="input-label" style={{marginBottom:"8px"}}>
-                Active Time
-                <span style={{color:"var(--muted2)",fontSize:"10px",fontWeight:400,marginLeft:"6px"}}>active delivery time only</span>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
-                <div className="input-row">
-                  <div className="input-label">Hours</div>
-                  <input
-                    className="input-field"
-                    type="number" min="0" max="23" placeholder="e.g. 1"
-                    value={activeHrsPart}
-                    onChange={e => setActiveHrsPart(e.target.value)}
-                  />
-                </div>
-                <div className="input-row">
-                  <div className="input-label">Minutes</div>
-                  <input
-                    className="input-field"
-                    type="number" min="0" max="59" placeholder="e.g. 16"
-                    value={activeMinsPart}
-                    onChange={e => setActiveMinsPart(e.target.value)}
-                  />
-                </div>
-              </div>
-              {derivedActiveMin > 0 && derivedTotalMin > 0 && (
-                <div style={{fontSize:"11px",color:"var(--muted)",background:"var(--elevated)",borderRadius:"8px",padding:"8px 12px",border:"1px solid #252530",marginTop:"8px"}}>
-                  Active Time %: <strong style={{color: derivedActiveMin/derivedTotalMin >= 0.85 ? "var(--green)" : derivedActiveMin/derivedTotalMin >= 0.6 ? "var(--amber)" : "var(--red)"}}>
-                    {((derivedActiveMin/derivedTotalMin)*100).toFixed(0)}%
-                  </strong> of online time
-                </div>
-              )}
-            </div>
-
-          </div>
-        </div>
-
-        {/* Distance */}
-        <div className="section">
-          <div className="section-label">Distance <span className="req">*</span></div>
-          <div className="km-toggle">
-            <div className={`km-toggle-btn${kmMode === "total" ? " active" : ""}`} onClick={() => setKmMode("total")}>
-              📍 Enter Total KMs
-            </div>
-            <div className={`km-toggle-btn${kmMode === "odometer" ? " active" : ""}`} onClick={() => setKmMode("odometer")}>
-              🔢 Odometer Readings
-            </div>
-          </div>
-          <div className="input-group">
-            {kmMode === "total" ? (
-              <div className="input-row">
-                <div className="input-label">Total KMs Driven <span className="req">*</span></div>
+              <div style={{flex:1,display:"flex",alignItems:"center",gap:"6px"}}>
                 <input
-                  className={`input-field${errors.km ? " err" : ""}`}
-                  type="number" min="0" step="0.1" placeholder="e.g. 45.5"
-                  value={totalKmInput}
-                  onChange={e => { setTotalKmInput(e.target.value); setErrors(v => ({...v, km: false})); }}
-                />
-              </div>
-            ) : (
-              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px"}}>
-                <div className="input-row">
-                  <div className="input-label">Start Odometer <span className="req">*</span></div>
-                  <input
-                    className={`input-field${errors.km ? " err" : ""}`}
-                    type="number" min="0" step="0.1" placeholder="e.g. 45230"
-                    value={odoStart}
-                    onChange={e => { setOdoStart(e.target.value); setErrors(v => ({...v, km: false})); }}
-                  />
-                </div>
-                <div className="input-row">
-                  <div className="input-label">End Odometer <span className="req">*</span></div>
-                  <input
-                    className={`input-field${errors.km ? " err" : ""}`}
-                    type="number" min="0" step="0.1" placeholder="e.g. 45278"
-                    value={odoEnd}
-                    onChange={e => { setOdoEnd(e.target.value); setErrors(v => ({...v, km: false})); }}
-                  />
-                </div>
-              </div>
-            )}
-            <div className="calc-row">
-              <div className="calc-label">Total KMs</div>
-              <div className="calc-value">{derivedTotalKm > 0 ? `${derivedTotalKm.toFixed(1)} km` : "—"}</div>
-            </div>
-            {kmMode === "odometer" && derivedTotalKm > 0 && (
-              <div style={{fontSize:"11px",color:"var(--muted)",background:"var(--elevated)",borderRadius:"8px",padding:"8px 12px",border:"1px solid #252530"}}>
-                💡 {n(odoEnd).toFixed(1)} − {n(odoStart).toFixed(1)} = <strong style={{color:"var(--text)"}}>{derivedTotalKm.toFixed(1)} km</strong> driven this shift
-              </div>
-            )}
-
-            {/* Optional Active KMs — only affects scoring if entered */}
-            <div style={{borderTop:"1px solid #252530",paddingTop:"14px",marginTop:"4px"}}>
-              <div className="input-label" style={{marginBottom:"4px"}}>
-                Active KMs <span style={{color:"var(--muted2)",fontSize:"10px",fontWeight:400,marginLeft:"6px"}}>optional — used in scoring if entered</span>
-              </div>
-              <div style={{fontSize:"10px",color:"var(--muted2)",marginBottom:"8px",lineHeight:"1.5"}}>
-                KMs driven while actively on a delivery (not repositioning or waiting). If left blank, Active KM% is excluded from your score.
-              </div>
-              <input
-                className="input-field"
-                type="number" min="0" step="0.1" placeholder="e.g. 38.2"
-                value={activeKmInput}
-                onChange={e => setActiveKmInput(e.target.value)}
-              />
-              {activeKmInput !== "" && derivedTotalKm > 0 && (
-                <div style={{fontSize:"11px",color:"var(--muted)",background:"var(--elevated)",borderRadius:"8px",padding:"8px 12px",border:"1px solid #252530",marginTop:"8px"}}>
-                  Active KM %: <strong style={{color: n(activeKmInput)/derivedTotalKm >= 0.85 ? "var(--green)" : n(activeKmInput)/derivedTotalKm >= 0.6 ? "var(--amber)" : "var(--red)"}}>
-                    {((n(activeKmInput)/derivedTotalKm)*100).toFixed(0)}%
-                  </strong> of total KMs
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Activity */}
-        <div className="section">
-          <div className="section-label">Activity <span className="req">*</span></div>
-          <div className="input-group">
-            <div className="input-row">
-              <div className="input-label">Number of Deliveries <span className="req">*</span></div>
-              <input className={f("dels",errors.dels)} type="number" min="0" placeholder="0" value={dels} onChange={e => { setDels(e.target.value); setErrors(v => ({...v,dels:false})); }} />
-            </div>
-          </div>
-        </div>
-
-        {/* Platform */}
-        <div className="section">
-          <div className="section-label">Platform</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
-            {[
-              { id:"uber_eats", label:"Uber Eats", color:"#06C167", bg:"rgba(6,193,103,.12)", border:"rgba(6,193,103,.4)" },
-              { id:"doordash",  label:"DoorDash",  color:"#FF3008", bg:"rgba(255,48,8,.12)",  border:"rgba(255,48,8,.35)" },
-            ].map(p => {
-              const selected = platform === p.id || platform === "both";
-              const exactSelected = platform === p.id || platform === "both";
-              return (
-                <div
-                  key={p.id}
-                  onClick={() => {
-                    if (platform === p.id) {
-                      setPlatform(null);
-                    } else if (platform === "both") {
-                      setPlatform(p.id === "uber_eats" ? "doordash" : "uber_eats");
-                    } else if (platform && platform !== p.id) {
-                      setPlatform("both");
-                    } else {
-                      setPlatform(p.id);
-                    }
-                  }}
+                  type="number" inputMode="decimal" min="0" max="23"
+                  value={onlineHrs}
+                  onChange={(e) => { setOnlineHrs(e.target.value); if (saveAttempted) setErrors(v => ({...v, onlineTime: false})); }}
+                  placeholder="0"
                   style={{
-                    padding:"13px 14px",borderRadius:"10px",cursor:"pointer",
-                    background: exactSelected ? p.bg : "var(--elevated)",
-                    border: `1.5px solid ${exactSelected ? p.border : "var(--border)"}`,
-                    display:"flex",alignItems:"center",gap:"10px",
-                    transition:"all var(--tr)",
+                    width:"42px",background:"transparent",border:"none",outline:"none",
+                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
+                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
                   }}
-                >
-                  <div style={{
-                    width:"10px",height:"10px",borderRadius:"50%",flexShrink:0,
-                    background: exactSelected ? p.color : "var(--border2)",
-                    transition:"background var(--tr)",
-                  }} />
-                  <span style={{fontSize:"13px",fontWeight:"600",color: exactSelected ? p.color : "var(--muted)"}}>{p.label}</span>
-                </div>
-              );
-            })}
-          </div>
-          {platform === "both" && (
-            <div style={{marginTop:"8px",fontSize:"11px",color:"var(--muted2)",lineHeight:"1.5"}}>
-              Both selected — mixed platform shift
+                />
+                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>h</span>
+                <input
+                  type="number" inputMode="decimal" min="0" max="59"
+                  value={onlineMins}
+                  onChange={(e) => { setOnlineMins(e.target.value); if (saveAttempted) setErrors(v => ({...v, onlineTime: false})); }}
+                  placeholder="0"
+                  style={{
+                    width:"42px",background:"transparent",border:"none",outline:"none",
+                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
+                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
+                  }}
+                />
+                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
+              </div>
             </div>
-          )}
-          {!platform && (
-            <div style={{marginTop:"8px",fontSize:"11px",color:"var(--muted2)"}}>
-              Optional — tap to select
-            </div>
-          )}
-        </div>
 
-        {/* Expenses */}
-        <div className="section">
-          <div className="section-label">Expenses <span style={{fontSize:"9px",color:"var(--muted)",fontWeight:400}}>(not scored)</span></div>
-          <div className="input-group">
-            <div className="input-row">
-              <div className="input-label">Total Spent ($)</div>
-              <input className="input-field" type="number" min="0" step="0.01" value={expenses} onChange={e => setExpenses(e.target.value)} />
+            {/* Active time — hours + minutes (optional) */}
+            <div style={{
+              display:"flex",alignItems:"center",gap:"10px",
+              padding:"10px 13px",background:"var(--surface)",
+              border:`0.5px solid ${derivedActiveMin > 0 ? "var(--green-border)" : "var(--border)"}`,
+              borderRadius:"11px",
+            }}>
+              <div style={{
+                width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+                background: derivedActiveMin > 0 ? "var(--green-dim)" : "var(--elevated)",
+                color:    derivedActiveMin > 0 ? "var(--green)"     : "var(--muted2)",
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px",fontWeight:"700",
+              }}>{derivedActiveMin > 0 ? "✓" : ""}</div>
+              <div style={{minWidth:"95px"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Active time</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"1px"}}>delivery only</div>
+              </div>
+              <div style={{flex:1,display:"flex",alignItems:"center",gap:"6px"}}>
+                <input
+                  type="number" inputMode="decimal" min="0" max="23"
+                  value={activeHrsPart}
+                  onChange={(e) => setActiveHrsPart(e.target.value)}
+                  placeholder="0"
+                  style={{
+                    width:"42px",background:"transparent",border:"none",outline:"none",
+                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
+                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
+                  }}
+                />
+                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>h</span>
+                <input
+                  type="number" inputMode="decimal" min="0" max="59"
+                  value={activeMinsPart}
+                  onChange={(e) => setActiveMinsPart(e.target.value)}
+                  placeholder="0"
+                  style={{
+                    width:"42px",background:"transparent",border:"none",outline:"none",
+                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
+                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
+                  }}
+                />
+                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
+              </div>
             </div>
           </div>
+          {derivedActiveMin > 0 && derivedTotalMin > 0 && (
+            <div style={{
+              marginTop:"6px",padding:"8px 13px",
+              background:"var(--elevated)",borderRadius:"9px",
+              fontSize:"11px",color:"var(--muted)",
+              display:"flex",justifyContent:"space-between",alignItems:"center",
+            }}>
+              <span>Active time %</span>
+              <strong style={{color: derivedActiveMin/derivedTotalMin >= 0.85 ? "var(--green)" : derivedActiveMin/derivedTotalMin >= 0.6 ? "var(--amber)" : "var(--red)", fontVariantNumeric:"tabular-nums"}}>
+                {((derivedActiveMin/derivedTotalMin)*100).toFixed(0)}%
+              </strong>
+            </div>
+          )}
+
+          {/* ── DISTANCE ── */}
+          <ManualGroupHeader>Distance</ManualGroupHeader>
+
+          {/* Km mode toggle */}
+          <div style={{display:"flex",gap:"6px",marginBottom:"6px"}}>
+            {[
+              { id:"total",    label:"📍 Total km" },
+              { id:"odometer", label:"🔢 Odometer" },
+            ].map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => setKmMode(opt.id)}
+                style={{
+                  flex:1,padding:"9px 8px",borderRadius:"9px",cursor:"pointer",
+                  background: kmMode === opt.id ? "var(--green-dim)" : "var(--elevated)",
+                  border: `0.5px solid ${kmMode === opt.id ? "var(--green-border)" : "var(--border)"}`,
+                  color: kmMode === opt.id ? "var(--green)" : "var(--muted)",
+                  fontFamily:"'Inter',sans-serif",fontSize:"11.5px",fontWeight:"700",
+                }}
+              >{opt.label}</button>
+            ))}
+          </div>
+
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+            {kmMode === "total" ? (
+              <ManualFieldRow
+                status={saveAttempted && (!totalKmInput.trim() || isNaN(parseFloat(totalKmInput))) ? "error" : (totalKmInput.trim() && !isNaN(parseFloat(totalKmInput)) ? "ok" : null)}
+                label="Total km" sublabel="required"
+                value={totalKmInput}
+                onChange={(v) => { setTotalKmInput(v); if (saveAttempted) setErrors(e => ({...e, km: false})); }}
+                type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
+              />
+            ) : (
+              <>
+                <ManualFieldRow
+                  status={saveAttempted && (!odoStart.trim() || derivedTotalKm <= 0) ? "error" : (odoStart.trim() ? "ok" : null)}
+                  label="Start odometer" sublabel="required"
+                  value={odoStart}
+                  onChange={(v) => { setOdoStart(v); if (saveAttempted) setErrors(e => ({...e, km: false})); }}
+                  type="number" min="0" step="0.1" placeholder="0"
+                />
+                <ManualFieldRow
+                  status={saveAttempted && (!odoEnd.trim() || derivedTotalKm <= 0) ? "error" : (odoEnd.trim() ? "ok" : null)}
+                  label="End odometer" sublabel="required"
+                  value={odoEnd}
+                  onChange={(v) => { setOdoEnd(v); if (saveAttempted) setErrors(e => ({...e, km: false})); }}
+                  type="number" min="0" step="0.1" placeholder="0"
+                />
+                {derivedTotalKm > 0 && (
+                  <div style={{
+                    padding:"8px 13px",background:"var(--elevated)",borderRadius:"9px",
+                    fontSize:"11px",color:"var(--muted)",
+                    display:"flex",justifyContent:"space-between",alignItems:"center",
+                  }}>
+                    <span>Calculated distance</span>
+                    <strong style={{color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>{derivedTotalKm.toFixed(1)} km</strong>
+                  </div>
+                )}
+              </>
+            )}
+            <ManualFieldRow
+              label="Active km" sublabel="optional"
+              value={activeKmInput}
+              onChange={setActiveKmInput}
+              type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
+            />
+          </div>
+
+          {/* ── SHIFT DETAILS ── */}
+          <ManualGroupHeader>Shift details</ManualGroupHeader>
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+            <ManualFieldRow
+              status={saveAttempted && (!dels.trim() || isNaN(parseFloat(dels))) ? "error" : (dels.trim() && !isNaN(parseFloat(dels)) ? "ok" : null)}
+              label="Deliveries" sublabel="required"
+              value={dels}
+              onChange={(v) => { setDels(v); if (saveAttempted) setErrors(e => ({...e, dels: false})); }}
+              type="number" min="0" placeholder="0"
+            />
+
+            {/* Shift date — date only (no time, matching screenshot review) */}
+            <ManualFieldRow
+              status={shiftDate ? "ok" : null}
+              label="Shift date"
+              value={shiftDate ? shiftDate.slice(0, 10) : ""}
+              onChange={(v) => setShiftDate(v ? `${v}T00:00` : "")}
+              type="date"
+            />
+
+            {/* Platform — segmented buttons */}
+            <div style={{
+              padding:"10px 13px",
+              background:"var(--surface)",
+              border:`0.5px solid ${platform ? "var(--green-border)" : "var(--border)"}`,
+              borderRadius:"11px",
+            }}>
+              <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"8px"}}>
+                <div style={{
+                  width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+                  background: platform ? "var(--green-dim)" : "var(--elevated)",
+                  color: platform ? "var(--green)" : "var(--muted2)",
+                  display:"flex",alignItems:"center",justifyContent:"center",
+                  fontSize:"12px",fontWeight:"700",
+                }}>{platform ? "✓" : ""}</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Platform</div>
+              </div>
+              <div style={{display:"flex",gap:"6px"}}>
+                {[
+                  ["uber_eats", "Uber Eats"],
+                  ["doordash",  "DoorDash"],
+                  ["both",      "Both"],
+                ].map(([id, label]) => (
+                  <button
+                    key={id}
+                    onClick={() => setPlatform(platform === id ? null : id)}
+                    style={{
+                      flex:1,padding:"9px 8px",borderRadius:"9px",cursor:"pointer",
+                      background: platform === id ? "var(--green-dim)" : "var(--elevated)",
+                      border: `0.5px solid ${platform === id ? "var(--green-border)" : "var(--border)"}`,
+                      color: platform === id ? "var(--green)" : "var(--muted)",
+                      fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",
+                    }}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── OTHER ── */}
+          <ManualGroupHeader>Other</ManualGroupHeader>
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+            <ManualFieldRow
+              label="Expenses" sublabel="not scored"
+              value={expenses}
+              onChange={setExpenses}
+              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
+            />
+
+            {/* Notes (optional textarea) */}
+            <div style={{
+              padding:"10px 13px",background:"var(--surface)",
+              border:"0.5px solid var(--border)",borderRadius:"11px",
+            }}>
+              <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"6px"}}>
+                <div style={{
+                  width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+                  background:"var(--elevated)",color:"var(--muted)",
+                  display:"flex",alignItems:"center",justifyContent:"center",
+                  fontSize:"11px",fontWeight:"700",
+                }}>—</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Notes (optional)</div>
+              </div>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Anything to remember about this shift…"
+                rows={2}
+                style={{
+                  width:"100%",background:"transparent",border:"none",outline:"none",
+                  color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12.5px",
+                  resize:"vertical",padding:0,letterSpacing:"-.005em",
+                }}
+              />
+            </div>
+
+            {/* Fuel settings button */}
+            <button
+              onClick={() => setShowFuelModal(true)}
+              style={{
+                padding:"11px 13px",
+                background:"var(--surface)",
+                border:"0.5px dashed var(--border)",borderRadius:"11px",
+                cursor:"pointer",textAlign:"left",
+                fontFamily:"'Inter',sans-serif",
+                display:"flex",alignItems:"center",gap:"10px",
+              }}
+            >
+              <span style={{fontSize:"15px"}}>⛽</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:"12px",fontWeight:"600",color:"var(--text)"}}>
+                  {fuelEfficiency && fuelPrice ? "Update fuel settings" : "Set fuel settings"}
+                </div>
+                <div style={{fontSize:"10.5px",color:"var(--muted2)",marginTop:"2px"}}>
+                  {fuelEfficiency && fuelPrice
+                    ? `${fuelEfficiency} L/100km @ $${fuelPrice}/L`
+                    : "Add efficiency &amp; price for fuel cost estimates"}
+                </div>
+              </div>
+              <span style={{fontSize:"12px",color:"var(--muted2)"}}>›</span>
+            </button>
+          </div>
+
         </div>
+{/* ─── END COMPACT FORM ─── */}
 
         {/* Live Metrics */}
         <div className="metrics-panel">
@@ -4875,6 +5100,75 @@ function DailyBarChart({ trips }) {
       <div className="chart-wrap"><canvas ref={canvasRef} height="160" /></div>
     </div>
   );
+}
+
+// ─── CSV EXPORT ─── Raw shift data for spreadsheets/accountants
+function exportCSV(trips, user) {
+  if (!trips.length) {
+    alert("No shifts to export yet. Log a shift first.");
+    return;
+  }
+  const sorted = [...trips].sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+  // CSV header — only the columns the user wants
+  const header = [
+    "Date", "Time", "Platform",
+    "Total Earned", "Base Earnings", "Tips", "Bonuses",
+    "Deliveries",
+    "Online Hours", "Active Hours",
+    "Total Km", "Active Km",
+    "ATO Deduction ($0.88/km)",
+    "Expenses",
+    "Notes",
+    "Source",
+  ];
+
+  // CSV value escaper — wraps fields containing commas, quotes, or newlines
+  const esc = (v) => {
+    if (v == null) return "";
+    const s = String(v);
+    if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+
+  const rows = sorted.map(t => {
+    const d = new Date(t.ts);
+    const dateStr = d.toLocaleDateString("en-AU", { year: "numeric", month: "2-digit", day: "2-digit" });
+    const timeStr = d.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return [
+      esc(dateStr), esc(timeStr), esc(t.platform || ""),
+      esc((t.totalEarned ?? 0).toFixed(2)),
+      esc((t.base ?? 0).toFixed(2)),
+      esc((t.tip ?? 0).toFixed(2)),
+      esc((t.bonus ?? 0).toFixed(2)),
+      esc(t.dels ?? 0),
+      esc(((t.totalMin ?? 0) / 60).toFixed(2)),
+      esc(t.activeMin != null ? (t.activeMin / 60).toFixed(2) : ""),
+      esc((t.totalKm ?? 0).toFixed(2)),
+      esc(t.activeKm != null ? t.activeKm.toFixed(2) : ""),
+      esc((t.deduction ?? 0).toFixed(2)),
+      esc((t.expenses ?? 0).toFixed(2)),
+      esc(t.notes || ""),
+      esc(t.imported_from_screenshot ? "Screenshot" : "Manual"),
+    ].join(",");
+  });
+
+  const csv = [header.map(esc).join(","), ...rows].join("\n");
+
+  // Trigger download
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const today = new Date().toISOString().slice(0, 10);
+  const filename = `gigtrack-shifts-${today}.csv`;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ─── PDF EXPORT ─── (ATO-focused shift log report)
@@ -5980,8 +6274,13 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
       activeTime: parseFloat(tActiveTime) || DEFAULT_TARGETS.activeTime,
     };
     onTargets(newTargets);
-    const g = parseFloat(goalInput);
-    if (!isNaN(g) && g > 0) onWeeklyGoal(g);
+    if (isPro) {
+      const g = parseFloat(goalInput);
+      if (!isNaN(g) && g > 0) onWeeklyGoal(g);
+    } else {
+      // Free users locked at $800 regardless of input
+      onWeeklyGoal(800);
+    }
     const fe = parseFloat(fuelEff);
     if (!isNaN(fe) && fe > 0) onFuelEfficiency(fe);
     else if (fuelEff === "") onFuelEfficiency(null);
@@ -6197,15 +6496,30 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                 </div>
               )}
 
-              {/* Export Data */}
+              {/* Export Data — PDF (free for all) */}
               <div
                 className="settings-item"
                 style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={isPro ? () => exportPDF(trips, user) : onUpgrade}
+                onClick={() => exportPDF(trips, user)}
               >
                 <div className="settings-item-left">
-                  <div className="settings-item-label">{!isPro && "🔒 "}Export Data</div>
-                  <div className="settings-item-sub">Download your shift log as PDF</div>
+                  <div className="settings-item-label">Export as PDF</div>
+                  <div className="settings-item-sub">ATO-ready shift log report</div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+
+              {/* Export Data — CSV (Pro only) */}
+              <div
+                className="settings-item"
+                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                onClick={isPro ? () => exportCSV(trips, user) : onUpgrade}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label">{!isPro && "🔒 "}Export as CSV</div>
+                  <div className="settings-item-sub">
+                    {isPro ? "Raw shift data for spreadsheets &amp; accountants" : "Upgrade to Pro for CSV export"}
+                  </div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
               </div>
@@ -6287,15 +6601,35 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                   <input className="settings-input" type="number" step="0.01" min="0" value={rate} onChange={e => setRate(e.target.value)} />
                 </div>
 
-                {/* Weekly Goal */}
-                <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
+                {/* Weekly Goal — locked for free users */}
+                <div
+                  className="settings-item"
+                  style={{borderBottom:"0.5px solid var(--border)", cursor: isPro ? "default" : "pointer"}}
+                  onClick={() => { if (!isPro) onUpgrade?.(); }}
+                >
                   <div className="settings-item-left">
-                    <div className="settings-item-label">Weekly Earnings Goal</div>
-                    <div className="settings-item-sub">Shown as progress on home screen</div>
+                    <div className="settings-item-label">
+                      Weekly Earnings Goal
+                      {!isPro && <span style={{marginLeft:"6px",fontSize:"11px"}}>🔒</span>}
+                    </div>
+                    <div className="settings-item-sub">
+                      {isPro
+                        ? "Shown as progress on home screen"
+                        : "Upgrade to Pro to set your own goal"}
+                    </div>
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
                     <span style={{color:"var(--muted2)",fontSize:"13px"}}>$</span>
-                    <input className="settings-input" type="number" min="0" step="50" value={goalInput} onChange={e => setGoalInput(e.target.value)} />
+                    <input
+                      className="settings-input"
+                      type="number"
+                      min="0"
+                      step="50"
+                      value={isPro ? goalInput : "800"}
+                      disabled={!isPro}
+                      onChange={e => { if (isPro) setGoalInput(e.target.value); }}
+                      style={{opacity: isPro ? 1 : 0.6, cursor: isPro ? "text" : "not-allowed"}}
+                    />
                   </div>
                 </div>
 
@@ -6546,6 +6880,8 @@ export default function GigTrack() {
   const [user, setUser]         = useState(null);
   const [authUser, setAuthUser] = useState(null); // Supabase auth user (cloud identity)
   const [trips, setTrips]       = useState([]);
+  const [screenshotImportsUsed, setScreenshotImportsUsed] = useState(0); // Cloud-tracked cumulative counter
+  const [accountCreatedAt, setAccountCreatedAt] = useState(null); // ISO date from profile.created_at, used for 3-day benchmark grace
   const [kmPref, setKmPref]     = useState("active");
   const [atoRate, setAtoRate]   = useState(ATO_RATE_PER_KM);
   const [targets, setTargets]   = useState(DEFAULT_TARGETS);
@@ -6672,6 +7008,9 @@ export default function GigTrack() {
                 setFuelPrice(profile.fuel_price);
                 DB.set("gt_fuel_price", profile.fuel_price);
               }
+              // Hydrate screenshot import counter from cloud
+              setScreenshotImportsUsed(profile.screenshot_imports_used || 0);
+              setAccountCreatedAt(profile.created_at || null);
               showToast(`Welcome back, ${profile.name}!`);
               setScreen("home");
               reconciledRef.current = false;
@@ -6722,6 +7061,18 @@ export default function GigTrack() {
       subscription?.unsubscribe();
     };
   }, []);
+
+  // ── Hydrate screenshot import counter from profile (cloud) on auth ready ──
+  useEffect(() => {
+    if (!authUser) return;
+    (async () => {
+      const p = await fetchProfile();
+      if (p) {
+        setScreenshotImportsUsed(p.screenshot_imports_used || 0);
+        setAccountCreatedAt(p.created_at || null);
+      }
+    })();
+  }, [authUser]);
 
   // ── Boot-time cloud reconciliation: push any local shifts not yet in cloud ──
   const reconciledRef = useRef(false);
@@ -6997,9 +7348,54 @@ export default function GigTrack() {
 
   const isPro = !!user?.isPro;
 
+  // ── Free-tier gates ──
+  const FREE_SHIFT_LIMIT = 20;
+  const FREE_SCREENSHOT_LIMIT = 3;
+
+  // Returns true if the user can log another shift (under limit OR pro)
+  const canLogNewShift = () => isPro || trips.length < FREE_SHIFT_LIMIT;
+  const shiftsRemaining = () => Math.max(0, FREE_SHIFT_LIMIT - trips.length);
+
+  // Returns true if the user can import another screenshot (under limit OR pro)
+  // Uses cloud-tracked counter — never decreases when shifts are deleted
+  const canImportScreenshot = () => isPro || screenshotImportsUsed < FREE_SCREENSHOT_LIMIT;
+  const screenshotsRemaining = () => Math.max(0, FREE_SCREENSHOT_LIMIT - screenshotImportsUsed);
+
+  // ── 3-day grace for benchmarks/live drivers ──
+  // Free users can see benchmarks for 3 days from signup, then it's gated.
+  const BENCHMARK_GRACE_DAYS = 3;
+  const benchmarkDaysRemaining = (() => {
+    if (isPro) return Infinity; // Pro always has access
+    if (!accountCreatedAt) return BENCHMARK_GRACE_DAYS; // unknown, give full grace
+    const created = new Date(accountCreatedAt);
+    const now = new Date();
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const daysSince = (now - created) / msPerDay;
+    return Math.max(0, Math.ceil(BENCHMARK_GRACE_DAYS - daysSince));
+  })();
+  const benchmarksUnlocked = isPro || benchmarkDaysRemaining > 0;
+
+  // Routes to a paywall with optional reason text
+  const gateToPaywall = (reason) => {
+    if (reason) showToast(reason);
+    setScreen("paywall");
+  };
+
   const upgradeToPro = () => {
     const updated = { ...user, isPro: true, isGuest: false };
     saveUser(updated);
+    // Sync to cloud — fire-and-forget
+    saveProfile({
+      name: updated.name,
+      region,
+      kmPref,
+      weeklyGoal,
+      isPro: true,
+      isGuest: false,
+      startOdo: updated.startOdo,
+      fuelEff: fuelEfficiency,
+      fuelPrice,
+    }).catch(() => {});
     setScreen("home");
     showToast("Welcome to GigTrack Pro 🚀");
   };
@@ -7039,6 +7435,8 @@ export default function GigTrack() {
           weeklyGoal={weeklyGoal}
           region={region}
           isPro={isPro}
+          benchmarksUnlocked={benchmarksUnlocked}
+          benchmarkDaysRemaining={benchmarkDaysRemaining}
           liveStatus={liveStatus}
           onGoOnline={() => setPlatformPickerOpen(true)}
           onGoOffline={() => {
@@ -7063,11 +7461,41 @@ export default function GigTrack() {
       {screen === "logshift" && (
         <LogShiftScreen
           isPro={isPro}
+          shiftsRemaining={shiftsRemaining()}
+          screenshotsRemaining={screenshotsRemaining()}
           onBack={() => setScreen("home")}
-          onStartTimer={() => { handleStartTimer(); }}
-          onNewTrip={() => { setTimerPrefill(null); setEditId(null); setScreen("newtrip"); }}
-          onVoiceEntry={() => setScreen("voiceentry")}
-          onScreenshotImport={() => setScreen("screenshotimport")}
+          onStartTimer={() => {
+            if (!canLogNewShift()) {
+              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
+              return;
+            }
+            handleStartTimer();
+          }}
+          onNewTrip={() => {
+            if (!canLogNewShift()) {
+              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
+              return;
+            }
+            setTimerPrefill(null); setEditId(null); setScreen("newtrip");
+          }}
+          onVoiceEntry={() => {
+            if (!canLogNewShift()) {
+              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
+              return;
+            }
+            setScreen("voiceentry");
+          }}
+          onScreenshotImport={() => {
+            if (!canLogNewShift()) {
+              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
+              return;
+            }
+            if (!canImportScreenshot()) {
+              gateToPaywall(`You've used your ${FREE_SCREENSHOT_LIMIT} free screenshot imports. Upgrade to Pro for unlimited.`);
+              return;
+            }
+            setScreen("screenshotimport");
+          }}
           onUpgrade={() => setScreen("paywall")}
         />
       )}
@@ -7132,9 +7560,14 @@ export default function GigTrack() {
               score: c.score,
               deduction: totalKm * ATO_RATE_PER_KM,
               notes,
+              imported_from_screenshot: true,  // Flag for screenshot-count gate
             };
 
             handleSaved(record, false);
+            // Bump cumulative screenshot counter (server-side, RLS-safe)
+            incrementScreenshotImportsUsed().then(newCount => {
+              if (newCount != null) setScreenshotImportsUsed(newCount);
+            });
           }}
         />
       )}

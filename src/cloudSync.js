@@ -38,6 +38,7 @@ function tripToRow(trip, userId) {
     deduction:     trip.deduction ?? null,
 
     notes:         trip.notes ?? null,
+    imported_from_screenshot: !!trip.imported_from_screenshot,
   };
 }
 
@@ -190,6 +191,7 @@ function rowToTrip(row) {
     score:        row.score ?? null,
     deduction:    row.deduction ?? null,
     notes:        row.notes ?? null,
+    imported_from_screenshot: !!row.imported_from_screenshot,
     _synced:      true,
   };
 }
