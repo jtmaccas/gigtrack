@@ -3169,6 +3169,527 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
   );
 }
 
+// ─── SCREENSHOT PREVIEW STAGE ─── Editable form with parsed + manual fields.
+// Renders a large screenshot, editable per-field values with green/red indicators,
+// plus a few extras (active km, shift date, notes). Save directly creates a shift.
+function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
+  // Initialise each editable field. Track original parsed value separately
+  // so we can show green tick (parsed) or red X (not found, user-entered).
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const initialDate = parsed.shift_date || todayISO;
+
+  const [totalEarned, setTotalEarned]     = useState(parsed.total_earned != null ? String(parsed.total_earned) : "");
+  const [tips, setTips]                   = useState(parsed.tips         != null ? String(parsed.tips)         : "");
+  const [bonuses, setBonuses]             = useState(parsed.bonuses      != null ? String(parsed.bonuses)      : "");
+  const [deliveries, setDeliveries]       = useState(parsed.deliveries   != null ? String(parsed.deliveries)   : "");
+  const [onlineMin, setOnlineMin]         = useState(parsed.online_minutes != null ? String(parsed.online_minutes) : "");
+  const [activeMin, setActiveMin]         = useState(parsed.active_minutes != null ? String(parsed.active_minutes) : "");
+  const [distanceKm, setDistanceKm]       = useState(parsed.distance_km != null ? String(parsed.distance_km) : "");
+  const [activeKm, setActiveKm]           = useState(parsed.active_km   != null ? String(parsed.active_km)   : "");
+  const [platform, setPlatform]           = useState(parsed.platform || "");
+  const [shiftDate, setShiftDate]         = useState(initialDate);
+  const [notes, setNotes]                 = useState("");
+
+  const [zoomed, setZoomed]               = useState(false);
+
+  // Parsed-ness signals (for green tick vs red X indicators)
+  const wasParsed = {
+    total_earned:   parsed.total_earned   != null,
+    tips:           parsed.tips           != null,
+    bonuses:        parsed.bonuses        != null,
+    deliveries:     parsed.deliveries     != null,
+    online_minutes: parsed.online_minutes != null,
+    active_minutes: parsed.active_minutes != null,
+    distance_km:    parsed.distance_km    != null,
+    active_km:      parsed.active_km      != null,
+    platform:       parsed.platform       != null,
+    shift_date:     parsed.shift_date     != null,
+  };
+
+  const parsedCount = Object.values(wasParsed).filter(Boolean).length;
+  const totalParseable = Object.keys(wasParsed).length;
+  const allFailed = parsedCount === 0;
+
+  const handleSave = () => {
+    // Build final values object matching the gt_voice_prefill format + extras
+    const finalValues = {};
+    const num = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
+    const intv = (s) => { const v = parseInt(s, 10); return Number.isFinite(v) ? v : null; };
+
+    if (num(totalEarned) != null) finalValues.earned   = num(totalEarned);
+    if (num(tips) != null)        finalValues.tips     = num(tips);
+    if (num(bonuses) != null)     finalValues.bonus    = num(bonuses);
+    if (intv(deliveries) != null) finalValues.dels     = intv(deliveries);
+    if (intv(onlineMin) != null)  finalValues.mins     = intv(onlineMin);
+    if (intv(activeMin) != null)  finalValues.activeMin = intv(activeMin);
+    if (num(distanceKm) != null)  finalValues.km       = num(distanceKm);
+    if (num(activeKm) != null)    finalValues.activeKm = num(activeKm);
+    if (platform)                 finalValues.platform = platform;
+    if (shiftDate)                finalValues.shiftDate = shiftDate; // YYYY-MM-DD
+    if (notes.trim())             finalValues.notes    = notes.trim();
+
+    onSaveDirect(finalValues);
+  };
+
+  // Reusable field row — shows tick or X icon + label + editable input
+  const FieldRow = ({ icon, label, value, onChange, type = "text", placeholder = "", suffix = "", parsedOk }) => (
+    <div style={{
+      display:"flex",alignItems:"center",gap:"10px",
+      padding:"10px 13px",
+      background:"var(--surface)",
+      border:`0.5px solid ${parsedOk ? "var(--green-border)" : "var(--border)"}`,
+      borderRadius:"11px",
+    }}>
+      <div style={{
+        width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+        background: parsedOk ? "var(--green-dim)" : "var(--red-dim)",
+        color: parsedOk ? "var(--green)" : "var(--red)",
+        display:"flex",alignItems:"center",justifyContent:"center",
+        fontSize:"12px",fontWeight:"700",
+      }}>{icon}</div>
+      <div style={{minWidth:"95px",fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>{label}</div>
+      <div style={{flex:1,display:"flex",alignItems:"center",gap:"4px"}}>
+        <input
+          type={type}
+          inputMode={type === "number" ? "decimal" : undefined}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          style={{
+            flex:1,minWidth:0,
+            background:"transparent",border:"none",outline:"none",
+            color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
+            fontWeight:"700",fontVariantNumeric:"tabular-nums",
+            textAlign:"right",letterSpacing:"-.005em",padding:0,
+          }}
+        />
+        {suffix && (
+          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{suffix}</span>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="view active">
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">Review &amp; save</div>
+      </div>
+      <div className="scroll-area" style={{padding:"14px 14px 100px"}}>
+
+        {/* Top banner */}
+        <div style={{
+          background: allFailed ? "var(--red-dim)" : parsedCount === totalParseable ? "var(--green-dim)" : "var(--amber-dim)",
+          border: `1px solid ${allFailed ? "var(--red-border)" : parsedCount === totalParseable ? "var(--green-border)" : "var(--amber-border)"}`,
+          borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",
+          display:"flex",gap:"10px",alignItems:"center",
+        }}>
+          <div style={{fontSize:"20px",flexShrink:0}}>
+            {allFailed ? "❌" : parsedCount === totalParseable ? "✅" : "⚠️"}
+          </div>
+          <div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",color:"var(--text)",marginBottom:"2px"}}>
+              {allFailed ? "Couldn't read screenshot" : `${parsedCount}/${totalParseable} fields detected`}
+            </div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>
+              Edit any field, then save. Active km is usually only on Uber Eats.
+            </div>
+          </div>
+        </div>
+
+        {/* Large screenshot — tappable to zoom */}
+        {previewUrl && (
+          <div
+            onClick={() => setZoomed(true)}
+            style={{
+              borderRadius:"12px",
+              border:"0.5px solid var(--border)",marginBottom:"14px",
+              overflow:"hidden",background:"var(--elevated)",
+              cursor:"pointer",
+            }}
+          >
+            <img
+              src={previewUrl}
+              alt="Uploaded screenshot"
+              style={{display:"block",width:"100%",height:"auto",maxHeight:"480px",objectFit:"contain"}}
+            />
+            <div style={{
+              padding:"6px 0",textAlign:"center",
+              fontFamily:"'Inter',sans-serif",fontSize:"10px",
+              color:"var(--muted2)",letterSpacing:".04em",
+            }}>Tap to enlarge</div>
+          </div>
+        )}
+
+        {/* Zoom modal */}
+        {zoomed && previewUrl && (
+          <div
+            onClick={() => setZoomed(false)}
+            style={{
+              position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",
+              display:"flex",alignItems:"center",justifyContent:"center",
+              zIndex:2000,padding:"20px",cursor:"pointer",
+            }}
+          >
+            <img
+              src={previewUrl}
+              alt="Screenshot zoomed"
+              style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain"}}
+            />
+            <div style={{
+              position:"absolute",top:"20px",right:"20px",
+              width:"40px",height:"40px",borderRadius:"50%",
+              background:"rgba(255,255,255,.15)",color:"#fff",
+              display:"flex",alignItems:"center",justifyContent:"center",
+              fontSize:"20px",fontWeight:"700",
+            }}>✕</div>
+          </div>
+        )}
+
+        {/* Parsed/editable fields */}
+        <div style={{display:"flex",flexDirection:"column",gap:"6px",marginBottom:"14px"}}>
+          <FieldRow icon={wasParsed.total_earned ? "✓" : "✕"} parsedOk={wasParsed.total_earned}
+            label="Total earned" value={totalEarned} onChange={setTotalEarned} type="number" placeholder="0.00" suffix="$" />
+          <FieldRow icon={wasParsed.tips ? "✓" : "✕"} parsedOk={wasParsed.tips}
+            label="Tips" value={tips} onChange={setTips} type="number" placeholder="0.00" suffix="$" />
+          <FieldRow icon={wasParsed.bonuses ? "✓" : "✕"} parsedOk={wasParsed.bonuses}
+            label="Bonuses" value={bonuses} onChange={setBonuses} type="number" placeholder="0.00" suffix="$" />
+          <FieldRow icon={wasParsed.deliveries ? "✓" : "✕"} parsedOk={wasParsed.deliveries}
+            label="Deliveries" value={deliveries} onChange={setDeliveries} type="number" placeholder="0" />
+          <FieldRow icon={wasParsed.online_minutes ? "✓" : "✕"} parsedOk={wasParsed.online_minutes}
+            label="Online time" value={onlineMin} onChange={setOnlineMin} type="number" placeholder="0" suffix="min" />
+          <FieldRow icon={wasParsed.active_minutes ? "✓" : "✕"} parsedOk={wasParsed.active_minutes}
+            label="Active time" value={activeMin} onChange={setActiveMin} type="number" placeholder="0" suffix="min" />
+          <FieldRow icon={wasParsed.distance_km ? "✓" : "✕"} parsedOk={wasParsed.distance_km}
+            label="Total km" value={distanceKm} onChange={setDistanceKm} type="number" placeholder="0.0" suffix="km" />
+          <FieldRow icon={wasParsed.active_km ? "✓" : "✕"} parsedOk={wasParsed.active_km}
+            label="Active km" value={activeKm} onChange={setActiveKm} type="number" placeholder="0.0" suffix="km" />
+        </div>
+
+        {/* Platform picker */}
+        <div style={{
+          padding:"10px 13px",
+          background:"var(--surface)",
+          border:`0.5px solid ${wasParsed.platform ? "var(--green-border)" : "var(--border)"}`,
+          borderRadius:"11px",marginBottom:"6px",
+        }}>
+          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"8px"}}>
+            <div style={{
+              width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+              background: wasParsed.platform ? "var(--green-dim)" : "var(--red-dim)",
+              color: wasParsed.platform ? "var(--green)" : "var(--red)",
+              display:"flex",alignItems:"center",justifyContent:"center",
+              fontSize:"12px",fontWeight:"700",
+            }}>{wasParsed.platform ? "✓" : "✕"}</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Platform</div>
+          </div>
+          <div style={{display:"flex",gap:"6px"}}>
+            {[
+              ["uber_eats", "Uber Eats"],
+              ["doordash",  "DoorDash"],
+              ["both",      "Both"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setPlatform(id)}
+                style={{
+                  flex:1,padding:"9px 8px",borderRadius:"9px",cursor:"pointer",
+                  background: platform === id ? "var(--green-dim)" : "var(--elevated)",
+                  border: `0.5px solid ${platform === id ? "var(--green-border)" : "var(--border)"}`,
+                  color: platform === id ? "var(--green)" : "var(--muted)",
+                  fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",
+                }}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Shift date */}
+        <FieldRow icon={wasParsed.shift_date ? "✓" : "✕"} parsedOk={wasParsed.shift_date}
+          label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
+
+        {/* Notes (optional) */}
+        <div style={{
+          marginTop:"6px",padding:"10px 13px",
+          background:"var(--surface)",
+          border:"0.5px solid var(--border)",
+          borderRadius:"11px",
+        }}>
+          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"6px"}}>
+            <div style={{
+              width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+              background:"var(--elevated)",color:"var(--muted)",
+              display:"flex",alignItems:"center",justifyContent:"center",
+              fontSize:"11px",fontWeight:"700",
+            }}>—</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Notes (optional)</div>
+          </div>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Anything to remember about this shift…"
+            rows={2}
+            style={{
+              width:"100%",background:"transparent",border:"none",outline:"none",
+              color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12.5px",
+              resize:"vertical",padding:0,letterSpacing:"-.005em",
+            }}
+          />
+        </div>
+
+      </div>
+
+      {/* Fixed bottom CTA */}
+      <div style={{
+        position:"fixed",bottom:0,left:0,right:0,
+        background:"linear-gradient(180deg,transparent,var(--bg) 40%)",
+        padding:"24px 14px 24px",zIndex:50,
+      }}>
+        <button
+          onClick={handleSave}
+          style={{
+            width:"100%",padding:"15px",
+            background:"var(--green)",color:"#0B0F14",
+            border:"none",borderRadius:"13px",cursor:"pointer",
+            fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+          }}
+        >Save shift →</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREENSHOT IMPORT ─── Parse a shift-summary screenshot via Edge Function + Claude vision.
+// Stage 1: pick — user selects an image file
+// Stage 2: progress — uploading + AI parsing (animated %)
+// Stage 3: preview — per-field green/red indicators + confirm
+function ScreenshotImportScreen({ onBack, onParsed }) {
+  const [stage, setStage] = useState("pick"); // pick | progress | preview | error
+  const [pickedFile, setPickedFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [parsed, setParsed] = useState(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [progressPct, setProgressPct] = useState(0);
+  const [progressStep, setProgressStep] = useState("");
+  const fileInputRef = useRef(null);
+
+  // Open file picker on mount
+  useEffect(() => {
+    if (stage === "pick" && fileInputRef.current) {
+      // Don't auto-click; let user tap the button
+    }
+  }, [stage]);
+
+  const handleFilePick = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setErrorMsg("Please choose an image file");
+      setStage("error");
+      return;
+    }
+    setPickedFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    startParse(file);
+  };
+
+  const startParse = async (file) => {
+    setStage("progress");
+    setProgressPct(0);
+    setProgressStep("Uploading screenshot…");
+
+    // Animate progress while parsing happens in background
+    let pct = 0;
+    const steps = [
+      { at: 10,  text: "Uploading screenshot…" },
+      { at: 30,  text: "Asking AI to read it…" },
+      { at: 60,  text: "Extracting earnings &amp; time…" },
+      { at: 85,  text: "Almost done…" },
+    ];
+    const animator = setInterval(() => {
+      pct = Math.min(pct + 2, 92);
+      setProgressPct(pct);
+      const step = steps.slice().reverse().find(s => pct >= s.at);
+      if (step) setProgressStep(step.text);
+    }, 120);
+
+    try {
+      const { parseShiftScreenshot } = await import("./screenshotImport.js");
+      const result = await parseShiftScreenshot(file);
+      clearInterval(animator);
+
+      if (!result.ok) {
+        setErrorMsg(result.error || "Failed to parse");
+        setStage("error");
+        return;
+      }
+
+      // Final flourish to 100%
+      setProgressPct(100);
+      setProgressStep("Done");
+      setTimeout(() => {
+        setParsed(result.parsed);
+        setStage("preview");
+      }, 350);
+
+    } catch (e) {
+      clearInterval(animator);
+      setErrorMsg(e.message || "Unknown error");
+      setStage("error");
+    }
+  };
+
+  const handleConfirm = () => {
+    if (!parsed) return;
+    onParsed(parsed);
+  };
+
+  // ── PICK STAGE ──
+  if (stage === "pick") {
+    return (
+      <div className="view active">
+        <div className="topbar">
+          <button className="topbar-back" onClick={onBack}>←</button>
+          <div className="topbar-title">Import from screenshot</div>
+        </div>
+        <div className="scroll-area" style={{padding:"24px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
+
+          <div style={{
+            width:"100%",maxWidth:"360px",
+            padding:"32px 20px",textAlign:"center",
+            background:"linear-gradient(180deg, var(--green-dim), var(--surface))",
+            border:"1px solid var(--green-border)",
+            borderRadius:"16px",marginBottom:"22px",
+          }}>
+            <div style={{fontSize:"42px",marginBottom:"10px"}}>📷</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"16px",fontWeight:"800",color:"var(--text)",marginBottom:"6px",letterSpacing:"-.01em"}}>
+              Pick your shift summary
+            </div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",lineHeight:"1.55"}}>
+              Choose a screenshot from Uber Eats or DoorDash showing your final shift totals — earnings, deliveries, time.
+            </div>
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFilePick}
+            style={{display:"none"}}
+          />
+
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              width:"100%",maxWidth:"360px",padding:"15px",
+              background:"var(--green)",color:"#0B0F14",
+              border:"none",borderRadius:"13px",cursor:"pointer",
+              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+            }}
+          >Pick screenshot from gallery</button>
+
+          <div style={{
+            marginTop:"22px",maxWidth:"320px",textAlign:"center",
+            fontFamily:"'Inter',sans-serif",fontSize:"11px",
+            color:"var(--muted2)",lineHeight:"1.55",
+          }}>
+            Tip: For best results, use a clean screenshot of the shift-summary screen — not blurred, no other apps overlapping.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PROGRESS STAGE ──
+  if (stage === "progress") {
+    return (
+      <div className="view active">
+        <div className="topbar">
+          <div className="topbar-title" style={{marginLeft:"auto",marginRight:"auto"}}>Reading your screenshot</div>
+        </div>
+        <div className="scroll-area" style={{padding:"40px 18px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+
+          {/* Circular progress */}
+          <div style={{position:"relative",width:"140px",height:"140px",marginBottom:"24px"}}>
+            <svg width="140" height="140" viewBox="0 0 140 140" style={{transform:"rotate(-90deg)"}}>
+              {/* Background ring */}
+              <circle cx="70" cy="70" r="62" fill="none"
+                stroke="var(--border)" strokeWidth="8" />
+              {/* Progress ring */}
+              <circle cx="70" cy="70" r="62" fill="none"
+                stroke="var(--green)" strokeWidth="8"
+                strokeLinecap="round"
+                strokeDasharray={`${2 * Math.PI * 62}`}
+                strokeDashoffset={`${2 * Math.PI * 62 * (1 - progressPct / 100)}`}
+                style={{transition:"stroke-dashoffset .3s ease"}}
+              />
+            </svg>
+            <div style={{
+              position:"absolute",inset:0,
+              display:"flex",alignItems:"center",justifyContent:"center",
+              fontFamily:"'Inter',sans-serif",fontSize:"32px",fontWeight:"800",
+              color:"var(--text)",letterSpacing:"-.02em",
+              fontVariantNumeric:"tabular-nums",
+            }}>{progressPct}%</div>
+          </div>
+
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"600",color:"var(--text)",marginBottom:"8px"}}>
+            {progressStep}
+          </div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",textAlign:"center",maxWidth:"260px",lineHeight:"1.5"}}>
+            This usually takes 3-5 seconds.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PREVIEW STAGE — editable form with all parsed values + extra fields ──
+  if (stage === "preview" && parsed) {
+    return (
+      <ScreenshotPreviewStage
+        parsed={parsed}
+        previewUrl={previewUrl}
+        onBack={() => setStage("pick")}
+        onSaveDirect={(finalValues) => onParsed(finalValues)}
+      />
+    );
+  }
+
+  // ── ERROR STAGE ──
+  if (stage === "error") {
+    return (
+      <div className="view active">
+        <div className="topbar">
+          <button className="topbar-back" onClick={onBack}>←</button>
+          <div className="topbar-title">Couldn't parse</div>
+        </div>
+        <div className="scroll-area" style={{padding:"32px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
+          <div style={{fontSize:"42px",marginBottom:"14px"}}>😕</div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"16px",fontWeight:"700",color:"var(--text)",marginBottom:"6px",textAlign:"center"}}>
+            Something went wrong
+          </div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"24px",textAlign:"center",maxWidth:"320px",lineHeight:"1.55"}}>
+            {errorMsg || "We couldn't read this screenshot. Try again with a clearer image."}
+          </div>
+          <button
+            onClick={() => { setStage("pick"); setErrorMsg(""); }}
+            style={{
+              width:"100%",maxWidth:"320px",padding:"14px",
+              background:"var(--green)",color:"#0B0F14",
+              border:"none",borderRadius:"13px",cursor:"pointer",
+              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+            }}
+          >Try again</button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ─── VOICE ENTRY ─── Parses natural speech into shift values.
 // Uses Web Speech API (Chrome desktop + Android). iOS Safari doesn't support
 // this reliably in PWAs yet — we'll move to Whisper backend on real launch.
@@ -3362,7 +3883,7 @@ function VoiceEntryScreen({ onBack, onParsed }) {
 }
 
 // ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
-function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, isPro = false, onUpgrade }) {
+function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScreenshotImport, isPro = false, onUpgrade }) {
   // Detect Web Speech API support
   const voiceSupported = typeof window !== "undefined" &&
     ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
@@ -3402,7 +3923,19 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, isPro =
             </div>
           )}
 
-          {/* 3 — Manual entry */}
+          {/* 3 — Screenshot Import */}
+          <div className="log-entry-card" onClick={onScreenshotImport}>
+            <div className="log-entry-icon" style={{background:"rgba(168,85,247,.14)",color:"var(--purple)"}}>
+              <span style={{fontSize:"22px"}}>📷</span>
+            </div>
+            <div className="log-entry-text">
+              <div className="log-entry-title">Import from screenshot</div>
+              <div className="log-entry-desc">Upload an Uber Eats or DoorDash summary — we'll read the values for you.</div>
+            </div>
+            <div className="log-entry-arrow">›</div>
+          </div>
+
+          {/* 4 — Manual entry */}
           <div className="log-entry-card" onClick={onNewTrip}>
             <div className="log-entry-icon log-icon-green">
               <span style={{fontSize:"22px"}}>✏️</span>
@@ -6493,7 +7026,75 @@ export default function GigTrack() {
           onStartTimer={() => { handleStartTimer(); }}
           onNewTrip={() => { setTimerPrefill(null); setEditId(null); setScreen("newtrip"); }}
           onVoiceEntry={() => setScreen("voiceentry")}
+          onScreenshotImport={() => setScreen("screenshotimport")}
           onUpgrade={() => setScreen("paywall")}
+        />
+      )}
+      {screen === "screenshotimport" && (
+        <ScreenshotImportScreen
+          onBack={() => setScreen("logshift")}
+          onParsed={(finalValues) => {
+            // finalValues comes from the editable preview with keys:
+            // earned, tips, bonus, dels, mins, activeMin, km, activeKm, platform, shiftDate, notes
+            // Build a complete trip record, save locally + cloud, route home.
+
+            const earned   = Number(finalValues.earned)   || 0;
+            const tip      = Number(finalValues.tips)     || 0;
+            const bonus    = Number(finalValues.bonus)    || 0;
+            const base     = Math.max(0, earned - tip - bonus);  // base = total minus tip and bonus
+            const dels     = parseInt(finalValues.dels)   || 0;
+            const totalMin = parseInt(finalValues.mins)   || 0;
+            const activeMin = finalValues.activeMin != null ? parseInt(finalValues.activeMin) : null;
+            const totalKm  = Number(finalValues.km)       || 0;
+            const activeKm = finalValues.activeKm != null ? Number(finalValues.activeKm) : null;
+            const platform = finalValues.platform || null;
+            const notes    = finalValues.notes || null;
+
+            // Build timestamp from shiftDate (YYYY-MM-DD) + current time
+            // If shiftDate is today, use right now. Otherwise use noon of that date.
+            let ts;
+            if (finalValues.shiftDate) {
+              const today = new Date().toISOString().slice(0, 10);
+              if (finalValues.shiftDate === today) {
+                ts = new Date().toISOString();
+              } else {
+                // Past date — set to noon local
+                ts = new Date(finalValues.shiftDate + "T12:00:00").toISOString();
+              }
+            } else {
+              ts = new Date().toISOString();
+            }
+
+            const inputs = {
+              base, tip, bonus,
+              tDel: totalMin, tWait: 0,
+              activeMin, activeKmInput: activeKm,
+              kmDel: totalKm, kmWait: 0,
+              dels, expenses: 0,
+            };
+            const c = computeTrip(inputs, targets);
+
+            const record = {
+              id: Date.now(),
+              ts,
+              platform,
+              base, tip, bonus,
+              totalEarned: earned,
+              tDel: totalMin, tWait: 0,
+              totalMin, totalHrs: c.totalHrs,
+              activeMin, activeMins: c.activeMins,
+              kmDel: totalKm, kmWait: 0,
+              totalKm, activeKm,
+              dels, expenses: 0,
+              hourly: c.hourly, perDel: c.perDel, perKm: c.perKm,
+              ratioT: c.ratioA, ratioK: c.ratioK,
+              score: c.score,
+              deduction: totalKm * ATO_RATE_PER_KM,
+              notes,
+            };
+
+            handleSaved(record, false);
+          }}
         />
       )}
       {screen === "voiceentry" && (
