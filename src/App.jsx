@@ -3172,6 +3172,50 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
 // ─── SCREENSHOT PREVIEW STAGE ─── Editable form with parsed + manual fields.
 // Renders a large screenshot, editable per-field values with green/red indicators,
 // plus a few extras (active km, shift date, notes). Save directly creates a shift.
+
+// Defined OUTSIDE the parent component so it stays stable across renders.
+// (Defining it inside causes the input to unmount/remount on every keystroke,
+// which loses focus after each character.)
+function ScreenshotFieldRow({ icon, label, value, onChange, type = "text", placeholder = "", suffix = "", parsedOk }) {
+  return (
+    <div style={{
+      display:"flex",alignItems:"center",gap:"10px",
+      padding:"10px 13px",
+      background:"var(--surface)",
+      border:`0.5px solid ${parsedOk ? "var(--green-border)" : "var(--border)"}`,
+      borderRadius:"11px",
+    }}>
+      <div style={{
+        width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
+        background: parsedOk ? "var(--green-dim)" : "var(--red-dim)",
+        color: parsedOk ? "var(--green)" : "var(--red)",
+        display:"flex",alignItems:"center",justifyContent:"center",
+        fontSize:"12px",fontWeight:"700",
+      }}>{icon}</div>
+      <div style={{minWidth:"95px",fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>{label}</div>
+      <div style={{flex:1,display:"flex",alignItems:"center",gap:"4px"}}>
+        <input
+          type={type}
+          inputMode={type === "number" ? "decimal" : undefined}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          style={{
+            flex:1,minWidth:0,
+            background:"transparent",border:"none",outline:"none",
+            color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
+            fontWeight:"700",fontVariantNumeric:"tabular-nums",
+            textAlign:"right",letterSpacing:"-.005em",padding:0,
+          }}
+        />
+        {suffix && (
+          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{suffix}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
   // Initialise each editable field. Track original parsed value separately
   // so we can show green tick (parsed) or red X (not found, user-entered).
@@ -3230,45 +3274,6 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
 
     onSaveDirect(finalValues);
   };
-
-  // Reusable field row — shows tick or X icon + label + editable input
-  const FieldRow = ({ icon, label, value, onChange, type = "text", placeholder = "", suffix = "", parsedOk }) => (
-    <div style={{
-      display:"flex",alignItems:"center",gap:"10px",
-      padding:"10px 13px",
-      background:"var(--surface)",
-      border:`0.5px solid ${parsedOk ? "var(--green-border)" : "var(--border)"}`,
-      borderRadius:"11px",
-    }}>
-      <div style={{
-        width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-        background: parsedOk ? "var(--green-dim)" : "var(--red-dim)",
-        color: parsedOk ? "var(--green)" : "var(--red)",
-        display:"flex",alignItems:"center",justifyContent:"center",
-        fontSize:"12px",fontWeight:"700",
-      }}>{icon}</div>
-      <div style={{minWidth:"95px",fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>{label}</div>
-      <div style={{flex:1,display:"flex",alignItems:"center",gap:"4px"}}>
-        <input
-          type={type}
-          inputMode={type === "number" ? "decimal" : undefined}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          style={{
-            flex:1,minWidth:0,
-            background:"transparent",border:"none",outline:"none",
-            color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
-            fontWeight:"700",fontVariantNumeric:"tabular-nums",
-            textAlign:"right",letterSpacing:"-.005em",padding:0,
-          }}
-        />
-        {suffix && (
-          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{suffix}</span>
-        )}
-      </div>
-    </div>
-  );
 
   return (
     <div className="view active">
@@ -3349,21 +3354,21 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
 
         {/* Parsed/editable fields */}
         <div style={{display:"flex",flexDirection:"column",gap:"6px",marginBottom:"14px"}}>
-          <FieldRow icon={wasParsed.total_earned ? "✓" : "✕"} parsedOk={wasParsed.total_earned}
+          <ScreenshotFieldRow icon={wasParsed.total_earned ? "✓" : "✕"} parsedOk={wasParsed.total_earned}
             label="Total earned" value={totalEarned} onChange={setTotalEarned} type="number" placeholder="0.00" suffix="$" />
-          <FieldRow icon={wasParsed.tips ? "✓" : "✕"} parsedOk={wasParsed.tips}
+          <ScreenshotFieldRow icon={wasParsed.tips ? "✓" : "✕"} parsedOk={wasParsed.tips}
             label="Tips" value={tips} onChange={setTips} type="number" placeholder="0.00" suffix="$" />
-          <FieldRow icon={wasParsed.bonuses ? "✓" : "✕"} parsedOk={wasParsed.bonuses}
+          <ScreenshotFieldRow icon={wasParsed.bonuses ? "✓" : "✕"} parsedOk={wasParsed.bonuses}
             label="Bonuses" value={bonuses} onChange={setBonuses} type="number" placeholder="0.00" suffix="$" />
-          <FieldRow icon={wasParsed.deliveries ? "✓" : "✕"} parsedOk={wasParsed.deliveries}
+          <ScreenshotFieldRow icon={wasParsed.deliveries ? "✓" : "✕"} parsedOk={wasParsed.deliveries}
             label="Deliveries" value={deliveries} onChange={setDeliveries} type="number" placeholder="0" />
-          <FieldRow icon={wasParsed.online_minutes ? "✓" : "✕"} parsedOk={wasParsed.online_minutes}
+          <ScreenshotFieldRow icon={wasParsed.online_minutes ? "✓" : "✕"} parsedOk={wasParsed.online_minutes}
             label="Online time" value={onlineMin} onChange={setOnlineMin} type="number" placeholder="0" suffix="min" />
-          <FieldRow icon={wasParsed.active_minutes ? "✓" : "✕"} parsedOk={wasParsed.active_minutes}
+          <ScreenshotFieldRow icon={wasParsed.active_minutes ? "✓" : "✕"} parsedOk={wasParsed.active_minutes}
             label="Active time" value={activeMin} onChange={setActiveMin} type="number" placeholder="0" suffix="min" />
-          <FieldRow icon={wasParsed.distance_km ? "✓" : "✕"} parsedOk={wasParsed.distance_km}
+          <ScreenshotFieldRow icon={wasParsed.distance_km ? "✓" : "✕"} parsedOk={wasParsed.distance_km}
             label="Total km" value={distanceKm} onChange={setDistanceKm} type="number" placeholder="0.0" suffix="km" />
-          <FieldRow icon={wasParsed.active_km ? "✓" : "✕"} parsedOk={wasParsed.active_km}
+          <ScreenshotFieldRow icon={wasParsed.active_km ? "✓" : "✕"} parsedOk={wasParsed.active_km}
             label="Active km" value={activeKm} onChange={setActiveKm} type="number" placeholder="0.0" suffix="km" />
         </div>
 
@@ -3406,7 +3411,7 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
         </div>
 
         {/* Shift date */}
-        <FieldRow icon={wasParsed.shift_date ? "✓" : "✕"} parsedOk={wasParsed.shift_date}
+        <ScreenshotFieldRow icon={wasParsed.shift_date ? "✓" : "✕"} parsedOk={wasParsed.shift_date}
           label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
 
         {/* Notes (optional) */}
