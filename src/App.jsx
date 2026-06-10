@@ -6607,6 +6607,37 @@ export default function GigTrack() {
       setAuthUser(prev => {
         // Detect sign-in (prev was null/undefined, now there's a user)
         if (!prev && newUser) {
+          // ── SECURITY: If a DIFFERENT user is signing in than was previously seen
+          // on this device, wipe all local state before doing anything else. This
+          // prevents one user's localStorage data from being pushed to another user's
+          // cloud account during reconciliation. ──
+          const lastUid = DB.get("gt_last_user_id");
+          if (lastUid && lastUid !== newUser.id) {
+            console.warn("[GigTrack] User switch detected — wiping local data for safety. Was:", lastUid, "Now:", newUser.id);
+            DB.remove("gt_user");
+            DB.remove("gt_trips");
+            DB.remove("gt_region");
+            DB.remove("gt_kmpref");
+            DB.remove("gt_weeklygoal");
+            DB.remove("gt_fuel_efficiency");
+            DB.remove("gt_fuel_price");
+            DB.remove("gt_activeshift");
+            DB.remove("gt_live_status");
+            DB.remove("gt_voice_prefill");
+            DB.remove("gt_deleted_seeds");
+            setUser(null);
+            setTrips([]);
+            setRegion(null);
+            setKmPref("active");
+            setWeeklyGoal(800);
+            setFuelEfficiency(null);
+            setFuelPrice(null);
+            setActiveShift(null);
+            setLiveStatus(null);
+            reconciledRef.current = false;
+          }
+          DB.set("gt_last_user_id", newUser.id);
+
           // Async — fetch profile and route appropriately
           (async () => {
             const profile = await fetchProfile();
@@ -6679,6 +6710,7 @@ export default function GigTrack() {
           DB.remove("gt_weeklygoal");
           DB.remove("gt_fuel_efficiency");
           DB.remove("gt_fuel_price");
+          DB.remove("gt_last_user_id");
           reconciledRef.current = false;
           setScreen("welcome");
         }
@@ -6884,7 +6916,11 @@ export default function GigTrack() {
     setScreen("newtrip");
   };
 
-  const handleSaved = (record, isEdit) => {
+  const handleSaved = (rawRecord, isEdit) => {
+    // Tag with owner user id for safety. Prevents this shift from being
+    // pushed to a different user's cloud account if accounts switch on this device.
+    const record = { ...rawRecord, _owner: authUser?.id || null };
+
     let updated;
     if (isEdit) {
       updated = trips.map(t => t.id === record.id ? record : t);

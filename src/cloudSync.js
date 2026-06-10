@@ -126,7 +126,17 @@ export async function reconcileShifts(localTrips) {
     }
 
     const cloudIds = new Set((cloudRows || []).map(r => r.id));
-    const toPush = (localTrips || []).filter(t => !cloudIds.has(t.id));
+
+    // SAFETY: only consider trips that either belong to the current user (_owner matches)
+    // or have no owner stamp (legacy/pre-fix shifts — we treat them as owned by current user
+    // since the user-switch wipe in App.jsx ensures localStorage is fresh on account switch).
+    const eligible = (localTrips || []).filter(t => !t._owner || t._owner === user.id);
+    const wrongOwner = (localTrips || []).filter(t => t._owner && t._owner !== user.id);
+    if (wrongOwner.length > 0) {
+      console.warn(`[GigTrack] reconcileShifts: skipping ${wrongOwner.length} shifts owned by a different user`);
+    }
+
+    const toPush = eligible.filter(t => !cloudIds.has(t.id));
 
     if (toPush.length === 0) {
       console.log("[GigTrack] reconcileShifts: nothing to push, all up to date");
