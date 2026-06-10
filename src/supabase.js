@@ -25,23 +25,17 @@ export const getCurrentUser = async () => {
   return user;
 };
 
-// Sign in anonymously (creates a new anonymous user if one doesn't exist)
+// Sign in anonymously (DEPRECATED — kept as no-op for backward compat).
+// The app now requires real sign-in via magic link.
 export const signInAnonymouslyIfNeeded = async () => {
   const { data: { user } } = await supabase.auth.getUser();
-  if (user) return user;
-  const { data, error } = await supabase.auth.signInAnonymously();
-  if (error) {
-    console.error("[GigTrack] Anonymous sign-in failed:", error);
-    return null;
-  }
-  return data.user;
+  return user; // null if not signed in — caller routes to welcome screen
 };
 
 // Send a magic link to the given email.
-// If the user is currently signed in anonymously, Supabase will automatically
-// upgrade that anonymous session to the real account when they click the link.
+// New users get created automatically (shouldCreateUser: true).
 export const sendMagicLink = async (email) => {
-  const redirectTo = window.location.origin; // works for localhost and Vercel
+  const redirectTo = window.location.origin;
   const { error } = await supabase.auth.signInWithOtp({
     email,
     options: {
@@ -56,12 +50,11 @@ export const sendMagicLink = async (email) => {
   return { ok: true };
 };
 
-// Sign out — clears the local session and creates a fresh anonymous one.
+// Sign out — clears the local session entirely.
+// User is bounced back to the Welcome screen.
 export const signOut = async () => {
   const { error } = await supabase.auth.signOut();
   if (error) console.warn("[GigTrack] signOut error:", error);
-  // Create a fresh anonymous session so the app stays usable
-  await supabase.auth.signInAnonymously();
 };
 
 // Save the user's profile to Supabase (upsert by user id).

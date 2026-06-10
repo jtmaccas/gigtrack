@@ -1619,8 +1619,8 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
   );
 }
 
-// ─── WELCOME SCREEN ─── First screen for fresh installs. Choose: sign in or create.
-function WelcomeScreen({ onCreate, onSignIn }) {
+// ─── WELCOME SCREEN ─── Forced sign-in gateway. Both new and returning users come through here.
+function WelcomeScreen({ onSignIn }) {
   return (
     <div className="setup-wrap">
       <GTBrand size={40} fontSize={24} />
@@ -1628,9 +1628,9 @@ function WelcomeScreen({ onCreate, onSignIn }) {
 
       <div style={{width:"100%",maxWidth:"360px",display:"flex",flexDirection:"column",gap:"10px"}}>
 
-        {/* Primary: Create account */}
+        {/* Primary CTA — single sign-in button */}
         <button
-          onClick={onCreate}
+          onClick={onSignIn}
           style={{
             width:"100%",padding:"16px",
             background:"var(--green)",color:"#0B0F14",
@@ -1638,20 +1638,16 @@ function WelcomeScreen({ onCreate, onSignIn }) {
             fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",
             letterSpacing:".01em",
           }}
-        >Get started →</button>
+        >Sign in with email →</button>
 
-        {/* Secondary: Sign in to existing */}
-        <button
-          onClick={onSignIn}
-          style={{
-            width:"100%",padding:"15px",
-            background:"transparent",
-            border:"0.5px solid var(--border2)",
-            color:"var(--text)",borderRadius:"13px",cursor:"pointer",
-            fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"600",
-          }}
-        >I already have an account</button>
+      </div>
 
+      <div style={{
+        marginTop:"16px",fontFamily:"'Inter',sans-serif",
+        fontSize:"12px",color:"var(--muted)",
+        textAlign:"center",maxWidth:"320px",lineHeight:"1.5",
+      }}>
+        New here? We'll create an account when you sign in.
       </div>
 
       <div style={{
@@ -5646,8 +5642,8 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
           <div>
             <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data &amp; Security</div>
             <SettingsSectionCard>
-              {/* Account / cloud sign-in */}
-              {authUser && !authUser.is_anonymous ? (
+              {/* Account — always signed in, just shows email + sign-out */}
+              {authUser && (
                 <div
                   className="settings-item"
                   style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
@@ -5658,18 +5654,6 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                     <div className="settings-item-sub" style={{fontSize:"11px"}}>
                       {authUser.email || "—"} · tap to sign out
                     </div>
-                  </div>
-                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-                </div>
-              ) : (
-                <div
-                  className="settings-item"
-                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                  onClick={onSignIn}
-                >
-                  <div className="settings-item-left">
-                    <div className="settings-item-label">Sign in to save your data</div>
-                    <div className="settings-item-sub">Access your shifts from any device</div>
                   </div>
                   <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
                 </div>
@@ -6061,18 +6045,21 @@ export default function GigTrack() {
     }
   }, [theme]);
 
-  // ── Supabase auth: sign in anonymously on boot (cloud identity) ──
+  // ── Supabase auth + routing on boot ──
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
-        const u = await signInAnonymouslyIfNeeded();
-        if (mounted) {
-          setAuthUser(u);
-          if (u) console.log("[GigTrack] Supabase auth user:", u.id);
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!mounted) return;
+        setAuthUser(user);
+        if (user) {
+          console.log("[GigTrack] Supabase auth user:", user.id);
+        } else {
+          console.log("[GigTrack] No auth session — routing to welcome");
         }
       } catch (e) {
-        console.warn("[GigTrack] Supabase auth failed (offline?):", e.message);
+        console.warn("[GigTrack] Supabase auth check failed:", e.message);
       }
     })();
     // Subscribe to future auth state changes (sign in/out)
@@ -6080,12 +6067,12 @@ export default function GigTrack() {
       if (!mounted) return;
       const newUser = session?.user || null;
       setAuthUser(prev => {
-        // Detect anonymous → real account upgrade (magic link sign-in success)
-        if (prev?.is_anonymous && newUser && !newUser.is_anonymous) {
+        // Detect sign-in (prev was null/undefined, now there's a user)
+        if (!prev && newUser) {
           // Async — fetch profile and route appropriately
           (async () => {
             const profile = await fetchProfile();
-            if (profile) {
+            if (profile && profile.name) {
               // Returning user — hydrate state from profile
               const u = {
                 name: profile.name,
@@ -6116,12 +6103,11 @@ export default function GigTrack() {
                 setFuelPrice(profile.fuel_price);
                 DB.set("gt_fuel_price", profile.fuel_price);
               }
-              showToast(`Welcome back, ${profile.name || newUser.email}!`);
+              showToast(`Welcome back, ${profile.name}!`);
               setScreen("home");
-              // Reset reconciliation so it re-runs with the new user_id
               reconciledRef.current = false;
 
-              // Fetch cloud shifts and merge with local (cloud is source of truth on sign-in)
+              // Pull cloud shifts into local
               const cloudShifts = await fetchAllShifts();
               if (cloudShifts.length > 0) {
                 const localTrips = DB.get("gt_trips") || [];
@@ -6130,15 +6116,33 @@ export default function GigTrack() {
                 const merged = [...localTrips, ...newOnes];
                 DB.set("gt_trips", merged);
                 setTrips(merged);
-                if (newOnes.length > 0) {
-                  console.log(`[GigTrack] sign-in: pulled ${newOnes.length} new shifts from cloud`);
-                }
               }
             } else {
-              // First-time sign-in (no profile yet) — show toast, stay on current screen
-              showToast(`Signed in as ${newUser.email || "your account"}`);
+              // First-time sign-in — no profile yet, send through onboarding
+              showToast(`Signed in as ${newUser.email}`);
+              setScreen("setup");
             }
           })();
+        }
+        // Detect sign-out (had a user, now null)
+        if (prev && !newUser) {
+          // Wipe everything and go to welcome
+          setUser(null);
+          setTrips([]);
+          setRegion(null);
+          setKmPref("active");
+          setWeeklyGoal(800);
+          setFuelEfficiency(null);
+          setFuelPrice(null);
+          DB.remove("gt_user");
+          DB.remove("gt_trips");
+          DB.remove("gt_region");
+          DB.remove("gt_kmpref");
+          DB.remove("gt_weeklygoal");
+          DB.remove("gt_fuel_efficiency");
+          DB.remove("gt_fuel_price");
+          reconciledRef.current = false;
+          setScreen("welcome");
         }
         return newUser;
       });
@@ -6246,8 +6250,13 @@ export default function GigTrack() {
       // If there was an active shift, go straight back to the shift screen
       if (u) setScreen("activeshift");
     }
-    if (u && !a) { setUser(u); setScreen("home"); }
-    else if (u && a) { setUser(u); }
+    // Auth gate: only go to home if there's both a stored user AND we'll re-validate
+    // the session via the supabase auth effect. Otherwise route to welcome.
+    // (The supabase auth effect runs separately; if it finds no session, the user
+    // already saw welcome here. If it finds a session, it'll route them properly.)
+    const hasAuthSession = !!DB.get("gt_supabase_auth"); // supabase persistence key
+    if (u && hasAuthSession && !a) { setUser(u); setScreen("home"); }
+    else if (u && hasAuthSession && a) { setUser(u); }
     else setScreen("welcome");
   }, []);
 
@@ -6439,7 +6448,6 @@ export default function GigTrack() {
       <style>{css}</style>
       {screen === "welcome" && (
         <WelcomeScreen
-          onCreate={() => setScreen("setup")}
           onSignIn={() => setSignInOpen(true)}
         />
       )}
@@ -6613,7 +6621,7 @@ export default function GigTrack() {
           onSignOut={() => {
             setConfirm({
               title: "Sign out?",
-              sub: "Your shifts will remain on this device. You can sign back in anytime to access them on other devices.",
+              sub: "Your data stays safely in the cloud. Sign back in anytime with the same email to access it.",
               onConfirm: async () => {
                 setConfirm(null);
                 await signOut();
