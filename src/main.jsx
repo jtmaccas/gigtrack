@@ -1,6 +1,17 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
+import { registerSW } from "virtual:pwa-register";
+import { reportNeedRefresh } from "./pwaUpdate.js";
+
+// Register the service worker. With registerType: "prompt", onNeedRefresh fires
+// when a new version is waiting — we hand updateSW to the app so the banner's
+// "Refresh" button can activate it. onOfflineReady intentionally unused (no toast).
+const updateSW = registerSW({
+  onNeedRefresh() {
+    reportNeedRefresh(updateSW);
+  },
+});
 
 // Reset default page margins
 const style = document.createElement("style");

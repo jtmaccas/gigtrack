@@ -58,7 +58,7 @@ export const signOut = async () => {
 };
 
 // Save the user's profile to Supabase (upsert by user id).
-// `profile` shape: { name, region, weeklyGoal, kmPref, fuelEff, fuelPrice, startOdo, isPro, isGuest }
+// `profile` shape: { name, region, weeklyGoal, kmPref, fuelEff, fuelPrice, startOdo, isPro, isGuest, showScoring }
 export const saveProfile = async (profile) => {
   console.log("[GigTrack] saveProfile called", profile);
   try {
@@ -79,6 +79,7 @@ export const saveProfile = async (profile) => {
       fuel_eff:     profile.fuelEff ?? null,
       fuel_price:   profile.fuelPrice ?? null,
       start_odo:    profile.startOdo ?? null,
+      show_scoring: profile.showScoring ?? true,
     };
     const { error } = await supabase
       .from("profiles")
