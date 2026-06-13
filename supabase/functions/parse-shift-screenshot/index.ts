@@ -40,7 +40,8 @@ Required output format — strict JSON, no markdown, no commentary:
   "distance_km": <number or null>,      // total distance in kilometers (online distance / driving total)
   "active_km": <number or null>,        // active delivery distance in km (when shown — usually only on UE)
   "platform": <"uber_eats" | "doordash" | "both" | null>,
-  "shift_date": <string or null>        // shift date in ISO format YYYY-MM-DD if visible; null if not shown or shows "Today"/relative
+  "shift_date": <string or null>,       // shift date in ISO format YYYY-MM-DD if visible; null if not shown or shows "Today"/relative
+  "start_time": <string or null>        // shift START time in 24-hour HH:MM if clearly shown; null if not visible
 }
 
 Field-specific notes:
@@ -49,6 +50,7 @@ Field-specific notes:
 - "distance_km" is total/online distance; "active_km" is just the active delivery distance. UE sometimes shows both.
 - "platform": "uber_eats" for Uber Eats branding, "doordash" for DoorDash red/branding. Use null if unclear.
 - "shift_date": only extract if a clear date is shown (e.g. "Jun 8" → "2026-06-08"). If it says "Today" or "Yesterday" or no date is visible, return null.
+- "start_time": the time the shift/dash STARTED, in 24-hour HH:MM (e.g. "5:30 PM" → "17:30", "9:05 AM" → "09:05"). DoorDash often shows a dash start time or a time range like "5:30 PM - 9:45 PM" — use the FIRST/start time. If only an end time or no time is shown, return null. Do not guess.
 - If the screenshot is NOT a gig delivery shift summary, return all fields as null.
 
 Return ONLY the JSON object. No explanation. No markdown fences.`;

@@ -13,6 +13,13 @@ const ATO_KM_WARNING = 4500;
 const ATO_FY_LABEL = "2025–26";
 // ─────────────────────────────────────────────
 
+// Local YYYY-MM-DD (device timezone). Avoids toISOString().slice(0,10),
+// which returns the UTC date — wrong by a day for AEST mornings (UTC+10).
+const localDateStr = (date = new Date()) => {
+  const pad = n => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`;
+};
+
 // ─────────────────────────────────────────────
 // SCORING TARGETS — defaults
 // PREMIUM: users can override these in Settings
@@ -3268,7 +3275,7 @@ function ScreenshotFieldRow({ icon, label, value, onChange, type = "text", place
 function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
   // Initialise each editable field. Track original parsed value separately
   // so we can show green tick (parsed) or red X (not found, user-entered).
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = localDateStr();
   const initialDate = parsed.shift_date || todayISO;
 
   const [totalEarned, setTotalEarned]     = useState(parsed.total_earned != null ? String(parsed.total_earned) : "");
@@ -3281,6 +3288,21 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
   const [activeKm, setActiveKm]           = useState(parsed.active_km   != null ? String(parsed.active_km)   : "");
   const [platform, setPlatform]           = useState(parsed.platform || "");
   const [shiftDate, setShiftDate]         = useState(initialDate);
+  // Normalise a parsed start time to strict "HH:MM" (24h) for the <input type=time>.
+  // Accepts "5:30", "05:30", "5:30 PM", "17:05" etc. Falls back to midnight.
+  const normTime = (raw) => {
+    if (!raw || typeof raw !== "string") return "00:00";
+    const m = raw.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (!m) return "00:00";
+    let h = parseInt(m[1], 10);
+    const min = m[2];
+    const ap = m[3]?.toUpperCase();
+    if (ap === "PM" && h < 12) h += 12;
+    if (ap === "AM" && h === 12) h = 0;
+    if (h < 0 || h > 23) return "00:00";
+    return `${String(h).padStart(2,"0")}:${min}`;
+  };
+  const [shiftTime, setShiftTime]         = useState(normTime(parsed.start_time)); // local start time; parsed or midnight
   const [notes, setNotes]                 = useState("");
 
   const [zoomed, setZoomed]               = useState(false);
@@ -3297,6 +3319,7 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
     active_km:      parsed.active_km      != null,
     platform:       parsed.platform       != null,
     shift_date:     parsed.shift_date     != null,
+    start_time:     parsed.start_time != null && normTime(parsed.start_time) !== "00:00",
   };
 
   const parsedCount = Object.values(wasParsed).filter(Boolean).length;
@@ -3319,6 +3342,7 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
     if (num(activeKm) != null)    finalValues.activeKm = num(activeKm);
     if (platform)                 finalValues.platform = platform;
     if (shiftDate)                finalValues.shiftDate = shiftDate; // YYYY-MM-DD
+    if (shiftTime)                finalValues.shiftTime = shiftTime; // HH:MM local
     if (notes.trim())             finalValues.notes    = notes.trim();
 
     onSaveDirect(finalValues);
@@ -3462,6 +3486,19 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
         {/* Shift date */}
         <ScreenshotFieldRow icon={wasParsed.shift_date ? "✓" : "✕"} parsedOk={wasParsed.shift_date}
           label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
+
+        {/* Shift start time — DoorDash often shows it; UE date-only summaries don't. */}
+        <div style={{marginTop:"6px"}}>
+          <ScreenshotFieldRow
+            icon={wasParsed.start_time ? "✓" : (shiftTime && shiftTime !== "00:00" ? "✓" : "○")}
+            parsedOk={wasParsed.start_time || (!!shiftTime && shiftTime !== "00:00")}
+            label="Start time" value={shiftTime} onChange={setShiftTime} type="time" />
+        </div>
+        <div style={{fontSize:"10px",color:"var(--muted2)",margin:"5px 0 0 13px"}}>
+          {wasParsed.start_time
+            ? "Read from your screenshot — adjust if it looks off."
+            : "Not shown on this screenshot — defaults to 12:00 AM. Set it to include this shift in your \"Best Times\"."}
+        </div>
 
         {/* Notes (optional) */}
         <div style={{
@@ -5359,7 +5396,7 @@ function exportCSV(trips, user) {
   // Trigger download
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr();
   const filename = `gigtrack-shifts-${today}.csv`;
   const a = document.createElement("a");
   a.href = url;
@@ -5741,6 +5778,197 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, fuelEfficiency, 
         <div style={{height:"80px"}} />
       </div>
     </div>
+  );
+}
+
+// ─── INSIGHTS: ADVANCED BREAKDOWNS ────────────────────────────────────────
+// All read the already-period-filtered trips passed in. Pure presentation of
+// existing fields (ts, totalEarned, totalHrs, dels, platform) — no new data.
+
+// Small shared section wrapper to match the Insights card aesthetic.
+function InsightCard({ title, subtitle, children }) {
+  return (
+    <div style={{background:"var(--surface)",borderRadius:"16px",padding:"18px",marginBottom:"10px",boxShadow:"var(--shadow-card)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:"14px"}}>
+        <div style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"600",letterSpacing:".04em",textTransform:"uppercase"}}>{title}</div>
+        {subtitle && <div style={{fontSize:"10px",color:"var(--muted2)"}}>{subtitle}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Day-of-week: average $/hr per weekday, with total earned as the bar.
+function DayOfWeekChart({ trips }) {
+  const labels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  // JS getDay(): 0=Sun..6=Sat → remap so Monday is index 0.
+  const idx = (d) => (new Date(d).getDay() + 6) % 7;
+  const buckets = labels.map(() => ({ earned: 0, hrs: 0, count: 0 }));
+  trips.forEach(t => {
+    const b = buckets[idx(t.ts)];
+    b.earned += t.totalEarned || 0;
+    b.hrs    += t.totalHrs || 0;
+    b.count  += 1;
+  });
+  const maxEarned = Math.max(...buckets.map(b => b.earned), 1);
+  const hasData = buckets.some(b => b.count > 0);
+
+  if (!hasData) {
+    return <div style={{fontSize:"12px",color:"var(--muted2)",textAlign:"center",padding:"12px 0"}}>No shifts in this period yet.</div>;
+  }
+
+  // Best day by $/hr (min 1 shift)
+  const rated = buckets.map((b, i) => ({ i, rate: b.hrs > 0 ? b.earned / b.hrs : 0, count: b.count }));
+  const best = rated.filter(r => r.count > 0).sort((a,b) => b.rate - a.rate)[0];
+
+  return (
+    <>
+      <div style={{display:"flex",alignItems:"flex-end",gap:"4px",height:"96px"}}>
+        {buckets.map((b, i) => {
+          const h = b.earned > 0 ? Math.max(6, Math.round((b.earned / maxEarned) * 80)) : 3;
+          const isBest = best && i === best.i;
+          const rate = b.hrs > 0 ? b.earned / b.hrs : 0;
+          return (
+            <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:"100%",gap:"4px"}}>
+              <div style={{fontSize:"9px",color:"var(--muted2)",fontVariantNumeric:"tabular-nums",minHeight:"11px"}}>
+                {b.count > 0 ? `$${rate.toFixed(0)}` : ""}
+              </div>
+              <div style={{
+                width:"66%",height:`${h}px`,
+                background: b.earned > 0 ? (isBest ? "var(--green)" : "rgba(0,143,68,.4)") : "var(--elevated)",
+                borderRadius:"3px 3px 0 0",
+              }} />
+              <div style={{fontSize:"10px",color: isBest ? "var(--green)" : "var(--muted)",fontWeight: isBest ? "700" : "500"}}>{labels[i]}</div>
+            </div>
+          );
+        })}
+      </div>
+      {best && (
+        <div style={{fontSize:"11px",color:"var(--muted)",marginTop:"12px",textAlign:"center"}}>
+          Best day by hourly rate: <span style={{color:"var(--green)",fontWeight:"700"}}>{labels[best.i]}</span> at ${best.rate.toFixed(2)}/hr
+        </div>
+      )}
+      <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"4px",textAlign:"center"}}>Bar height = total earned · number = $/hr</div>
+    </>
+  );
+}
+
+// Hour-of-day: which shift START hours earn most. Buckets into 6 blocks.
+function HourOfDayChart({ trips }) {
+  const blocks = [
+    { label: "Early\n5–9a",  lo: 5,  hi: 9 },
+    { label: "Late AM\n9–12", lo: 9,  hi: 12 },
+    { label: "Lunch\n12–3p", lo: 12, hi: 15 },
+    { label: "Arvo\n3–5p",   lo: 15, hi: 17 },
+    { label: "Dinner\n5–9p", lo: 17, hi: 21 },
+    { label: "Late\n9p+",    lo: 21, hi: 29 }, // wraps past midnight (hi treated mod 24)
+  ];
+  const data = blocks.map(() => ({ earned: 0, hrs: 0, count: 0 }));
+  let excluded = 0; // shifts at exactly 00:00 — almost always date-only imports with no real start time
+  trips.forEach(t => {
+    const dt = new Date(t.ts);
+    const h = dt.getHours();
+    const m = dt.getMinutes();
+    if (h === 0 && m === 0) { excluded += 1; return; } // skip exact midnight
+    for (let i = 0; i < blocks.length; i++) {
+      const { lo, hi } = blocks[i];
+      const hh = h < lo && hi > 24 ? h + 24 : h; // handle late wrap
+      if (hh >= lo && hh < hi) { data[i].earned += t.totalEarned||0; data[i].hrs += t.totalHrs||0; data[i].count += 1; break; }
+    }
+  });
+  const maxRate = Math.max(...data.map(d => d.hrs > 0 ? d.earned/d.hrs : 0), 1);
+  const hasData = data.some(d => d.count > 0);
+
+  if (!hasData) {
+    return (
+      <div style={{fontSize:"12px",color:"var(--muted2)",textAlign:"center",padding:"12px 0"}}>
+        {excluded > 0
+          ? `No timed shifts in this period. ${excluded} shift${excluded!==1?"s":""} had no start time (imported by date) and can't be placed on the clock.`
+          : "No shifts in this period yet."}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div style={{display:"flex",gap:"4px"}}>
+        {data.map((d, i) => {
+          const rate = d.hrs > 0 ? d.earned/d.hrs : 0;
+          const intensity = d.count > 0 ? Math.max(0.12, rate / maxRate) : 0;
+          return (
+            <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"6px"}}>
+              <div style={{
+                width:"100%",aspectRatio:"1",borderRadius:"8px",
+                background: d.count > 0 ? `rgba(0,143,68,${intensity})` : "var(--elevated)",
+                display:"flex",alignItems:"center",justifyContent:"center",
+                fontSize:"11px",fontWeight:"700",
+                color: intensity > 0.5 ? "#fff" : "var(--text)",
+                fontVariantNumeric:"tabular-nums",
+              }}>{d.count > 0 ? `$${rate.toFixed(0)}` : "—"}</div>
+              <div style={{fontSize:"8px",color:"var(--muted)",textAlign:"center",lineHeight:1.2,whiteSpace:"pre-line"}}>{blocks[i].label}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"10px",textAlign:"center"}}>
+        Colour intensity = $/hr · by shift start time
+        {excluded > 0 && <><br />{excluded} date-only shift{excluded!==1?"s":""} excluded (no start time)</>}
+      </div>
+    </>
+  );
+}
+
+// Platform comparison: UE vs DoorDash vs Both.
+function PlatformComparison({ trips }) {
+  const groups = {
+    uber_eats: { label: "Uber Eats", earned: 0, hrs: 0, dels: 0, count: 0 },
+    doordash:  { label: "DoorDash",  earned: 0, hrs: 0, dels: 0, count: 0 },
+    both:      { label: "Both",      earned: 0, hrs: 0, dels: 0, count: 0 },
+  };
+  let untagged = 0;
+  trips.forEach(t => {
+    const g = groups[t.platform];
+    if (!g) { untagged += 1; return; }
+    g.earned += t.totalEarned||0; g.hrs += t.totalHrs||0; g.dels += t.dels||0; g.count += 1;
+  });
+  const active = Object.entries(groups).filter(([,g]) => g.count > 0);
+
+  if (active.length === 0) {
+    return <div style={{fontSize:"12px",color:"var(--muted2)",textAlign:"center",padding:"12px 0"}}>
+      No platform tagged on shifts in this period. Tag platform when saving to compare.
+    </div>;
+  }
+
+  return (
+    <>
+      <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+        {active.map(([id, g]) => {
+          const rate = g.hrs > 0 ? g.earned/g.hrs : 0;
+          const perDel = g.dels > 0 ? g.earned/g.dels : 0;
+          return (
+            <div key={id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 12px",borderRadius:"10px",background:"var(--elevated)"}}>
+              <div>
+                <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)"}}>{g.label}</div>
+                <div style={{fontSize:"10px",color:"var(--muted2)",marginTop:"2px"}}>{g.count} shift{g.count!==1?"s":""}</div>
+              </div>
+              <div style={{display:"flex",gap:"16px",textAlign:"right"}}>
+                <div>
+                  <div style={{fontSize:"14px",fontWeight:"700",color:"var(--green)",fontVariantNumeric:"tabular-nums"}}>${rate.toFixed(0)}</div>
+                  <div style={{fontSize:"9px",color:"var(--muted2)"}}>/hr</div>
+                </div>
+                <div>
+                  <div style={{fontSize:"14px",fontWeight:"700",color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>${perDel.toFixed(1)}</div>
+                  <div style={{fontSize:"9px",color:"var(--muted2)"}}>/del</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {untagged > 0 && (
+        <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"10px",textAlign:"center"}}>{untagged} untagged shift{untagged!==1?"s":""} not shown</div>
+      )}
+    </>
   );
 }
 
@@ -6193,6 +6421,21 @@ function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice }) {
               </div>
             )}
           </div>
+
+          {/* Day of week */}
+          <InsightCard title="Best Days" subtitle={currentLabel}>
+            <DayOfWeekChart trips={filtered} />
+          </InsightCard>
+
+          {/* Hour of day */}
+          <InsightCard title="Best Times" subtitle="by shift start">
+            <HourOfDayChart trips={filtered} />
+          </InsightCard>
+
+          {/* Platform comparison */}
+          <InsightCard title="Platform Comparison" subtitle={currentLabel}>
+            <PlatformComparison trips={filtered} />
+          </InsightCard>
 
         </div>
       </div>
@@ -7718,17 +7961,15 @@ export default function GigTrack() {
             const platform = finalValues.platform || null;
             const notes    = finalValues.notes || null;
 
-            // Build timestamp from shiftDate (YYYY-MM-DD) + current time
-            // If shiftDate is today, use right now. Otherwise use noon of that date.
+            // Build timestamp timezone-safe from explicit LOCAL components.
+            // NEVER use new Date("YYYY-MM-DD") — JS parses a bare date as UTC,
+            // which in AEST (UTC+10) shifts the displayed time/day. Constructing
+            // new Date(y, m-1, d, hh, mm) always uses the device's local zone.
             let ts;
             if (finalValues.shiftDate) {
-              const today = new Date().toISOString().slice(0, 10);
-              if (finalValues.shiftDate === today) {
-                ts = new Date().toISOString();
-              } else {
-                // Past date — set to noon local
-                ts = new Date(finalValues.shiftDate + "T12:00:00").toISOString();
-              }
+              const [y, mo, d] = finalValues.shiftDate.split("-").map(Number);
+              const [hh, mm] = (finalValues.shiftTime || "00:00").split(":").map(Number);
+              ts = new Date(y, (mo || 1) - 1, d || 1, hh || 0, mm || 0, 0).toISOString();
             } else {
               ts = new Date().toISOString();
             }
