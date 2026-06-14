@@ -28,20 +28,31 @@ const BETA_ZONE_BUCKETS = true;
 
 // Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
 // Rules: default = first 3 id segments. Some cities over-split at 3 segments
-// (Darwin/Hobart/Ipswich) so we collapse those to 2. Canberra's zones are spread
+// (Darwin/Hobart) so we collapse those to 2. Canberra's zones are spread
 // across 2- and 3-segment ids, so it's grouped explicitly. 2-segment ids
 // (e.g. "nsw-newcastle") are already their own bucket.
 const BUCKET_COLLAPSE_TO_CITY = new Set(["nt-darwin", "tas-hob", "qld-ipswich"]);
+// Beta-only: merge whole buckets into another for COUNTING purposes (adjacent
+// areas that are sparse on their own). Ipswich/Springfield sit next to outer
+// west Brisbane, so they count under Brisbane West during beta. Real zone IDs,
+// labels, benchmarks and dropdown position are untouched — counting only.
+const BUCKET_MERGE = { "qld-ipswich": "qld-bne-w" };
 const presenceBucket = (zoneId) => {
   if (!zoneId) return zoneId;
   if (!BETA_ZONE_BUCKETS) return zoneId; // post-beta: exact zone
   const parts = zoneId.split("-");
   // Explicit: all ACT/Canberra zones → one bucket.
-  if (parts[0] === "act") return "act-canberra";
-  if (parts.length <= 2) return zoneId; // already city-level
-  const cityPrefix = parts.slice(0, 2).join("-");      // e.g. "nt-darwin"
-  if (BUCKET_COLLAPSE_TO_CITY.has(cityPrefix)) return cityPrefix;
-  return parts.slice(0, 3).join("-");                  // subarea-level, e.g. "qld-bne-n"
+  if (parts[0] === "act") return BUCKET_MERGE["act-canberra"] || "act-canberra";
+  let bucket;
+  if (parts.length <= 2) {
+    bucket = zoneId; // already city-level
+  } else {
+    const cityPrefix = parts.slice(0, 2).join("-");      // e.g. "nt-darwin"
+    bucket = BUCKET_COLLAPSE_TO_CITY.has(cityPrefix)
+      ? cityPrefix
+      : parts.slice(0, 3).join("-");                     // subarea-level, e.g. "qld-bne-n"
+  }
+  return BUCKET_MERGE[bucket] || bucket;
 };
 
 // Local YYYY-MM-DD (device timezone). Avoids toISOString().slice(0,10),
