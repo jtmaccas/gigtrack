@@ -143,8 +143,15 @@ export const incrementScreenshotImportsUsed = async () => {
 };
 
 // ─── LIVE DRIVER PRESENCE ─────────────────────────────────────────────────
-// Liveness window: a row counts as "live" if online AND last_seen within 10 min.
-export const PRESENCE_LIVE_MINUTES = 10;
+// Liveness window: a row counts as "live" if online AND last_seen within this
+// many minutes. TUNABLE BETA KNOB — on PWA the heartbeat only fires in
+// foreground, so a driver who's heads-down delivering goes silent until they
+// reopen the app. A longer window bridges those gaps (fewer false absences) at
+// the cost of more "ghosts" (finished drivers lingering). Starting at 30 for
+// the PWA beta; dial DOWN if counts look inflated, UP if drivers report the
+// count showed empty when others were really out. Native (background heartbeat)
+// could later drop this back toward 5–10.
+export const PRESENCE_LIVE_MINUTES = 30;
 
 // Upsert the current user's presence row. Pass online=true on go-online and on
 // heartbeat; online=false on go-offline. Fire-and-forget; returns ok boolean.

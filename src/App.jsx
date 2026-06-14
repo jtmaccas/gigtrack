@@ -2701,7 +2701,9 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
   const [count, setCount] = useState(null); // {total, ue, dd} | null (loading/none)
   const isOnline = liveStatus?.online === true;
 
-  // Poll real zone presence every 60s (and immediately on region/online change).
+  // Poll real zone presence every 60s (and immediately on region/online change,
+  // and whenever the app returns to foreground so a returning driver sees a fresh
+  // count right away rather than waiting up to 60s).
   useEffect(() => {
     if (!region) { setCount(null); return; }
     let cancelled = false;
@@ -2711,7 +2713,13 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
     };
     load();
     const id = setInterval(load, 60 * 1000);
-    return () => { cancelled = true; clearInterval(id); };
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [region, isOnline]); // re-fetch when the user toggles online so their own row reflects fast
 
   if (!region) {
@@ -8048,15 +8056,26 @@ export default function GigTrack() {
   };
 
   // Heartbeat: while online, refresh presence last_seen every 4 min so the user
-  // stays inside the 10-min live window through a shift. Also re-asserts on mount
-  // if they were already online (e.g. reopened the app).
+  // stays "live". Also re-asserts on mount if already online (reopened the app),
+  // AND re-pings immediately whenever the app returns to the foreground
+  // (visibilitychange). On PWA the interval pauses when backgrounded, so the
+  // foreground ping is the main mechanism keeping an active driver live —
+  // every time they switch back to the app from Maps/UE/DD, they're re-marked.
   useEffect(() => {
     if (!liveStatus?.online) return;
-    updatePresence({ zone: presenceBucket(liveStatus.zone || region), platform: liveStatus.platform, online: true });
-    const id = setInterval(() => {
-      updatePresence({ zone: presenceBucket(liveStatus.zone || region), platform: liveStatus.platform, online: true });
-    }, 4 * 60 * 1000);
-    return () => clearInterval(id);
+    const ping = () => updatePresence({
+      zone: presenceBucket(liveStatus.zone || region),
+      platform: liveStatus.platform,
+      online: true,
+    });
+    ping(); // assert now (mount / status change)
+    const id = setInterval(ping, 4 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") ping(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [liveStatus?.online, liveStatus?.zone, liveStatus?.platform, region]);
 
   const saveUser = (u) => {
