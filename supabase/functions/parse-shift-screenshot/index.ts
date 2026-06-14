@@ -60,7 +60,7 @@ Field-specific notes:
     5. Combine that day number with the correct month from the week range. WATCH MONTH BOUNDARIES: if the week range spans two months (e.g. "28 Dec - 4 Jan") then low day numbers (1-4) belong to the LATER month (Jan) and high numbers (28-31) to the EARLIER month (Dec). For "5 Jan - 12 Jan" all days are January.
     6. Example: week "5 Jan - 12 Jan", dark-blue bar is above "11" (Sun) → 11 January → "2026-01-11".
     * If NO bar is dark-blue/selected, or you cannot confidently identify the selected day, return null. Do not guess a day.
-  * YEAR: UE/DoorDash rarely show a year. Infer the most plausible recent year for the date (a date that would be in the future is almost certainly the previous year). If genuinely unsure of the year, still return your best YYYY-MM-DD rather than null.
+  * YEAR: UE/DoorDash screens rarely show a year, so infer it from TODAY'S DATE (given below). Rule: the shift happened in the MOST RECENT occurrence of that month/day on or before today — a shift screenshot is always in the past, never the future. Reason like this: "Today is 2026-06-15. The screenshot shows 11 January. When did 11 January most recently occur on or before today? January 2026 already passed this year, so it's 2026-01-11. But if the screenshot showed 11 September, September 2026 hasn't happened yet this year, so the most recent September was 2025 → 2025-09-11." So: if the month/day is LATER in the year than today, use LAST year; if it's EARLIER than or equal to today, use THIS year. Never return a future date. If genuinely unsure, still return your best YYYY-MM-DD rather than null.
 - "start_time": the time the shift/dash STARTED, in 24-hour HH:MM (e.g. "5:30 PM" → "17:30", "9:05 AM" → "09:05"). DoorDash often shows a dash start time or a time range like "5:30 PM - 9:45 PM" — use the FIRST/start time. If only an end time or no time is shown, return null. Do not guess.
 - If the screenshot is NOT a gig delivery shift summary, return all fields as null.
 
@@ -113,7 +113,7 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
         max_tokens: 1024,
-        system: SYSTEM_PROMPT,
+        system: SYSTEM_PROMPT + `\n\nTODAY'S DATE is ${new Date().toISOString().slice(0,10)} (YYYY-MM-DD). Use this as the anchor for the YEAR rule above.`,
         messages: [{
           role: "user",
           content: [

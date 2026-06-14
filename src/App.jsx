@@ -2309,8 +2309,8 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd }) {
           maxWidth: "320px",
         }}>
           {[
-            ["Hours", h > 0 ? `${h}h ${pad(m)}m` : `${m}m`],
-            ["Minutes", String(Math.floor(totalSecs / 60))],
+            ["Hours", String(h)],
+            ["Minutes", pad(m)],
             ["KMs", gpsStatus === "granted" || gpsKm > 0 ? gpsKm.toFixed(1) : "—"],
           ].map(([label, value]) => (
             <div key={label} style={{
