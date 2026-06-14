@@ -4548,7 +4548,7 @@ function ManualGroupHeader({ children }) {
 }
 
 // ─── NEW / EDIT SHIFT ───
-function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefill, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onFuelSave, onGoToSettings, isPro = false, onUpgrade }) {
+function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefill, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onFuelSave, onGoToSettings, isPro = false, onUpgrade, showScoring = true }) {
   const isEdit = !!editTrip;
 
   // Format a Date to the value datetime-local inputs expect: "YYYY-MM-DDTHH:MM"
@@ -5094,6 +5094,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
             ))}
           </div>
 
+          {showScoring && (<>
           <div className="ratio-grid">
             <RatioBar ratio={calc.ratioH} label={`Hourly (tgt $${targets.hourly}/hr)`} />
             <RatioBar ratio={calc.ratioD} label={`Per Del (tgt $${targets.perDel})`} />
@@ -5124,6 +5125,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
             </div>
             <div className="score-num">{fmtPct(calc.score)}</div>
           </div>
+          </>)}
 
           {/* Live ATO deduction */}
           <div className="deduction-card">
@@ -5997,7 +5999,7 @@ tfoot td.ded{color:#15803D;}
 }
 
 // ─── TRIP LOG ───
-function TripLogScreen({ trips, onBack, onDetail, kmPref, user, fuelEfficiency, fuelPrice, isPro = false, onUpgrade }) {
+function TripLogScreen({ trips, onBack, onDetail, kmPref, user, fuelEfficiency, fuelPrice, isPro = false, onUpgrade, showScoring = true }) {
   const [sort, setSort] = useState("date");
   const sorted = [...trips].sort((a, b) => {
     if (sort === "date") return new Date(b.ts) - new Date(a.ts);
@@ -6037,7 +6039,7 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, fuelEfficiency, 
       <div className="scroll-area">
         {/* Sort chips — pill style */}
         <div style={{display:"flex",gap:"6px",padding:"12px 16px 0"}}>
-          {[["date","Newest"],["score","Score ↓"],["earned","Earned ↓"]].map(([s,l]) => (
+          {[["date","Newest"],...(showScoring ? [["score","Score ↓"]] : []),["earned","Earned ↓"]].map(([s,l]) => (
             <div
               key={s}
               onClick={() => setSort(s)}
@@ -6111,13 +6113,13 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, fuelEfficiency, 
                       {[
                         ["TIME",  timeStr, "var(--text)"],
                         ["KMs",   t.totalKm.toFixed(1), "var(--text)"],
-                        ["SCORE", t.score.toFixed(1)+"%", color],
-                      ].map(([label, value, col], i) => (
+                        ...(showScoring ? [["SCORE", t.score.toFixed(1)+"%", color]] : []),
+                      ].map(([label, value, col], i, arr) => (
                         <div key={label} style={{
                           flex:1,
                           paddingLeft: i === 0 ? "0" : "10px",
-                          paddingRight: i < 2 ? "10px" : "0",
-                          borderRight: i < 2 ? "0.5px solid var(--border)" : "none",
+                          paddingRight: i < arr.length - 1 ? "10px" : "0",
+                          borderRight: i < arr.length - 1 ? "0.5px solid var(--border)" : "none",
                         }}>
                           <div style={{fontSize:"13px",fontWeight:"700",color:col,fontVariantNumeric:"tabular-nums",fontFamily:"'Geist Mono',monospace"}}>{value}</div>
                           <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"2px",fontWeight:"500"}}>{label}</div>
@@ -6328,7 +6330,7 @@ function PlatformComparison({ trips }) {
 }
 
 // ─── INSIGHTS SCREEN ──────────────────────────────────────────────────────
-function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice }) {
+function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice, showScoring = true }) {
   const [period, setPeriod] = useState("week");
   const [showPicker, setShowPicker] = useState(false);
 
@@ -6733,7 +6735,7 @@ function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice }) {
                     ["Distance",       `${allKm.toFixed(1)} km`,    "blue",   ICO.route],
                     ["Tax deduction",  `$${allDeduction.toFixed(2)}`,"blue",  ICO.receipt],
                     ["Best shift",     bestShift ? `$${bestShift.totalEarned.toFixed(2)}` : "—", "purple", ICO.trophy],
-                    ["Best score",     bestScore != null ? `${bestScore.toFixed(1)}%` : "—",     "purple", ICO.star],
+                    ...(showScoring ? [["Best score", bestScore != null ? `${bestScore.toFixed(1)}%` : "—", "purple", ICO.star]] : []),
                   ].map(([label, value, color, iconNode]) => (
                     <div key={label} style={{
                       background:"var(--elevated)",
@@ -6799,7 +6801,7 @@ function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice }) {
 }
 
 // ─── DETAIL SCREEN ───
-function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onGoToSettings, trips = [] }) {
+function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onGoToSettings, trips = [], showScoring = true }) {
   if (!trip) return null;
   const d = new Date(trip.ts);
   const sc = scoreClass(trip.score);
@@ -6858,6 +6860,7 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
           <div className="detail-app-name">Shift Summary</div>
         </div>
 
+        {showScoring && (
         <div className="detail-section">
           <div className="detail-section-title">Score</div>
           <div className={`score-block ${sc}`} style={{margin:0}}>
@@ -6875,6 +6878,7 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
             <div className="score-num">{trip.score.toFixed(1)}%</div>
           </div>
         </div>
+        )}
 
         {/* ATO Deduction */}
         <div className="detail-section">
@@ -6944,6 +6948,7 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
           </div>
         </div>
 
+        {showScoring && (
         <div className="detail-section">
           <div className="detail-section-title">Scoring Ratios</div>
           <div className="ratio-grid">
@@ -6967,6 +6972,7 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
             }
           </div>
         </div>
+        )}
 
         {trip.expenses > 0 && (
           <div className="detail-section" style={{marginBottom:"8px"}}>
@@ -7021,7 +7027,7 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, fuelEfficiency, onFuelEfficiency, fuelPrice, onFuelPrice, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut }) {
+function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, fuelEfficiency, onFuelEfficiency, fuelPrice, onFuelPrice, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -7466,6 +7472,33 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                     </div>
                   ) : (
                     <>
+                      {/* Pro-only: show/hide scoring display. Calcs always run. */}
+                      <div style={{padding:"4px 0 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                        <div style={{flex:1,paddingRight:"12px"}}>
+                          <div style={{fontSize:"13px",fontWeight:"600",color:"var(--text)"}}>Show shift scoring</div>
+                          <div style={{fontSize:"11px",color:"var(--muted)",marginTop:"2px",lineHeight:1.35}}>
+                            Display the score badge and ratio bars on shifts and insights. Your data is still tracked either way.
+                          </div>
+                        </div>
+                        <button
+                          role="switch"
+                          aria-checked={showScoring}
+                          onClick={() => onShowScoring?.(!showScoring)}
+                          style={{
+                            flexShrink:0,width:"46px",height:"28px",borderRadius:"14px",border:"none",cursor:"pointer",
+                            background: showScoring ? "var(--green)" : "var(--border)",
+                            position:"relative",transition:"background .2s ease",padding:0,
+                          }}
+                        >
+                          <span style={{
+                            position:"absolute",top:"3px",left: showScoring ? "21px" : "3px",
+                            width:"22px",height:"22px",borderRadius:"50%",background:"#fff",
+                            transition:"left .2s ease",boxShadow:"0 1px 2px rgba(0,0,0,.3)",
+                          }} />
+                        </button>
+                      </div>
+
+                      <div style={{opacity: showScoring ? 1 : 0.45, pointerEvents: showScoring ? "auto" : "none", transition:"opacity .2s ease"}}>
                       {[
                         {label:"Hourly Rate",  value:tHourly,     set:setTHourly,     pre:"$",suf:"/hr"},
                         {label:"Per Delivery", value:tPerDel,     set:setTPerDel,     pre:"$",suf:""},
@@ -7476,7 +7509,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                           <div className="settings-item-label" style={{fontSize:"12px"}}>{label}</div>
                           <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
                             {pre && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{pre}</span>}
-                            <input className="settings-input" type="number" min="0" step="0.5" value={value} onChange={e => set(e.target.value)} style={{width:"70px"}} />
+                            <input className="settings-input" type="number" min="0" step="0.5" value={value} onChange={e => set(e.target.value)} disabled={!showScoring} style={{width:"70px"}} />
                             {suf && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{suf}</span>}
                           </div>
                         </div>
@@ -7484,6 +7517,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                       {isCustom && (
                         <button className="btn btn-outline" style={{width:"100%",padding:"10px",fontSize:"12px",marginTop:"8px"}} onClick={resetTargets}>↺ Reset Defaults</button>
                       )}
+                      </div>
                     </>
                   )}
                 </div>
@@ -7682,6 +7716,7 @@ export default function GigTrack() {
   const [kmPref, setKmPref]     = useState("active");
   const [atoRate, setAtoRate]   = useState(ATO_RATE_PER_KM);
   const [targets, setTargets]   = useState(DEFAULT_TARGETS);
+  const [showScoring, setShowScoring] = useState(true); // Pro-only display toggle; calcs always run
   const [weeklyGoal, setWeeklyGoal] = useState(800);
   const [fuelEfficiency, setFuelEfficiency] = useState(null);
   const [fuelPrice, setFuelPrice]           = useState(null);
@@ -7805,6 +7840,10 @@ export default function GigTrack() {
                 setFuelPrice(profile.fuel_price);
                 DB.set("gt_fuel_price", profile.fuel_price);
               }
+              if (profile.show_scoring != null) {
+                setShowScoring(!!profile.show_scoring);
+                DB.set("gt_show_scoring", !!profile.show_scoring);
+              }
               // Hydrate screenshot import counter from cloud
               setScreenshotImportsUsed(profile.screenshot_imports_used || 0);
               setAccountCreatedAt(profile.created_at || null);
@@ -7837,6 +7876,7 @@ export default function GigTrack() {
           setRegion(null);
           setKmPref("active");
           setWeeklyGoal(800);
+          setShowScoring(true);
           setFuelEfficiency(null);
           setFuelPrice(null);
           DB.remove("gt_user");
@@ -7846,6 +7886,7 @@ export default function GigTrack() {
           DB.remove("gt_weeklygoal");
           DB.remove("gt_fuel_efficiency");
           DB.remove("gt_fuel_price");
+          DB.remove("gt_show_scoring");
           DB.remove("gt_last_user_id");
           reconciledRef.current = false;
           setScreen("welcome");
@@ -7952,6 +7993,7 @@ export default function GigTrack() {
     const fe = DB.get("gt_fuel_efficiency");
     const fp = DB.get("gt_fuel_price");
     const rg = DB.get("gt_region");
+    const ss = DB.get("gt_show_scoring");
     const a = DB.get("gt_activeshift") || null;
     const ls = DB.get("gt_live_status") || null;
     setTrips(t);
@@ -7962,6 +8004,7 @@ export default function GigTrack() {
     if (fe != null) setFuelEfficiency(fe);
     if (fp != null) setFuelPrice(fp);
     if (rg != null) setRegion(rg);
+    if (ss != null) setShowScoring(!!ss);
     if (ls && ls.online) setLiveStatus(ls);
     if (a) {
       setActiveShift(a);
@@ -8016,14 +8059,23 @@ export default function GigTrack() {
       startOdo: user?.startOdo,
       fuelEff: fuelEfficiency,
       fuelPrice,
+      showScoring,
       ...overrides,
     }).catch(() => {});
+  };
+
+  // Persist the Pro-only "Show shift scoring" display toggle (state + local + cloud).
+  const saveShowScoring = (val) => {
+    const v = !!val;
+    setShowScoring(v);
+    DB.set("gt_show_scoring", v);
+    syncProfile({ showScoring: v });
   };
 
   const handleDeleteAccount = () => {
     // Wipe every known localStorage key
     ["gt_user","gt_trips","gt_kmpref","gt_atorate","gt_targets","gt_weeklygoal",
-     "gt_fuel_efficiency","gt_fuel_price","gt_region","gt_activeshift",
+     "gt_fuel_efficiency","gt_fuel_price","gt_region","gt_show_scoring","gt_activeshift",
      "gt_active_orders","gt_order_prefill","gt_live_status"].forEach(k => DB.remove(k));
     // Reset all app state
     setUser(null);
@@ -8032,6 +8084,7 @@ export default function GigTrack() {
     setAtoRate(ATO_RATE_PER_KM);
     setTargets(DEFAULT_TARGETS);
     setWeeklyGoal(800);
+    setShowScoring(true);
     setFuelEfficiency(null);
     setFuelPrice(null);
     setRegion(null);
@@ -8442,6 +8495,7 @@ export default function GigTrack() {
           kmPref={kmPref}
           atoRate={atoRate}
           targets={targets}
+          showScoring={showScoring}
         />
       )}
       {screen === "newtrip" && (
@@ -8462,6 +8516,7 @@ export default function GigTrack() {
           }}
           onGoToSettings={() => setScreen("settings")}
           onUpgrade={() => setScreen("paywall")}
+          showScoring={showScoring}
         />
       )}
       {screen === "log" && (
@@ -8473,6 +8528,7 @@ export default function GigTrack() {
           onBack={() => setScreen("home")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
           onUpgrade={() => setScreen("paywall")}
+          showScoring={showScoring}
         />
       )}
       {screen === "detail" && (
@@ -8486,6 +8542,7 @@ export default function GigTrack() {
           onEdit={handleEdit}
           onDelete={handleDelete}
           onGoToSettings={() => setScreen("settings")}
+          showScoring={showScoring}
         />
       )}
       {screen === "insights" && (
@@ -8494,6 +8551,7 @@ export default function GigTrack() {
           kmPref={kmPref}
           fuelEfficiency={fuelEfficiency}
           fuelPrice={fuelPrice}
+          showScoring={showScoring}
         />
       )}
       {screen === "settings" && (
@@ -8510,6 +8568,8 @@ export default function GigTrack() {
           onTargets={(t) => { setTargets(t); DB.set("gt_targets", t); }}
           weeklyGoal={weeklyGoal}
           onWeeklyGoal={(g) => { setWeeklyGoal(g); DB.set("gt_weeklygoal", g); syncProfile({ weeklyGoal: g }); }}
+          showScoring={showScoring}
+          onShowScoring={saveShowScoring}
           fuelEfficiency={fuelEfficiency}
           onFuelEfficiency={(v) => { setFuelEfficiency(v); DB.set("gt_fuel_efficiency", v); syncProfile({ fuelEff: v }); }}
           fuelPrice={fuelPrice}
