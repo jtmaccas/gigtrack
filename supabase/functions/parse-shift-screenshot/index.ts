@@ -45,11 +45,22 @@ Required output format — strict JSON, no markdown, no commentary:
 }
 
 Field-specific notes:
+- SCOPE CONSISTENCY (important): all numeric fields must describe the SAME period. On UE weekly screens a single day is usually selected (one dark-blue bar) and the big total, Stats (Online/Active/Trips) and Breakdown (Net fare/Promotions) shown all refer to that SELECTED DAY — extract those day figures, paired with that day's "shift_date". If instead the screen is clearly showing a whole-week total with NO single day selected, that is a week summary: still extract the totals, but return "shift_date": null (a week total can't be pinned to one day). Never mix a single day's date with week-aggregate numbers.
 - All currency values: numbers only, no $ signs (e.g. 55.20 not "$55.20")
 - "online_minutes" and "active_minutes": convert hours/minutes formats to total minutes (e.g. "1h 25m" → 85)
 - "distance_km" is total/online distance; "active_km" is just the active delivery distance. UE sometimes shows both.
 - "platform": "uber_eats" for Uber Eats branding, "doordash" for DoorDash red/branding. Use null if unclear.
-- "shift_date": only extract if a clear date is shown (e.g. "Jun 8" → "2026-06-08"). If it says "Today" or "Yesterday" or no date is visible, return null.
+- "shift_date": the date of the SELECTED day, in ISO format YYYY-MM-DD.
+  * DOORDASH: usually shows a clear date label — extract it (e.g. "Jun 8" → "2026-06-08"). If it only says "Today"/"Yesterday" or shows no date, return null.
+  * UBER EATS (important — read carefully): UE earnings screens often show a WEEK at a time with a bar chart, and do NOT print the selected date as plain text. You must DERIVE it:
+    1. Read the week range at the TOP CENTRE of the screen (e.g. "5 Jan - 12 Jan", "28 Dec - 4 Jan"). This gives you the month(s) and the span of days.
+    2. Look at the BAR CHART below it. Each bar sits above a day number (5, 6, 7...) with a weekday letter/name (Mon, Tue...).
+    3. Find the SELECTED bar: it is DARK/SOLID BLUE. Unselected bars are LIGHT/PALE BLUE or grey. There is normally exactly one dark-blue selected bar.
+    4. Take the day NUMBER directly under that dark-blue bar.
+    5. Combine that day number with the correct month from the week range. WATCH MONTH BOUNDARIES: if the week range spans two months (e.g. "28 Dec - 4 Jan") then low day numbers (1-4) belong to the LATER month (Jan) and high numbers (28-31) to the EARLIER month (Dec). For "5 Jan - 12 Jan" all days are January.
+    6. Example: week "5 Jan - 12 Jan", dark-blue bar is above "11" (Sun) → 11 January → "2026-01-11".
+    * If NO bar is dark-blue/selected, or you cannot confidently identify the selected day, return null. Do not guess a day.
+  * YEAR: UE/DoorDash rarely show a year. Infer the most plausible recent year for the date (a date that would be in the future is almost certainly the previous year). If genuinely unsure of the year, still return your best YYYY-MM-DD rather than null.
 - "start_time": the time the shift/dash STARTED, in 24-hour HH:MM (e.g. "5:30 PM" → "17:30", "9:05 AM" → "09:05"). DoorDash often shows a dash start time or a time range like "5:30 PM - 9:45 PM" — use the FIRST/start time. If only an end time or no time is shown, return null. Do not guess.
 - If the screenshot is NOT a gig delivery shift summary, return all fields as null.
 

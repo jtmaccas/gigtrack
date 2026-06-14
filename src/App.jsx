@@ -550,6 +550,72 @@ function computeStats(trips, kmPref) {
   return { n, totalEarned, totalHrs, totalKm, activeKm, totalDels, totalExp, avgScore, bestScore, deductKm, deduction, daysWorked: daysSet.size };
 }
 
+// ─── MERGE TWO SCREENSHOTS (same shift, UE + DoorDash run together) ────────
+// Takes two `parsed`-shaped objects (Edge Function output) and merges into one.
+// Rules (confirmed with Jaden):
+//   earnings/tips/bonuses/deliveries/active_minutes/distance_km/active_km → ADD
+//   online_minutes → take the LONGER (overlapping wall-clock window)
+//   platform → "both"
+//   shift_date/start_time → use the EARLIER of the two (handles cross-midnight)
+// Returns { merged, dateConflict, dates } so the UI can warn if dates differ.
+function mergeParsedScreenshots(a, b) {
+  const n = (v) => (v == null ? null : Number(v));
+  const sum = (x, y) => {
+    const xv = n(x), yv = n(y);
+    if (xv == null && yv == null) return null;
+    return (xv || 0) + (yv || 0);
+  };
+  const longer = (x, y) => {
+    const xv = n(x), yv = n(y);
+    if (xv == null && yv == null) return null;
+    return Math.max(xv || 0, yv || 0);
+  };
+
+  // Determine earlier start (date + time). Build comparable timestamps; missing
+  // time treated as 00:00. If a date is missing, fall back to the other.
+  const toStamp = (date, time) => {
+    if (!date) return null;
+    const [y, mo, d] = String(date).split("-").map(Number);
+    const [hh, mm] = (time || "00:00").split(":").map(Number);
+    return new Date(y, (mo || 1) - 1, d || 1, hh || 0, mm || 0, 0).getTime();
+  };
+  const sa = toStamp(a.shift_date, a.start_time);
+  const sb = toStamp(b.shift_date, b.start_time);
+
+  let earlierDate, earlierTime;
+  if (sa != null && sb != null) {
+    const aEarlier = sa <= sb;
+    earlierDate = aEarlier ? a.shift_date : b.shift_date;
+    earlierTime = aEarlier ? a.start_time : b.start_time;
+  } else {
+    earlierDate = a.shift_date || b.shift_date || null;
+    earlierTime = a.start_time || b.start_time || null;
+  }
+
+  // Date conflict = both have a date AND they differ.
+  const dateConflict = !!a.shift_date && !!b.shift_date && a.shift_date !== b.shift_date;
+
+  const merged = {
+    total_earned:   sum(a.total_earned, b.total_earned),
+    tips:           sum(a.tips, b.tips),
+    bonuses:        sum(a.bonuses, b.bonuses),
+    deliveries:     sum(a.deliveries, b.deliveries),
+    online_minutes: longer(a.online_minutes, b.online_minutes),
+    active_minutes: sum(a.active_minutes, b.active_minutes),
+    distance_km:    sum(a.distance_km, b.distance_km),
+    active_km:      sum(a.active_km, b.active_km),
+    platform:       "both",
+    shift_date:     earlierDate,
+    start_time:     earlierTime,
+  };
+
+  return {
+    merged,
+    dateConflict,
+    dates: { a: a.shift_date || null, b: b.shift_date || null },
+  };
+}
+
 function computeTrip(inputs, targets = DEFAULT_TARGETS) {
   const { base, tip, bonus, tDel, tWait, activeMin, activeKmInput, kmDel, kmWait, dels, expenses } = inputs;
   const totalEarned = (base||0) + (tip||0) + (bonus||0);
@@ -3272,7 +3338,7 @@ function ScreenshotFieldRow({ icon, label, value, onChange, type = "text", place
   );
 }
 
-function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
+function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAddSecond, saveLabel = "Save shift →" }) {
   // Initialise each editable field. Track original parsed value separately
   // so we can show green tick (parsed) or red X (not found, user-entered).
   const todayISO = localDateStr();
@@ -3326,26 +3392,43 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
   const totalParseable = Object.keys(wasParsed).length;
   const allFailed = parsedCount === 0;
 
+  // Build a `parsed`-shaped object from the user's current edits (for merging).
+  const num = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
+  const intv = (s) => { const v = parseInt(s, 10); return Number.isFinite(v) ? v : null; };
+  const buildParsedShape = () => ({
+    total_earned:   num(totalEarned),
+    tips:           num(tips),
+    bonuses:        num(bonuses),
+    deliveries:     intv(deliveries),
+    online_minutes: intv(onlineMin),
+    active_minutes: intv(activeMin),
+    distance_km:    num(distanceKm),
+    active_km:      num(activeKm),
+    platform:       platform || null,
+    shift_date:     shiftDate || null,
+    start_time:     shiftTime || null,
+  });
+
+  // Build the finalValues shape consumed by onParsed/onSaveDirect.
+  const buildFinalValues = () => {
+    const fv = {};
+    if (num(totalEarned) != null) fv.earned   = num(totalEarned);
+    if (num(tips) != null)        fv.tips     = num(tips);
+    if (num(bonuses) != null)     fv.bonus    = num(bonuses);
+    if (intv(deliveries) != null) fv.dels     = intv(deliveries);
+    if (intv(onlineMin) != null)  fv.mins     = intv(onlineMin);
+    if (intv(activeMin) != null)  fv.activeMin = intv(activeMin);
+    if (num(distanceKm) != null)  fv.km       = num(distanceKm);
+    if (num(activeKm) != null)    fv.activeKm = num(activeKm);
+    if (platform)                 fv.platform = platform;
+    if (shiftDate)                fv.shiftDate = shiftDate;
+    if (shiftTime)                fv.shiftTime = shiftTime;
+    if (notes.trim())             fv.notes    = notes.trim();
+    return fv;
+  };
+
   const handleSave = () => {
-    // Build final values object matching the gt_voice_prefill format + extras
-    const finalValues = {};
-    const num = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
-    const intv = (s) => { const v = parseInt(s, 10); return Number.isFinite(v) ? v : null; };
-
-    if (num(totalEarned) != null) finalValues.earned   = num(totalEarned);
-    if (num(tips) != null)        finalValues.tips     = num(tips);
-    if (num(bonuses) != null)     finalValues.bonus    = num(bonuses);
-    if (intv(deliveries) != null) finalValues.dels     = intv(deliveries);
-    if (intv(onlineMin) != null)  finalValues.mins     = intv(onlineMin);
-    if (intv(activeMin) != null)  finalValues.activeMin = intv(activeMin);
-    if (num(distanceKm) != null)  finalValues.km       = num(distanceKm);
-    if (num(activeKm) != null)    finalValues.activeKm = num(activeKm);
-    if (platform)                 finalValues.platform = platform;
-    if (shiftDate)                finalValues.shiftDate = shiftDate; // YYYY-MM-DD
-    if (shiftTime)                finalValues.shiftTime = shiftTime; // HH:MM local
-    if (notes.trim())             finalValues.notes    = notes.trim();
-
-    onSaveDirect(finalValues);
+    onSaveDirect(buildFinalValues(), buildParsedShape());
   };
 
   return (
@@ -3537,6 +3620,17 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
         background:"linear-gradient(180deg,transparent,var(--bg) 40%)",
         padding:"24px 14px 24px",zIndex:50,
       }}>
+        {onAddSecond && (
+          <button
+            onClick={() => onAddSecond(buildParsedShape())}
+            style={{
+              width:"100%",padding:"13px",marginBottom:"8px",
+              background:"var(--surface)",color:"var(--green)",
+              border:"0.5px solid var(--green-border)",borderRadius:"13px",cursor:"pointer",
+              fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
+            }}
+          >+ Ran a second app this shift? Add it</button>
+        )}
         <button
           onClick={handleSave}
           style={{
@@ -3545,7 +3639,138 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
             border:"none",borderRadius:"13px",cursor:"pointer",
             fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
           }}
-        >Save shift →</button>
+        >{saveLabel}</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREENSHOT MERGE STAGE ───────────────────────────────────────────────
+// Shows the merged result of two same-shift screenshots (UE + DD), editable,
+// with a date-conflict warning when the two screenshots' dates differ.
+function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, onBack, onSave }) {
+  const m = mergeData.merged;
+  const num = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
+  const intv = (s) => { const v = parseInt(s, 10); return Number.isFinite(v) ? v : null; };
+  const str = (v) => (v == null ? "" : String(v));
+
+  const [totalEarned, setTotalEarned] = useState(str(m.total_earned));
+  const [tips, setTips]               = useState(str(m.tips));
+  const [bonuses, setBonuses]         = useState(str(m.bonuses));
+  const [deliveries, setDeliveries]   = useState(str(m.deliveries));
+  const [onlineMin, setOnlineMin]     = useState(str(m.online_minutes));
+  const [activeMin, setActiveMin]     = useState(str(m.active_minutes));
+  const [distanceKm, setDistanceKm]   = useState(str(m.distance_km));
+  const [activeKm, setActiveKm]       = useState(str(m.active_km));
+  const [shiftDate, setShiftDate]     = useState(m.shift_date || "");
+  const [shiftTime, setShiftTime]     = useState(m.start_time || "00:00");
+  const [notes, setNotes]             = useState("");
+  const [proceedDespiteDates, setProceedDespiteDates] = useState(false);
+
+  const save = () => {
+    const fv = {};
+    if (num(totalEarned) != null) fv.earned   = num(totalEarned);
+    if (num(tips) != null)        fv.tips     = num(tips);
+    if (num(bonuses) != null)     fv.bonus    = num(bonuses);
+    if (intv(deliveries) != null) fv.dels     = intv(deliveries);
+    if (intv(onlineMin) != null)  fv.mins     = intv(onlineMin);
+    if (intv(activeMin) != null)  fv.activeMin = intv(activeMin);
+    if (num(distanceKm) != null)  fv.km       = num(distanceKm);
+    if (num(activeKm) != null)    fv.activeKm = num(activeKm);
+    fv.platform = "both";
+    if (shiftDate)                fv.shiftDate = shiftDate;
+    if (shiftTime)                fv.shiftTime = shiftTime;
+    if (notes.trim())             fv.notes    = notes.trim();
+    onSave(fv);
+  };
+
+  const blocked = mergeData.dateConflict && !proceedDespiteDates;
+
+  return (
+    <div className="view active">
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">Combined shift</div>
+      </div>
+      <div className="scroll-area" style={{padding:"14px 14px 120px"}}>
+
+        {/* Combined banner */}
+        <div style={{
+          background:"var(--green-dim)",border:"1px solid var(--green-border)",
+          borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",
+          display:"flex",gap:"10px",alignItems:"center",
+        }}>
+          <div style={{fontSize:"20px",flexShrink:0}}>🔗</div>
+          <div>
+            <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)",marginBottom:"2px"}}>Two apps combined into one shift</div>
+            <div style={{fontSize:"11px",color:"var(--muted)"}}>
+              Earnings, deliveries, active time &amp; distance added. Online time = the longer of the two.
+            </div>
+          </div>
+        </div>
+
+        {/* Date conflict warning */}
+        {mergeData.dateConflict && (
+          <div style={{
+            background:"var(--amber-dim)",border:"1px solid var(--amber-border)",
+            borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",
+          }}>
+            <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>⚠️ Different dates detected</div>
+            <div style={{fontSize:"11px",color:"var(--muted)",lineHeight:1.45,marginBottom:"10px"}}>
+              Screenshot 1 is dated <b>{mergeData.dates.a || "—"}</b> and screenshot 2 is <b>{mergeData.dates.b || "—"}</b>.
+              That can be normal for a shift crossing midnight (e.g. started 11:30pm, finished after 12). It would use the earlier date ({shiftDate || "—"}). But if these are actually two different shifts, you shouldn't combine them.
+            </div>
+            <label style={{display:"flex",alignItems:"center",gap:"8px",fontSize:"12px",color:"var(--text)",cursor:"pointer"}}>
+              <input type="checkbox" checked={proceedDespiteDates} onChange={(e) => setProceedDespiteDates(e.target.checked)} />
+              Yes, this is one shift — combine them
+            </label>
+          </div>
+        )}
+
+        {/* Editable merged fields */}
+        <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+          <ScreenshotFieldRow icon="Σ" parsedOk label="Total earned" value={totalEarned} onChange={setTotalEarned} type="number" suffix="$" />
+          <ScreenshotFieldRow icon="Σ" parsedOk label="Tips" value={tips} onChange={setTips} type="number" suffix="$" />
+          <ScreenshotFieldRow icon="Σ" parsedOk label="Bonuses" value={bonuses} onChange={setBonuses} type="number" suffix="$" />
+          <ScreenshotFieldRow icon="Σ" parsedOk label="Deliveries" value={deliveries} onChange={setDeliveries} type="number" />
+          <ScreenshotFieldRow icon="↔" parsedOk label="Online (min)" value={onlineMin} onChange={setOnlineMin} type="number" suffix="m" />
+          <ScreenshotFieldRow icon="Σ" parsedOk label="Active (min)" value={activeMin} onChange={setActiveMin} type="number" suffix="m" />
+          <ScreenshotFieldRow icon="Σ" parsedOk label="Distance" value={distanceKm} onChange={setDistanceKm} type="number" suffix="km" />
+          <ScreenshotFieldRow icon="Σ" parsedOk label="Active km" value={activeKm} onChange={setActiveKm} type="number" suffix="km" />
+        </div>
+
+        <div style={{marginTop:"6px",display:"flex",flexDirection:"column",gap:"6px"}}>
+          <ScreenshotFieldRow icon="🔗" parsedOk label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
+          <ScreenshotFieldRow icon="🔗" parsedOk label="Start time" value={shiftTime} onChange={setShiftTime} type="time" />
+        </div>
+        <div style={{fontSize:"10px",color:"var(--muted2)",margin:"5px 0 0 13px"}}>
+          Platform set to “Both”. Start = the earlier of the two screenshots.
+        </div>
+
+        {/* Source thumbnails */}
+        <div style={{display:"flex",gap:"8px",marginTop:"14px"}}>
+          {[["Screenshot 1", firstPreviewUrl],["Screenshot 2", secondPreviewUrl]].map(([lbl, url]) => (
+            <div key={lbl} style={{flex:1,textAlign:"center"}}>
+              <div style={{fontSize:"10px",color:"var(--muted2)",marginBottom:"4px"}}>{lbl}</div>
+              {url && <img src={url} alt={lbl} style={{width:"100%",borderRadius:"8px",border:"0.5px solid var(--border)",maxHeight:"160px",objectFit:"cover",objectPosition:"top"}} />}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Fixed bottom CTA */}
+      <div style={{position:"fixed",bottom:0,left:0,right:0,background:"linear-gradient(180deg,transparent,var(--bg) 40%)",padding:"24px 14px 24px",zIndex:50}}>
+        <button
+          onClick={save}
+          disabled={blocked}
+          style={{
+            width:"100%",padding:"15px",
+            background: blocked ? "var(--elevated)" : "var(--green)",
+            color: blocked ? "var(--muted2)" : "#0B0F14",
+            border:"none",borderRadius:"13px",cursor: blocked ? "not-allowed" : "pointer",
+            fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+          }}
+        >{blocked ? "Confirm dates above to continue" : "Save combined shift →"}</button>
       </div>
     </div>
   );
@@ -3556,7 +3781,7 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect }) {
 // Stage 2: progress — uploading + AI parsing (animated %)
 // Stage 3: preview — per-field green/red indicators + confirm
 function ScreenshotImportScreen({ onBack, onParsed }) {
-  const [stage, setStage] = useState("pick"); // pick | progress | preview | error
+  const [stage, setStage] = useState("pick"); // pick | progress | preview | merge | error
   const [pickedFile, setPickedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsed, setParsed] = useState(null);
@@ -3564,6 +3789,14 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
   const [progressPct, setProgressPct] = useState(0);
   const [progressStep, setProgressStep] = useState("");
   const fileInputRef = useRef(null);
+
+  // ── Merge flow (two screenshots, same shift) ──
+  // When the user taps "add second app", we stash screenshot 1's edited values
+  // (parsed-shaped) + its preview, then re-run pick/parse for screenshot 2.
+  const [firstParsed, setFirstParsed] = useState(null);
+  const [firstPreviewUrl, setFirstPreviewUrl] = useState(null);
+  const [secondParsed, setSecondParsed] = useState(null); // screenshot 2's edited parsed-shape
+  const isSecond = firstParsed != null; // currently capturing the 2nd screenshot
 
   // Open file picker on mount
   useEffect(() => {
@@ -3636,13 +3869,48 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
     onParsed(parsed);
   };
 
-  // ── PICK STAGE ──
+  // User tapped "add second app" on screenshot 1's preview. Stash its edited
+  // (parsed-shaped) values + preview, reset to pick for screenshot 2.
+  const handleAddSecond = (firstEditedParsed) => {
+    setFirstParsed(firstEditedParsed);
+    setFirstPreviewUrl(previewUrl);
+    setPickedFile(null);
+    setPreviewUrl(null);
+    setParsed(null);
+    setStage("pick");
+  };
+
+  // Compute merge once screenshot 2 has been reviewed. Uses the user's EDITED
+  // values from both previews (firstParsed captured on "add second",
+  // secondParsed captured when screenshot 2's preview is confirmed).
+  const mergeData = (firstParsed && secondParsed) ? mergeParsedScreenshots(firstParsed, secondParsed) : null;
+
+  // PICK STAGE
+
   if (stage === "pick") {
     return (
       <div className="view active">
         <div className="topbar">
-          <button className="topbar-back" onClick={onBack}>←</button>
-          <div className="topbar-title">Import from screenshot</div>
+          <button className="topbar-back" onClick={() => {
+            if (isSecond) {
+              // Backing out of the 2nd pick — abandon the merge, restore screenshot 1's preview.
+              setParsed(firstParsed ? {
+                total_earned: firstParsed.total_earned, tips: firstParsed.tips, bonuses: firstParsed.bonuses,
+                deliveries: firstParsed.deliveries, online_minutes: firstParsed.online_minutes,
+                active_minutes: firstParsed.active_minutes, distance_km: firstParsed.distance_km,
+                active_km: firstParsed.active_km, platform: firstParsed.platform,
+                shift_date: firstParsed.shift_date, start_time: firstParsed.start_time,
+              } : null);
+              setPreviewUrl(firstPreviewUrl);
+              setFirstParsed(null);
+              setFirstPreviewUrl(null);
+              setSecondParsed(null);
+              setStage("preview");
+            } else {
+              onBack();
+            }
+          }}>←</button>
+          <div className="topbar-title">{isSecond ? "Add second app" : "Import from screenshot"}</div>
         </div>
         <div className="scroll-area" style={{padding:"24px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
 
@@ -3653,12 +3921,14 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
             border:"1px solid var(--green-border)",
             borderRadius:"16px",marginBottom:"22px",
           }}>
-            <div style={{fontSize:"42px",marginBottom:"10px"}}>📷</div>
+            <div style={{fontSize:"42px",marginBottom:"10px"}}>{isSecond ? "🔗" : "📷"}</div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"16px",fontWeight:"800",color:"var(--text)",marginBottom:"6px",letterSpacing:"-.01em"}}>
-              Pick your shift summary
+              {isSecond ? "Now the second app" : "Pick your shift summary"}
             </div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",lineHeight:"1.55"}}>
-              Choose a screenshot from Uber Eats or DoorDash showing your final shift totals — earnings, deliveries, time.
+              {isSecond
+                ? "Pick the other app's screenshot for this same shift. We'll combine them — earnings add up, overlapping time is handled for you."
+                : "Choose a screenshot from Uber Eats or DoorDash showing your final shift totals — earnings, deliveries, time."}
             </div>
           </div>
 
@@ -3738,12 +4008,37 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
 
   // ── PREVIEW STAGE — editable form with all parsed values + extra fields ──
   if (stage === "preview" && parsed) {
+    if (isSecond) {
+      // Second screenshot — its "save" captures edited values then moves to merge review.
+      return (
+        <ScreenshotPreviewStage
+          parsed={parsed}
+          previewUrl={previewUrl}
+          onBack={() => setStage("pick")}
+          onSaveDirect={(_finalValues, parsedShape) => { setSecondParsed(parsedShape); setStage("merge"); }}
+          saveLabel="Review combined shift →"
+        />
+      );
+    }
     return (
       <ScreenshotPreviewStage
         parsed={parsed}
         previewUrl={previewUrl}
         onBack={() => setStage("pick")}
         onSaveDirect={(finalValues) => onParsed(finalValues)}
+        onAddSecond={handleAddSecond}
+      />
+    );
+  }
+
+  if (stage === "merge" && mergeData) {
+    return (
+      <ScreenshotMergeStage
+        mergeData={mergeData}
+        firstPreviewUrl={firstPreviewUrl}
+        secondPreviewUrl={previewUrl}
+        onBack={() => setStage("preview")}
+        onSave={(finalValues) => onParsed(finalValues)}
       />
     );
   }
