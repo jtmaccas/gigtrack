@@ -33,10 +33,19 @@ const BETA_ZONE_BUCKETS = true;
 // (e.g. "nsw-newcastle") are already their own bucket.
 const BUCKET_COLLAPSE_TO_CITY = new Set(["nt-darwin", "tas-hob", "qld-ipswich"]);
 // Beta-only: merge whole buckets into another for COUNTING purposes (adjacent
-// areas that are sparse on their own). Ipswich/Springfield sit next to outer
-// west Brisbane, so they count under Brisbane West during beta. Real zone IDs,
-// labels, benchmarks and dropdown position are untouched — counting only.
-const BUCKET_MERGE = { "qld-ipswich": "qld-bne-w" };
+// areas that are sparse on their own). Real zone IDs, labels, benchmarks and
+// dropdown position are untouched — counting only.
+//   - Ipswich/Springfield → Brisbane West (adjacent to outer west Brisbane)
+//   - Gold Coast Far South (Palm Beach/Coolangatta) → Gold Coast South
+//   - Toowoomba + Regional Central + Regional North → one "QLD Regional" bucket
+//     (Sunshine Coast deliberately kept separate — it's its own populated area)
+const BUCKET_MERGE = {
+  "qld-ipswich":         "qld-bne-w",
+  "qld-gc-fs":           "qld-gc-s",
+  "qld-dd-toowoomba":    "qld-regional",
+  "qld-regional-central":"qld-regional",
+  "qld-regional-north":  "qld-regional",
+};
 const presenceBucket = (zoneId) => {
   if (!zoneId) return zoneId;
   if (!BETA_ZONE_BUCKETS) return zoneId; // post-beta: exact zone
@@ -118,8 +127,8 @@ const REGIONS = [
   { id: "qld-gc-s-broadbeach",       label: "Broadbeach & Mermaid Beach",     state: "QLD", group: "Gold Coast South" },
   { id: "qld-gc-s-burleigh",         label: "Burleigh Heads & Miami",         state: "QLD", group: "Gold Coast South" },
   { id: "qld-gc-s-robina",           label: "Robina & Varsity Lakes",         state: "QLD", group: "Gold Coast South" },
-  // Gold Coast Far South
-  { id: "qld-gc-fs-palmbeach",       label: "Palm Beach & Coolangatta",       state: "QLD", group: "Gold Coast Far South" },
+  // (Palm Beach/Coolangatta — grouped under Gold Coast South)
+  { id: "qld-gc-fs-palmbeach",       label: "Palm Beach & Coolangatta",       state: "QLD", group: "Gold Coast South" },
   // Darling Downs
   { id: "qld-dd-toowoomba",          label: "Toowoomba & Surrounds",          state: "QLD", group: "Darling Downs" },
   // Other QLD (kept for now until rezoned)
@@ -320,7 +329,7 @@ const REGION_BASE = {
   "qld-gc-s-broadbeach":       { hourly: 31.8, perDel: 12.9, score: 102 },
   "qld-gc-s-burleigh":         { hourly: 30.5, perDel: 12.4, score: 98  },
   "qld-gc-s-robina":           { hourly: 29.2, perDel: 11.9, score: 95  },
-  // Gold Coast Far South
+  // (Palm Beach/Coolangatta — grouped under Gold Coast South)
   "qld-gc-fs-palmbeach":       { hourly: 28.7, perDel: 11.7, score: 92  },
   // Darling Downs
   "qld-dd-toowoomba":          { hourly: 25.4, perDel: 10.7, score: 84  },
