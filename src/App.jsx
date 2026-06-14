@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
@@ -12,6 +12,37 @@ const ATO_KM_CAP = 5000;
 const ATO_KM_WARNING = 4500;
 const ATO_FY_LABEL = "2025–26";
 // ─────────────────────────────────────────────
+
+// Live driver card only renders its COUNT TILES when a bucket has at least this
+// many live drivers (the card + go-online button always render). Lower/remove
+// as the network grows.
+const LIVE_DRIVER_MIN = 3;
+
+// ─── Beta zone bucketing for live-driver counts ───────────────────────────
+// During beta the driver pool is tiny, so granular zones (28 in Brisbane) would
+// almost never reach LIVE_DRIVER_MIN. We GROUP granular zones into bigger
+// "buckets" for COUNTING ONLY — the real granular zone taxonomy is untouched
+// (shifts + benchmarks still use the precise zone). Flip BETA_ZONE_BUCKETS off
+// post-beta to count by exact zone again. Fully reversible, no data migration.
+const BETA_ZONE_BUCKETS = true;
+
+// Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
+// Rules: default = first 3 id segments. Some cities over-split at 3 segments
+// (Darwin/Hobart/Ipswich) so we collapse those to 2. Canberra's zones are spread
+// across 2- and 3-segment ids, so it's grouped explicitly. 2-segment ids
+// (e.g. "nsw-newcastle") are already their own bucket.
+const BUCKET_COLLAPSE_TO_CITY = new Set(["nt-darwin", "tas-hob", "qld-ipswich"]);
+const presenceBucket = (zoneId) => {
+  if (!zoneId) return zoneId;
+  if (!BETA_ZONE_BUCKETS) return zoneId; // post-beta: exact zone
+  const parts = zoneId.split("-");
+  // Explicit: all ACT/Canberra zones → one bucket.
+  if (parts[0] === "act") return "act-canberra";
+  if (parts.length <= 2) return zoneId; // already city-level
+  const cityPrefix = parts.slice(0, 2).join("-");      // e.g. "nt-darwin"
+  if (BUCKET_COLLAPSE_TO_CITY.has(cityPrefix)) return cityPrefix;
+  return parts.slice(0, 3).join("-");                  // subarea-level, e.g. "qld-bne-n"
+};
 
 // Local YYYY-MM-DD (device timezone). Avoids toISOString().slice(0,10),
 // which returns the UTC date — wrong by a day for AEST mornings (UTC+10).
@@ -2647,11 +2678,21 @@ function SignInModal({ open, onSendLink, onClose }) {
 }
 
 function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOffline }) {
-  const [tick, setTick] = useState(0); // refresh every 5 min
+  const [count, setCount] = useState(null); // {total, ue, dd} | null (loading/none)
+  const isOnline = liveStatus?.online === true;
+
+  // Poll real zone presence every 60s (and immediately on region/online change).
   useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 5 * 60 * 1000);
-    return () => clearInterval(id);
-  }, []);
+    if (!region) { setCount(null); return; }
+    let cancelled = false;
+    const load = async () => {
+      const c = await fetchZonePresence(presenceBucket(region));
+      if (!cancelled) setCount(c);
+    };
+    load();
+    const id = setInterval(load, 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [region, isOnline]); // re-fetch when the user toggles online so their own row reflects fast
 
   if (!region) {
     return (
@@ -2670,15 +2711,17 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
     );
   }
 
-  const count = getMockDriverCount(region);
-  const regionInfo = REGIONS.find(r => r.id === region);
-  const isOnline = liveStatus?.online === true;
-  const myPlatform = liveStatus?.platform;
+  // Show real counts only once a zone has enough live drivers (avoids a dead
+  // "0 drivers" during early beta). BUT the card itself — and crucially the
+  // go-online/offline control — must ALWAYS render, or no one could ever go
+  // online to build the network in the first place.
+  const hasEnough = count && count.total >= LIVE_DRIVER_MIN;
 
-  // If user is online, bump the displayed totals by 1
-  const displayTotal = count.total + (isOnline ? 1 : 0);
-  const displayUE = count.ue + (isOnline && (myPlatform === "uber_eats" || myPlatform === "both") ? 1 : 0);
-  const displayDD = count.dd + (isOnline && (myPlatform === "doordash"  || myPlatform === "both") ? 1 : 0);
+  const regionInfo = REGIONS.find(r => r.id === region);
+  const myPlatform = liveStatus?.platform;
+  const displayTotal = count?.total ?? 0;
+  const displayUE = count?.ue ?? 0;
+  const displayDD = count?.dd ?? 0;
 
   return (
     <div style={{
@@ -2705,39 +2748,56 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
             {regionInfo?.label || region}
           </div>
         </div>
-        <div style={{
-          fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"600",
-          color:"var(--muted2)",letterSpacing:".06em",textTransform:"uppercase",
-          padding:"3px 7px",background:"var(--elevated)",borderRadius:"5px",
-          flexShrink:0,marginLeft:"8px",
-        }}>Demo data</div>
+        {hasEnough && (
+          <div style={{
+            fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"600",
+            color:"var(--muted2)",letterSpacing:".06em",textTransform:"uppercase",
+            padding:"3px 7px",background:"var(--elevated)",borderRadius:"5px",
+            flexShrink:0,marginLeft:"8px",
+          }}>Live · last 10 min</div>
+        )}
       </div>
 
-      {/* Driver count tiles */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"14px"}}>
-        <div style={{
-          background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
-        }}>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayTotal}</div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Total online</div>
+      {/* Driver count tiles — only once the zone has enough live drivers */}
+      {hasEnough ? (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"14px"}}>
+          <div style={{
+            background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
+          }}>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayTotal}</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Total online</div>
+          </div>
+          <div style={{
+            background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
+            border: isOnline && (myPlatform === "uber_eats" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
+          }}>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayUE}</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Uber Eats</div>
+          </div>
+          <div style={{
+            background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
+            border: isOnline && (myPlatform === "doordash" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
+          }}>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayDD}</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>DoorDash</div>
+          </div>
         </div>
+      ) : (
         <div style={{
-          background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
-          border: isOnline && (myPlatform === "uber_eats" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
+          background:"var(--elevated)",borderRadius:"11px",padding:"14px 12px",marginBottom:"14px",textAlign:"center",
         }}>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayUE}</div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Uber Eats</div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"3px"}}>
+            {isOnline ? "You're on the map" : "Be the first online here"}
+          </div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",lineHeight:"1.4"}}>
+            {isOnline
+              ? "Live driver counts appear once a few more drivers are online in your zone."
+              : "Go online to start building the live map for your zone. Counts show once a few drivers are active."}
+          </div>
         </div>
-        <div style={{
-          background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
-          border: isOnline && (myPlatform === "doordash" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
-        }}>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayDD}</div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>DoorDash</div>
-        </div>
-      </div>
+      )}
 
-      {/* CTA */}
+      {/* CTA — always available so drivers can go online regardless of count */}
       {isOnline ? (
         <button
           onClick={onGoOffline}
@@ -7924,9 +7984,40 @@ export default function GigTrack() {
     toastTimer.current = setTimeout(() => setToast(""), 2400);
   };
 
+  // Heartbeat: while online, refresh presence last_seen every 4 min so the user
+  // stays inside the 10-min live window through a shift. Also re-asserts on mount
+  // if they were already online (e.g. reopened the app).
+  useEffect(() => {
+    if (!liveStatus?.online) return;
+    updatePresence({ zone: presenceBucket(liveStatus.zone || region), platform: liveStatus.platform, online: true });
+    const id = setInterval(() => {
+      updatePresence({ zone: presenceBucket(liveStatus.zone || region), platform: liveStatus.platform, online: true });
+    }, 4 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [liveStatus?.online, liveStatus?.zone, liveStatus?.platform, region]);
+
   const saveUser = (u) => {
     DB.set("gt_user", u);
     setUser(u);
+  };
+
+  // Push current profile settings to the cloud. Pass overrides for the field
+  // just changed (state setters are async, so the new value isn't in state yet).
+  // Without this, settings changes only hit localStorage and get overwritten by
+  // the stale cloud profile on the next sign-in/refresh.
+  const syncProfile = (overrides = {}) => {
+    saveProfile({
+      name: user?.name,
+      region,
+      kmPref,
+      weeklyGoal,
+      isPro: !!user?.isPro,
+      isGuest: !!user?.isGuest,
+      startOdo: user?.startOdo,
+      fuelEff: fuelEfficiency,
+      fuelPrice,
+      ...overrides,
+    }).catch(() => {});
   };
 
   const handleDeleteAccount = () => {
@@ -8177,6 +8268,7 @@ export default function GigTrack() {
           liveStatus={liveStatus}
           onGoOnline={() => setPlatformPickerOpen(true)}
           onGoOffline={() => {
+            updatePresence({ zone: presenceBucket(region), platform: liveStatus?.platform, online: false }); // fire-and-forget
             setLiveStatus(null);
             DB.remove("gt_live_status");
             showToast("You're offline");
@@ -8411,21 +8503,22 @@ export default function GigTrack() {
           onBack={() => setScreen("home")}
           onUpdateUser={saveUser}
           kmPref={kmPref}
-          onKmPref={(p) => { setKmPref(p); DB.set("gt_kmpref", p); }}
+          onKmPref={(p) => { setKmPref(p); DB.set("gt_kmpref", p); syncProfile({ kmPref: p }); }}
           atoRate={atoRate}
           onAtoRate={(r) => { setAtoRate(r); DB.set("gt_atorate", r); }}
           targets={targets}
           onTargets={(t) => { setTargets(t); DB.set("gt_targets", t); }}
           weeklyGoal={weeklyGoal}
-          onWeeklyGoal={(g) => { setWeeklyGoal(g); DB.set("gt_weeklygoal", g); }}
+          onWeeklyGoal={(g) => { setWeeklyGoal(g); DB.set("gt_weeklygoal", g); syncProfile({ weeklyGoal: g }); }}
           fuelEfficiency={fuelEfficiency}
-          onFuelEfficiency={(v) => { setFuelEfficiency(v); DB.set("gt_fuel_efficiency", v); }}
+          onFuelEfficiency={(v) => { setFuelEfficiency(v); DB.set("gt_fuel_efficiency", v); syncProfile({ fuelEff: v }); }}
           fuelPrice={fuelPrice}
-          onFuelPrice={(v) => { setFuelPrice(v); DB.set("gt_fuel_price", v); }}
+          onFuelPrice={(v) => { setFuelPrice(v); DB.set("gt_fuel_price", v); syncProfile({ fuelPrice: v }); }}
           region={region}
           onRegion={(r) => {
             setRegion(r);
             DB.set("gt_region", r);
+            syncProfile({ region: r });
             // If region changed while online, go offline (presence is zone-specific)
             if (liveStatus?.online && liveStatus.zone !== r) {
               setLiveStatus(null);
@@ -8469,6 +8562,7 @@ export default function GigTrack() {
           };
           setLiveStatus(status);
           DB.set("gt_live_status", status);
+          updatePresence({ zone: presenceBucket(region), platform, online: true }); // fire-and-forget
           setPlatformPickerOpen(false);
           showToast("You're online — visible to drivers in your zone");
         }}

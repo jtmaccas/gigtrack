@@ -141,3 +141,61 @@ export const incrementScreenshotImportsUsed = async () => {
     return null;
   }
 };
+
+// ─── LIVE DRIVER PRESENCE ─────────────────────────────────────────────────
+// Liveness window: a row counts as "live" if online AND last_seen within 10 min.
+export const PRESENCE_LIVE_MINUTES = 10;
+
+// Upsert the current user's presence row. Pass online=true on go-online and on
+// heartbeat; online=false on go-offline. Fire-and-forget; returns ok boolean.
+export const updatePresence = async ({ zone, platform, online }) => {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return false;
+    const { error } = await supabase.from("presence").upsert({
+      user_id:   user.id,
+      zone:      zone || null,
+      platform:  platform || null,
+      online:    !!online,
+      last_seen: new Date().toISOString(),
+    }, { onConflict: "user_id" });
+    if (error) {
+      console.warn("[GigTrack] updatePresence error:", error.message);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("[GigTrack] updatePresence threw:", e);
+    return false;
+  }
+};
+
+// Count live drivers in a zone, split by platform.
+// Returns { total, ue, dd } — "both" counts toward UE and DD and total.
+// total counts distinct online drivers (both = 1 driver). Returns null on error.
+export const fetchZonePresence = async (zone) => {
+  if (!zone) return null;
+  try {
+    const cutoff = new Date(Date.now() - PRESENCE_LIVE_MINUTES * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from("presence")
+      .select("platform")
+      .eq("zone", zone)
+      .eq("online", true)
+      .gte("last_seen", cutoff);
+    if (error) {
+      console.warn("[GigTrack] fetchZonePresence error:", error.message);
+      return null;
+    }
+    const rows = data || [];
+    let ue = 0, dd = 0;
+    for (const r of rows) {
+      if (r.platform === "uber_eats" || r.platform === "both") ue += 1;
+      if (r.platform === "doordash"  || r.platform === "both") dd += 1;
+    }
+    return { total: rows.length, ue, dd };
+  } catch (e) {
+    console.warn("[GigTrack] fetchZonePresence threw:", e);
+    return null;
+  }
+};
