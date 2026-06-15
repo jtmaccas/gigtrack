@@ -206,3 +206,31 @@ export const fetchZonePresence = async (zone) => {
     return null;
   }
 };
+
+// ─── LOCAL BENCHMARKS ─────────────────────────────────────────────────────
+// Real zone benchmark over the last 7 completed days, via the get_zone_benchmark
+// DB function (security definer, aggregates only). Returns null when the zone has
+// fewer than 3 distinct drivers (privacy gate) or on error — caller shows the
+// "building" state. Shape: { hourly, perDel, score, shifts } as strings/number.
+export const fetchZoneBenchmark = async (region) => {
+  if (!region) return null;
+  try {
+    const { data, error } = await supabase.rpc("get_zone_benchmark", { p_region: region });
+    if (error) {
+      console.warn("[GigTrack] fetchZoneBenchmark error:", error.message);
+      return null;
+    }
+    // RPC returns an array of rows; the gate means 0 rows = not enough drivers.
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return null;
+    return {
+      hourly: row.avg_hourly != null ? Number(row.avg_hourly).toFixed(2) : null,
+      perDel: row.avg_per_del != null ? Number(row.avg_per_del).toFixed(2) : null,
+      score:  row.avg_score  != null ? Number(row.avg_score).toFixed(1)  : null,
+      shifts: row.shift_count ?? 0,
+    };
+  } catch (e) {
+    console.warn("[GigTrack] fetchZoneBenchmark threw:", e);
+    return null;
+  }
+};

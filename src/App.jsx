@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 
 // ─────────────────────────────────────────────
@@ -513,6 +513,8 @@ const REGION_BASE = {
 // ─────────────────────────────────────────────────────────────────────────────
 const BENCHMARK_MIN_ONLINE_MINS = 60;
 
+// ⚠️ UNUSED — replaced by real benchmarks (fetchZoneBenchmark → get_zone_benchmark
+// DB function). Kept only for reference; nothing calls this anymore. Safe to delete.
 function getRegionBenchmark(regionId) {
   const base = REGION_BASE[regionId];
   if (!base) return null;
@@ -2861,6 +2863,24 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
 
 // ─── COMMUNITY BENCHMARK CARD ───
 function BenchmarkCard({ region, onGoToSettings }) {
+  const [benchmark, setBenchmark] = useState(undefined); // undefined=loading, null=not enough data, object=data
+  const isOnline = false;
+
+  useEffect(() => {
+    if (!region) { setBenchmark(undefined); return; }
+    let cancelled = false;
+    setBenchmark(undefined);
+    fetchZoneBenchmark(region).then(b => { if (!cancelled) setBenchmark(b); });
+    // Refresh on foreground return (cheap; number only changes daily).
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        fetchZoneBenchmark(region).then(b => { if (!cancelled) setBenchmark(b); });
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVisible); };
+  }, [region]);
+
   if (!region) {
     return (
       <div className="benchmark-prompt" onClick={onGoToSettings}>
@@ -2875,11 +2895,44 @@ function BenchmarkCard({ region, onGoToSettings }) {
   }
 
   const regionInfo = REGIONS.find(r => r.id === region);
-  const benchmark  = getRegionBenchmark(region);
-  if (!benchmark) return null;
 
-  const now = new Date();
-  const weekLabel = now.toLocaleDateString("en-AU", { day: "2-digit", month: "short" });
+  // Loading state
+  if (benchmark === undefined) {
+    return (
+      <div className="benchmark-card">
+        <div className="benchmark-header">
+          <div>
+            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Local Benchmarks</div>
+            <div className="benchmark-region">{regionInfo?.label || region}</div>
+            <div className="benchmark-week">Loading recent data…</div>
+          </div>
+        </div>
+        <div className="benchmark-stats" style={{opacity:0.4}}>
+          <div className="benchmark-stat"><div className="benchmark-stat-label">Avg/hr</div><div className="benchmark-stat-value">—</div></div>
+          <div className="benchmark-stat"><div className="benchmark-stat-label">Avg/del</div><div className="benchmark-stat-value">—</div></div>
+          <div className="benchmark-stat"><div className="benchmark-stat-label">Based on</div><div className="benchmark-stat-value">—</div></div>
+        </div>
+      </div>
+    );
+  }
+
+  // Not enough data yet (fewer than 3 distinct drivers in the last 7 days)
+  if (!benchmark) {
+    return (
+      <div className="benchmark-card">
+        <div className="benchmark-header">
+          <div>
+            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Local Benchmarks</div>
+            <div className="benchmark-region">{regionInfo?.label || region}</div>
+            <div className="benchmark-week">Building — not enough shifts yet</div>
+          </div>
+        </div>
+        <div className="benchmark-footer" style={{paddingTop:"4px"}}>
+          We show your zone's averages once GigTrack drivers have logged at least a few shifts here in the last 7 days. Keep logging — it'll appear soon.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="benchmark-card">
@@ -2887,18 +2940,18 @@ function BenchmarkCard({ region, onGoToSettings }) {
         <div>
           <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Local Benchmarks</div>
           <div className="benchmark-region">{regionInfo?.label || region}</div>
-          <div className="benchmark-week">Week of {weekLabel} · GigTrack drivers</div>
+          <div className="benchmark-week">Last 7 days · GigTrack drivers</div>
         </div>
         <div className="benchmark-live-dot" />
       </div>
       <div className="benchmark-stats">
         <div className="benchmark-stat">
           <div className="benchmark-stat-label">Avg/hr</div>
-          <div className="benchmark-stat-value">${benchmark.hourly}</div>
+          <div className="benchmark-stat-value">{benchmark.hourly != null ? `$${benchmark.hourly}` : "—"}</div>
         </div>
         <div className="benchmark-stat">
           <div className="benchmark-stat-label">Avg/del</div>
-          <div className="benchmark-stat-value">${benchmark.perDel}</div>
+          <div className="benchmark-stat-value">{benchmark.perDel != null ? `$${benchmark.perDel}` : "—"}</div>
         </div>
         <div className="benchmark-stat">
           <div className="benchmark-stat-label">Based on</div>
@@ -2906,8 +2959,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
         </div>
       </div>
       <div className="benchmark-footer">
-        Based on anonymised GigTrack data · Updates weekly<br/>
-        <span style={{color:"var(--blue)"}}>Live regional data activates when Firebase connects</span>
+        Anonymised averages from GigTrack drivers in your zone · rolling last 7 days
       </div>
     </div>
   );
