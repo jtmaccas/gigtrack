@@ -18,6 +18,11 @@ const ATO_FY_LABEL = "2025–26";
 // as the network grows.
 const LIVE_DRIVER_MIN = 3;
 
+// Auto-expire a forgotten online session after this much idle time (no ping).
+// Protects beta live-driver data from drivers who finished work but never tapped
+// "Go offline" — opening the app later won't resurrect a stale session. 3 hours.
+const LIVE_SESSION_MAX_IDLE_MS = 3 * 60 * 60 * 1000;
+
 // ─── Beta zone bucketing for live-driver counts ───────────────────────────
 // During beta the driver pool is tiny, so granular zones (28 in Brisbane) would
 // almost never reach LIVE_DRIVER_MIN. We GROUP granular zones into bigger
@@ -8033,7 +8038,20 @@ export default function GigTrack() {
     if (fp != null) setFuelPrice(fp);
     if (rg != null) setRegion(rg);
     if (ss != null) setShowScoring(!!ss);
-    if (ls && ls.online) setLiveStatus(ls);
+    if (ls && ls.online) {
+      // Auto-expire a forgotten "online" session: if it hasn't pinged in over
+      // LIVE_SESSION_MAX_IDLE_MS (3h), the driver almost certainly finished work
+      // without tapping offline. Flip them offline instead of resurrecting them
+      // (otherwise opening the app next morning would re-ping them live).
+      const lastPing = ls.lastPing || ls.since || 0;
+      if (Date.now() - lastPing > LIVE_SESSION_MAX_IDLE_MS) {
+        DB.remove("gt_live_status");
+        // best-effort cloud offline (their bucket may be stale but that's fine)
+        if (ls.zone || rg) updatePresence({ zone: presenceBucket(ls.zone || rg), platform: ls.platform, online: false });
+      } else {
+        setLiveStatus(ls);
+      }
+    }
     if (a) {
       setActiveShift(a);
       // If there was an active shift, go straight back to the shift screen
@@ -8063,11 +8081,18 @@ export default function GigTrack() {
   // every time they switch back to the app from Maps/UE/DD, they're re-marked.
   useEffect(() => {
     if (!liveStatus?.online) return;
-    const ping = () => updatePresence({
-      zone: presenceBucket(liveStatus.zone || region),
-      platform: liveStatus.platform,
-      online: true,
-    });
+    const ping = () => {
+      updatePresence({
+        zone: presenceBucket(liveStatus.zone || region),
+        platform: liveStatus.platform,
+        online: true,
+      });
+      // Record last activity locally so a fresh boot can tell a still-active
+      // session from a forgotten one. Update localStorage directly (not state)
+      // to avoid re-triggering this effect on every ping.
+      const cur = DB.get("gt_live_status");
+      if (cur && cur.online) DB.set("gt_live_status", { ...cur, lastPing: Date.now() });
+    };
     ping(); // assert now (mount / status change)
     const id = setInterval(ping, 4 * 60 * 1000);
     const onVisible = () => { if (document.visibilityState === "visible") ping(); };
@@ -8658,6 +8683,7 @@ export default function GigTrack() {
             platform,
             zone: region,
             since: Date.now(),
+            lastPing: Date.now(), // seeds the idle-expiry check
           };
           setLiveStatus(status);
           DB.set("gt_live_status", status);
