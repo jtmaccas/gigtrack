@@ -1780,7 +1780,7 @@ function WelcomeScreen({ onSignIn }) {
         fontSize:"11px",color:"var(--muted2)",
         textAlign:"center",maxWidth:"300px",lineHeight:"1.5",
       }}>
-        Designed for Australian Uber Eats &amp; DoorDash drivers. Free to use forever — Pro features available.
+        Designed for Australian Uber Eats &amp; DoorDash drivers.
       </div>
     </div>
   );
