@@ -1528,15 +1528,17 @@ function GTBrand({ size = 30, fontSize = 18 }) {
   );
 }
 
-function ConfirmDialog({ show, title, sub, onConfirm, onCancel }) {
+function ConfirmDialog({ show, title, sub, onConfirm, onCancel, confirmLabel, cancelLabel }) {
+  const confirmText = confirmLabel || (title.includes("Delete") ? "🗑 Yes, Delete" : "Confirm");
+  const cancelText = cancelLabel || "Cancel";
   return (
     <div className={`overlay${show ? " show" : ""}`} onClick={(e) => e.target.className.includes("overlay") && onCancel()}>
       <div className="confirm-box">
         <div className="confirm-title">{title}</div>
         <div className="confirm-sub">{sub}</div>
         <div className="confirm-btns">
-          <button className="btn btn-danger" style={{width:"100%",padding:"16px"}} onClick={onConfirm}>{title.includes("Delete") ? "🗑 Yes, Delete" : "Confirm"}</button>
-          <button className="btn btn-outline" style={{width:"100%",padding:"16px"}} onClick={onCancel}>Cancel</button>
+          <button className="btn btn-danger" style={{width:"100%",padding:"16px"}} onClick={onConfirm}>{confirmText}</button>
+          <button className="btn btn-outline" style={{width:"100%",padding:"16px"}} onClick={onCancel}>{cancelText}</button>
         </div>
       </div>
     </div>
@@ -2118,7 +2120,7 @@ function FuelCard({ totalKm, totalEarned, fuelEfficiency, fuelPrice, onSetFuel }
 }
 
 // ─── ACTIVE SHIFT SCREEN — simple timer, no GPS ───────────────────────────
-function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd }) {
+function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
   const [elapsed, setElapsed] = useState(0);
   const [gpsKm, setGpsKm] = useState(0);
   const [gpsStatus, setGpsStatus] = useState("asking"); // asking | granted | denied | unsupported
@@ -2232,7 +2234,7 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd }) {
 
       {/* Topbar */}
       <div className="topbar">
-        <div style={{width:"34px"}} />
+        <button className="topbar-back" onClick={onBack} aria-label="Back to home">←</button>
         <div className="topbar-title">Active Shift</div>
         <div style={{width:"34px"}} />
       </div>
@@ -3026,6 +3028,15 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
   const showWarning = fyKm >= ATO_KM_WARNING;
 
   const weekEarned = weekTrips.reduce((s, t) => s + t.totalEarned, 0);
+
+  // Tick once a second while a shift is running (and not paused) so the
+  // "Shift in progress" card's timer climbs live, not just on refresh.
+  const [, setNowTick] = useState(0);
+  useEffect(() => {
+    if (!activeShift || activeShift.paused) return;
+    const id = setInterval(() => setNowTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [activeShift?.resumedAt, activeShift?.paused, !!activeShift]);
 
   // Weekly stats for the 3-tile row (matches the hero earnings figure)
   const weekActiveHrs  = weekTrips.reduce((s, t) => s + (t.activeMin || 0), 0);
@@ -4661,11 +4672,16 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
 
   const [shiftDate, setShiftDate] = useState(initShiftDate);
   // Check for order session prefill
-  const orderPrefill = DB.get("gt_order_prefill");
-  if (orderPrefill) DB.remove("gt_order_prefill");
-  // Check for voice entry prefill
-  const voicePrefill = DB.get("gt_voice_prefill");
-  if (voicePrefill) DB.remove("gt_voice_prefill");
+  // Read one-shot prefills ONCE (useState initializer runs a single time even if
+  // the component body re-renders). Removing them during render caused a race:
+  // a re-render would find them already deleted and lose the carried-over data
+  // (earnings/tips/dels vanished when coming from the Confirm screen's "add details").
+  const [orderPrefill] = useState(() => DB.get("gt_order_prefill"));
+  const [voicePrefill] = useState(() => DB.get("gt_voice_prefill"));
+  useEffect(() => {
+    if (orderPrefill) DB.remove("gt_order_prefill");
+    if (voicePrefill) DB.remove("gt_voice_prefill");
+  }, []);
 
   const [totalEarned, setTotalEarned] = useState(
     voicePrefill?.earned != null ? String(voicePrefill.earned)
@@ -8267,40 +8283,66 @@ export default function GigTrack() {
   const handleSaved = (rawRecord, isEdit) => {
     // Tag with owner user id for safety. Prevents this shift from being
     // pushed to a different user's cloud account if accounts switch on this device.
-    const record = { ...rawRecord, _owner: authUser?.id || null };
+    // Stamp the zone the shift was done in (current region) so it stays put even
+    // if the driver later changes zones — but only for NEW shifts; editing an old
+    // one must not relocate it. Preserve an existing region on edit.
+    const record = {
+      ...rawRecord,
+      _owner: authUser?.id || null,
+      region: isEdit ? (rawRecord.region ?? null) : (region ?? null),
+    };
 
-    let updated;
-    if (isEdit) {
-      updated = trips.map(t => t.id === record.id ? record : t);
-      showToast("Shift updated ✅");
-    } else {
-      updated = [...trips, record];
-      showToast("Shift saved 🎉");
-    }
-    setTrips(updated);
-    DB.set("gt_trips", updated);
-    setEditId(null);
-    setTimerPrefill(null);
-
-    // Cloud sync — fire and forget. If it fails (offline, etc), the synced
-    // flag stays false and Pass 4's reconciliation will catch it on next boot.
-    syncShift(record).then(result => {
-      if (result.ok) {
-        // Mark this shift as synced in localStorage
-        const synced = trips.map(t => t.id === record.id ? { ...record, _synced: true } : t);
-        // If it was a new insert, the trip we want is in `updated` but not yet in state
-        const finalList = isEdit
-          ? synced
-          : [...trips, { ...record, _synced: true }];
-        DB.set("gt_trips", finalList);
-        setTrips(finalList);
+    // The actual save — extracted so the 0-km warning can defer it.
+    const commit = () => {
+      let updated;
+      if (isEdit) {
+        updated = trips.map(t => t.id === record.id ? record : t);
+        showToast("Shift updated ✅");
+      } else {
+        updated = [...trips, record];
+        showToast("Shift saved 🎉");
       }
-    });
+      setTrips(updated);
+      DB.set("gt_trips", updated);
+      setEditId(null);
+      setTimerPrefill(null);
 
-    setTimeout(() => {
-      if (isEdit) { setDetailId(record.id); setScreen("detail"); }
-      else setScreen("home");
-    }, 700);
+      // Cloud sync — fire and forget. If it fails (offline, etc), the synced
+      // flag stays false and Pass 4's reconciliation will catch it on next boot.
+      syncShift(record).then(result => {
+        if (result.ok) {
+          const synced = trips.map(t => t.id === record.id ? { ...record, _synced: true } : t);
+          const finalList = isEdit
+            ? synced
+            : [...trips, { ...record, _synced: true }];
+          DB.set("gt_trips", finalList);
+          setTrips(finalList);
+        }
+      });
+
+      setTimeout(() => {
+        if (isEdit) { setDetailId(record.id); setScreen("detail"); }
+        else setScreen("home");
+      }, 700);
+    };
+
+    // Warn (but allow) if total km is zero/missing — km drives the ATO deduction,
+    // so a 0-km shift silently loses the driver a tax claim. Applies to ALL entry
+    // paths (manual, screenshot, timer) since they all route through here.
+    const km = Number(record.totalKm) || 0;
+    if (km <= 0) {
+      setConfirm({
+        title: "Save with no distance?",
+        sub: "This shift has 0 km, so it won't earn an ATO tax deduction. You can add the distance now, or save it anyway.",
+        confirmLabel: "Save anyway",
+        cancelLabel: "Go back & add km",
+        onConfirm: () => { setConfirm(null); commit(); },
+        onCancel:  () => setConfirm(null),
+      });
+      return;
+    }
+
+    commit();
   };
 
   const handleDelete = (id) => {
@@ -8593,6 +8635,7 @@ export default function GigTrack() {
           onPause={handlePauseTimer}
           onResume={handleResumeTimer}
           onEnd={handleEndTimer}
+          onBack={() => setScreen("home")}
         />
       )}
       {screen === "ordersession" && (
@@ -8723,7 +8766,8 @@ export default function GigTrack() {
       )}
       <ConfirmDialog
         show={!!confirm} title={confirm?.title || ""} sub={confirm?.sub || ""}
-        onConfirm={confirm?.onConfirm} onCancel={() => setConfirm(null)}
+        confirmLabel={confirm?.confirmLabel} cancelLabel={confirm?.cancelLabel}
+        onConfirm={confirm?.onConfirm} onCancel={confirm?.onCancel || (() => setConfirm(null))}
       />
       <Toast msg={toast} />
       <PlatformPickerModal

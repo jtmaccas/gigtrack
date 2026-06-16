@@ -8,6 +8,7 @@ function tripToRow(trip, userId) {
     user_id:       userId,
     ts:            trip.ts,
     platform:      trip.platform || null,
+    region:        trip.region ?? null,
 
     base:          trip.base ?? 0,
     tip:           trip.tip ?? 0,
@@ -167,6 +168,7 @@ function rowToTrip(row) {
     id:           row.id,
     ts:           row.ts,
     platform:     row.platform || null,
+    region:       row.region ?? null,
     base:         row.base ?? 0,
     tip:          row.tip ?? 0,
     bonus:        row.bonus ?? 0,
