@@ -1210,11 +1210,6 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .empty-title{font-size:16px;font-weight:700;margin-bottom:6px;color:var(--text);}
 .empty-sub{font-size:12px;line-height:1.6;}
 
-/* Fuel modal */
-.fuel-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:300;display:flex;align-items:flex-end;justify-content:center;}
-.fuel-modal{background:var(--surface);border:0.5px solid var(--border);border-radius:16px 16px 0 0;padding:24px 18px 36px;width:100%;max-width:480px;}
-.fuel-modal-title{font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px;}
-.fuel-modal-sub{font-size:12px;color:var(--muted);margin-bottom:20px;line-height:1.5;}
 
 /* Trend card */
 .trend-card{background:var(--surface);border:0.5px solid var(--border);border-radius:12px;padding:16px;margin-bottom:8px;}
@@ -1346,21 +1341,6 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .km-toggle-btn{padding:10px 8px;border-radius:var(--rs);background:var(--elevated);border:1.5px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;transition:all var(--tr);text-align:center;}
 .km-toggle-btn.active{border-color:var(--blue);color:var(--blue);background:var(--blue-dim);}
 
-/* Fuel card */
-.fuel-card{background:var(--amber-dim);border:0.5px solid var(--amber-border);border-radius:var(--rs);padding:14px 16px;margin-top:10px;}
-.fuel-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
-.fuel-card-title{font-size:10px;color:var(--amber);letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
-.fuel-card-icon{font-size:18px;opacity:.8;}
-.fuel-card-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;}
-.fuel-card-label{font-size:11px;color:var(--muted);}
-.fuel-card-value{font-size:15px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;}
-.fuel-card-net{display:flex;justify-content:space-between;align-items:center;border-top:0.5px solid var(--amber-border);margin-top:8px;padding-top:10px;}
-.fuel-card-net-label{font-size:13px;font-weight:700;color:var(--amber);}
-.fuel-card-net-value{font-size:24px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums;}
-.fuel-prompt{background:var(--elevated);border:0.5px solid var(--border);border-radius:var(--rs);padding:12px 14px;margin-top:10px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:border-color var(--tr);}
-.fuel-prompt:hover{border-color:var(--amber);}
-.fuel-prompt-text{font-size:11px;color:var(--muted);line-height:1.5;}
-.fuel-prompt-text strong{color:var(--amber);display:block;font-size:12px;font-weight:700;margin-bottom:2px;}
 
 /* Active Shift Screen */
 .active-shift-screen{display:flex;flex-direction:column;height:100vh;background:var(--bg);overflow:hidden;}
@@ -1761,7 +1741,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
               borderRadius:"12px",
             }}>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",color:"var(--muted)",marginBottom:"10px",letterSpacing:".01em"}}>Plus everything in Free:</div>
-              {["Shift timer & manual logging","KM tracking & ATO deduction calc","Shift scoring","Fuel cost estimator","Lifetime stats & charts"].map(f => (
+              {["Shift timer & manual logging","KM tracking & ATO deduction calc","Shift scoring","Lifetime stats & charts"].map(f => (
                 <div key={f} style={{display:"flex",alignItems:"center",gap:"9px",padding:"3px 0",fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"#D1D5DB"}}>
                   <span style={{color:"var(--green)",fontWeight:"700",fontSize:"12px"}}>✓</span> {f}
                 </div>
@@ -1967,7 +1947,6 @@ function SetupScreen({ onComplete }) {
                 ["Shift logging", "timer + manual"],
                 ["ATO km deductions", "automatic"],
                 ["Shift scoring", "& lifetime stats"],
-                ["Fuel cost estimator", null],
               ].map(([title, sub]) => (
                 <div key={title} style={{display:"flex",alignItems:"center",gap:"9px",padding:"4px 0"}}>
                   <span style={{color:"var(--green)",fontWeight:"700",fontSize:"13px",flexShrink:0}}>✓</span>
@@ -2143,54 +2122,6 @@ function LiveTimer({ activeShift, onEndShift, onPauseShift, onResumeShift }) {
         <button className="timer-btn timer-btn-end" onClick={onEndShift}>
           ⏹ End Shift
         </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── FUEL CARD ───
-function FuelCard({ totalKm, totalEarned, fuelEfficiency, fuelPrice, onSetFuel }) {
-  const hasFuelSettings = fuelEfficiency > 0 && fuelPrice > 0;
-
-  if (!hasFuelSettings) {
-    return (
-      <div className="fuel-prompt" onClick={onSetFuel}>
-        <div style={{fontSize:"24px",flexShrink:0}}>⛽</div>
-        <div className="fuel-prompt-text">
-          <strong>Add fuel cost estimator</strong>
-          Tap to enter your L/100km and fuel price — stays right here on this form.
-        </div>
-        <div style={{color:"var(--muted2)",fontSize:"18px",flexShrink:0}}>›</div>
-      </div>
-    );
-  }
-
-  const fuelCost  = totalKm > 0 ? (totalKm / 100) * fuelEfficiency * fuelPrice : 0;
-  const netEarned = totalEarned - fuelCost;
-
-  return (
-    <div className="fuel-card">
-      <div className="fuel-card-header">
-        <div className="fuel-card-title">⛽ Fuel Cost Estimator</div>
-        <div className="fuel-card-icon" style={{cursor:"pointer"}} onClick={onSetFuel} title="Edit fuel settings">✏️</div>
-      </div>
-      <div className="fuel-card-row">
-        <div className="fuel-card-label">Distance</div>
-        <div className="fuel-card-value">{totalKm.toFixed(1)} km</div>
-      </div>
-      <div className="fuel-card-row">
-        <div className="fuel-card-label">Fuel used (~{fuelEfficiency}L/100km)</div>
-        <div className="fuel-card-value">{((totalKm / 100) * fuelEfficiency).toFixed(1)} L</div>
-      </div>
-      <div className="fuel-card-row">
-        <div className="fuel-card-label">Fuel cost (${fuelPrice.toFixed(2)}/L)</div>
-        <div className="fuel-card-value" style={{color:"var(--red)"}}>−${fuelCost.toFixed(2)}</div>
-      </div>
-      <div className="fuel-card-net">
-        <div className="fuel-card-net-label">Net Earnings (after fuel)</div>
-        <div className="fuel-card-net-value" style={{color: netEarned >= 0 ? "var(--green)" : "var(--red)"}}>
-          ${netEarned.toFixed(2)}
-        </div>
       </div>
     </div>
   );
@@ -4757,7 +4688,7 @@ function ManualGroupHeader({ children }) {
 }
 
 // ─── NEW / EDIT SHIFT ───
-function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefill, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onFuelSave, onGoToSettings, isPro = false, onUpgrade, showScoring = true }) {
+function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefill, targets = DEFAULT_TARGETS, onGoToSettings, isPro = false, onUpgrade, showScoring = true }) {
   const isEdit = !!editTrip;
 
   // Format a Date to the value datetime-local inputs expect: "YYYY-MM-DDTHH:MM"
@@ -4916,9 +4847,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     onSaved(record, isEdit);
   };
 
-  const [showFuelModal, setShowFuelModal] = useState(false);
-  const [fuelModalEff, setFuelModalEff]   = useState(fuelEfficiency ? String(fuelEfficiency) : "");
-  const [fuelModalPr,  setFuelModalPr]    = useState(fuelPrice ? String(fuelPrice) : "");
 
   const f = (id, err) => `input-field${err ? " err" : ""}`;
 
@@ -5262,31 +5190,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
               />
             </div>
 
-            {/* Fuel settings button */}
-            <button
-              onClick={() => setShowFuelModal(true)}
-              style={{
-                padding:"11px 13px",
-                background:"var(--surface)",
-                border:"0.5px dashed var(--border)",borderRadius:"11px",
-                cursor:"pointer",textAlign:"left",
-                fontFamily:"'Inter',sans-serif",
-                display:"flex",alignItems:"center",gap:"10px",
-              }}
-            >
-              <span style={{fontSize:"15px"}}>⛽</span>
-              <div style={{flex:1}}>
-                <div style={{fontSize:"12px",fontWeight:"600",color:"var(--text)"}}>
-                  {fuelEfficiency && fuelPrice ? "Update fuel settings" : "Set fuel settings"}
-                </div>
-                <div style={{fontSize:"10.5px",color:"var(--muted2)",marginTop:"2px"}}>
-                  {fuelEfficiency && fuelPrice
-                    ? `${fuelEfficiency} L/100km @ $${fuelPrice}/L`
-                    : "Add efficiency &amp; price for fuel cost estimates"}
-                </div>
-              </div>
-              <span style={{fontSize:"12px",color:"var(--muted2)"}}>›</span>
-            </button>
           </div>
 
         </div>
@@ -5353,15 +5256,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
             </div>
             <div className="ded-icon">🧾</div>
           </div>
-
-          {/* Live fuel cost */}
-          <FuelCard
-            totalKm={derivedTotalKm}
-            totalEarned={calc.totalEarned}
-            fuelEfficiency={fuelEfficiency}
-            fuelPrice={fuelPrice}
-            onSetFuel={() => setShowFuelModal(true)}
-          />
         </div>
 
       </div>
@@ -5370,41 +5264,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
         <button className="btn-save" onClick={save}>{isEdit ? "Save Changes" : "Save Shift"}</button>
       </div>
 
-      {/* Inline Fuel Settings Modal */}
-      {showFuelModal && (
-        <div className="fuel-modal-overlay" onClick={e => e.target.className === "fuel-modal-overlay" && setShowFuelModal(false)}>
-          <div className="fuel-modal">
-            <div className="fuel-modal-title">⛽ Fuel Settings</div>
-            <div className="fuel-modal-sub">Enter your details below. This saves to your account and applies to all shifts.</div>
-            <div className="input-group">
-              <div className="input-row">
-                <div className="input-label">Fuel efficiency (L/100km)</div>
-                <input className="input-field" type="number" min="0" step="0.1" placeholder="e.g. 8.5" value={fuelModalEff} onChange={e => setFuelModalEff(e.target.value)} />
-              </div>
-              <div className="input-row">
-                <div className="input-label">Fuel price ($/L)</div>
-                <input className="input-field" type="number" min="0" step="0.01" placeholder="e.g. 2.05" value={fuelModalPr} onChange={e => setFuelModalPr(e.target.value)} />
-              </div>
-              {parseFloat(fuelModalEff) > 0 && parseFloat(fuelModalPr) > 0 && (
-                <div style={{fontSize:"11px",color:"var(--muted2)",padding:"8px 12px",background:"var(--surface)",borderRadius:"8px",border:"1px solid #252530"}}>
-                  💡 At these settings, a 50km shift costs ~${((50/100)*parseFloat(fuelModalEff)*parseFloat(fuelModalPr)).toFixed(2)} in fuel.
-                </div>
-              )}
-            </div>
-            <div style={{display:"flex",gap:"8px",marginTop:"16px"}}>
-              <button className="btn btn-outline" style={{flex:1,padding:"14px"}} onClick={() => setShowFuelModal(false)}>Cancel</button>
-              <button className="btn btn-primary" style={{flex:2,padding:"14px"}} onClick={() => {
-                const fe = parseFloat(fuelModalEff);
-                const fp = parseFloat(fuelModalPr);
-                if (!isNaN(fe) && fe > 0) onFuelSave(fe, fp > 0 ? fp : fuelPrice);
-                if (!isNaN(fp) && fp > 0) onFuelSave(fuelEfficiency, fp);
-                if (!isNaN(fe) && fe > 0 && !isNaN(fp) && fp > 0) onFuelSave(fe, fp);
-                setShowFuelModal(false);
-              }}>Save &amp; Apply</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -5717,7 +5576,7 @@ const PERIODS = [
   { id: "weekly",  label: "Weekly" },
 ];
 
-function StatsTile({ trips, kmPref, fuelEfficiency, fuelPrice }) {
+function StatsTile({ trips, kmPref }) {
   const [period, setPeriod] = useState("lifetime");
   const filtered = filterTrips(trips, period);
   const s = computeStats(filtered, kmPref);
@@ -5753,14 +5612,6 @@ function StatsTile({ trips, kmPref, fuelEfficiency, fuelPrice }) {
             <div className="stat-item"><div className="stat-label">AVG / SHIFT</div><div className="stat-value">{fmt$(s.totalEarned/s.n)}</div></div>
             <div className="stat-item"><div className="stat-label">AVG HOURLY</div><div className="stat-value">{s.totalHrs > 0 ? fmt$(s.totalEarned/s.totalHrs)+"/hr" : "—"}</div></div>
             <div className="stat-item"><div className="stat-label">AVG / DELIVERY</div><div className="stat-value">{s.totalDels > 0 ? fmt$(s.totalEarned/s.totalDels) : "—"}</div></div>
-            {fuelEfficiency > 0 && fuelPrice > 0 && (() => {
-              const totalFuel = (s.totalKm / 100) * fuelEfficiency * fuelPrice;
-              const netEarned = s.totalEarned - totalFuel;
-              return (<>
-                <div className="stat-item"><div className="stat-label">FUEL COST</div><div className="stat-value" style={{color:"var(--red)"}}>−{fmt$(totalFuel)}</div></div>
-                <div className="stat-item"><div className="stat-label">NET (AFTER FUEL)</div><div className="stat-value" style={{color:"var(--green)"}}>{fmt$(netEarned)}</div></div>
-              </>);
-            })()}
 
             <div className="stats-section-divider">Time & Distance</div>
             <div className="stat-item"><div className="stat-label">TOTAL HOURS</div><div className="stat-value">{s.totalHrs.toFixed(1)} hrs</div></div>
@@ -6231,7 +6082,7 @@ tfoot td.ded{color:#15803D;}
 }
 
 // ─── TRIP LOG ───
-function TripLogScreen({ trips, onBack, onDetail, kmPref, user, fuelEfficiency, fuelPrice, isPro = false, onUpgrade, showScoring = true }) {
+function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, onUpgrade, showScoring = true }) {
   const [sort, setSort] = useState("date");
   const sorted = [...trips].sort((a, b) => {
     if (sort === "date") return new Date(b.ts) - new Date(a.ts);
@@ -6562,7 +6413,7 @@ function PlatformComparison({ trips }) {
 }
 
 // ─── INSIGHTS SCREEN ──────────────────────────────────────────────────────
-function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice, showScoring = true }) {
+function InsightsScreen({ trips, kmPref, showScoring = true }) {
   const [period, setPeriod] = useState("week");
   const [showPicker, setShowPicker] = useState(false);
 
@@ -7036,7 +6887,7 @@ function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice, showScoring 
 }
 
 // ─── DETAIL SCREEN ───
-function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onGoToSettings, trips = [], showScoring = true }) {
+function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAULT_TARGETS, onGoToSettings, trips = [], showScoring = true }) {
   if (!trip) return null;
   const d = new Date(trip.ts);
   const sc = scoreClass(trip.score);
@@ -7128,13 +6979,6 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
             </div>
             <div className="ded-icon">🧾</div>
           </div>
-          <FuelCard
-            totalKm={trip.totalKm}
-            totalEarned={trip.totalEarned}
-            fuelEfficiency={fuelEfficiency}
-            fuelPrice={fuelPrice}
-            onSetFuel={onGoToSettings}
-          />
         </div>
 
         <div className="detail-section">
@@ -7264,7 +7108,7 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, fuelEfficiency, onFuelEfficiency, fuelPrice, onFuelPrice, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -7274,8 +7118,6 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
   const [rate,     setRate]     = useState(String(atoRate ?? ATO_RATE_PER_KM));
   const [odo,      setOdo]      = useState(String(user?.startOdo || ""));
   const [goalInput,setGoalInput]= useState(String(weeklyGoal || 800));
-  const [fuelEff,  setFuelEff]  = useState(fuelEfficiency ? String(fuelEfficiency) : "");
-  const [fuelPr,   setFuelPr]   = useState(fuelPrice ? String(fuelPrice) : "");
   const [tHourly,     setTHourly]    = useState(String(targets.hourly));
   const [tPerDel,     setTPerDel]    = useState(String(targets.perDel));
   const [tActiveKm,   setTActiveKm]  = useState(String(targets.activeKm));
@@ -7321,12 +7163,6 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
       // Free users locked at $800 regardless of input
       onWeeklyGoal(800);
     }
-    const fe = parseFloat(fuelEff);
-    if (!isNaN(fe) && fe > 0) onFuelEfficiency(fe);
-    else if (fuelEff === "") onFuelEfficiency(null);
-    const fp = parseFloat(fuelPr);
-    if (!isNaN(fp) && fp > 0) onFuelPrice(fp);
-    else if (fuelPr === "") onFuelPrice(null);
     onRegion(regionVal || null);
     DB.set("gt_default_platform", defaultPlatform);
     setSaved(true);
@@ -7626,7 +7462,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                 onClick={() => setShowAdvanced(v => !v)}
               >
                 <div className="settings-item-left">
-                  <div className="settings-item-label">ATO rate, goals, fuel &amp; scoring</div>
+                  <div className="settings-item-label">ATO rate, goals &amp; scoring</div>
                   <div className="settings-item-sub">Tap to {showAdvanced ? "collapse" : "expand"}</div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)",transform: showAdvanced ? "rotate(90deg)" : "none",transition:"transform .2s ease",display:"inline-block"}}>›</span>
@@ -7672,30 +7508,6 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                       onChange={e => { if (isPro) setGoalInput(e.target.value); }}
                       style={{opacity: isPro ? 1 : 0.6, cursor: isPro ? "text" : "not-allowed"}}
                     />
-                  </div>
-                </div>
-
-                {/* Fuel efficiency */}
-                <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
-                  <div className="settings-item-left">
-                    <div className="settings-item-label">Fuel Efficiency</div>
-                    <div className="settings-item-sub">L/100km</div>
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
-                    <input className="settings-input" type="number" min="0" step="0.1" placeholder="8.5" value={fuelEff} onChange={e => setFuelEff(e.target.value)} />
-                    <span style={{fontSize:"11px",color:"var(--muted2)"}}>L</span>
-                  </div>
-                </div>
-
-                {/* Fuel price */}
-                <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
-                  <div className="settings-item-left">
-                    <div className="settings-item-label">Fuel Price</div>
-                    <div className="settings-item-sub">Current pump price</div>
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
-                    <span style={{color:"var(--muted2)",fontSize:"13px"}}>$</span>
-                    <input className="settings-input" type="number" min="0" step="0.01" placeholder="2.05" value={fuelPr} onChange={e => setFuelPr(e.target.value)} />
                   </div>
                 </div>
 
@@ -7958,8 +7770,6 @@ export default function GigTrack() {
   const [targets, setTargets]   = useState(DEFAULT_TARGETS);
   const [showScoring, setShowScoring] = useState(true); // Pro-only display toggle; calcs always run
   const [weeklyGoal, setWeeklyGoal] = useState(800);
-  const [fuelEfficiency, setFuelEfficiency] = useState(null);
-  const [fuelPrice, setFuelPrice]           = useState(null);
   const [region, setRegion]                 = useState(null);
   const [theme, setTheme] = useState(() => DB.get("gt_theme") || "light"); // 'light' | 'dark' | 'system'
   const [editId, setEditId]         = useState(null);
@@ -8045,8 +7855,6 @@ export default function GigTrack() {
             setRegion(null);
             setKmPref("active");
             setWeeklyGoal(800);
-            setFuelEfficiency(null);
-            setFuelPrice(null);
             setActiveShift(null);
             setLiveStatus(null);
             reconciledRef.current = false;
@@ -8078,14 +7886,6 @@ export default function GigTrack() {
               if (profile.weekly_goal != null) {
                 setWeeklyGoal(profile.weekly_goal);
                 DB.set("gt_weeklygoal", profile.weekly_goal);
-              }
-              if (profile.fuel_eff != null) {
-                setFuelEfficiency(profile.fuel_eff);
-                DB.set("gt_fuel_efficiency", profile.fuel_eff);
-              }
-              if (profile.fuel_price != null) {
-                setFuelPrice(profile.fuel_price);
-                DB.set("gt_fuel_price", profile.fuel_price);
               }
               if (profile.show_scoring != null) {
                 setShowScoring(!!profile.show_scoring);
@@ -8124,8 +7924,6 @@ export default function GigTrack() {
           setKmPref("active");
           setWeeklyGoal(800);
           setShowScoring(true);
-          setFuelEfficiency(null);
-          setFuelPrice(null);
           DB.remove("gt_user");
           DB.remove("gt_trips");
           DB.remove("gt_region");
@@ -8247,8 +8045,6 @@ export default function GigTrack() {
     const r = (storedRate != null && !isStaleDefault) ? storedRate : null;
     const tg = DB.get("gt_targets") || DEFAULT_TARGETS;
     const wg = DB.get("gt_weeklygoal");
-    const fe = DB.get("gt_fuel_efficiency");
-    const fp = DB.get("gt_fuel_price");
     const rg = DB.get("gt_region");
     const ss = DB.get("gt_show_scoring");
     const a = DB.get("gt_activeshift") || null;
@@ -8258,8 +8054,6 @@ export default function GigTrack() {
     setAtoRate(r);
     setTargets(tg);
     if (wg != null) setWeeklyGoal(wg);
-    if (fe != null) setFuelEfficiency(fe);
-    if (fp != null) setFuelPrice(fp);
     if (rg != null) setRegion(rg);
     if (ss != null) setShowScoring(!!ss);
     if (ls && ls.online) {
@@ -8352,8 +8146,6 @@ export default function GigTrack() {
       isPro: !!user?.isPro,
       isGuest: !!user?.isGuest,
       startOdo: user?.startOdo,
-      fuelEff: fuelEfficiency,
-      fuelPrice,
       showScoring,
       ...overrides,
     }).catch(() => {});
@@ -8397,8 +8189,6 @@ export default function GigTrack() {
     setTargets(DEFAULT_TARGETS);
     setWeeklyGoal(800);
     setShowScoring(true);
-    setFuelEfficiency(null);
-    setFuelPrice(null);
     setRegion(null);
     setActiveShift(null);
     setLiveStatus(null);
@@ -8619,8 +8409,6 @@ export default function GigTrack() {
       isPro: true,
       isGuest: false,
       startOdo: updated.startOdo,
-      fuelEff: fuelEfficiency,
-      fuelPrice,
     }).catch(() => {});
     setScreen("home");
     showToast("Welcome to GigTrack Pro 🚀");
@@ -8841,13 +8629,7 @@ export default function GigTrack() {
           atoRate={atoRate}
           timerPrefill={timerPrefill}
           targets={targets}
-          fuelEfficiency={fuelEfficiency}
-          fuelPrice={fuelPrice}
           isPro={isPro}
-          onFuelSave={(fe, fp) => {
-            if (fe > 0) { setFuelEfficiency(fe); DB.set("gt_fuel_efficiency", fe); }
-            if (fp > 0) { setFuelPrice(fp); DB.set("gt_fuel_price", fp); }
-          }}
           onGoToSettings={() => setScreen("settings")}
           onUpgrade={() => setScreen("paywall")}
           showScoring={showScoring}
@@ -8856,8 +8638,6 @@ export default function GigTrack() {
       {screen === "log" && (
         <TripLogScreen
           trips={trips} kmPref={kmPref} user={user}
-          fuelEfficiency={fuelEfficiency}
-          fuelPrice={fuelPrice}
           isPro={isPro}
           onBack={() => setScreen("home")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
@@ -8870,8 +8650,6 @@ export default function GigTrack() {
           trip={currentTrip} kmPref={kmPref}
           targets={targets}
           trips={trips}
-          fuelEfficiency={fuelEfficiency}
-          fuelPrice={fuelPrice}
           onBack={() => setScreen("log")}
           onEdit={handleEdit}
           onDelete={handleDelete}
@@ -8883,8 +8661,6 @@ export default function GigTrack() {
         <InsightsScreen
           trips={trips}
           kmPref={kmPref}
-          fuelEfficiency={fuelEfficiency}
-          fuelPrice={fuelPrice}
           showScoring={showScoring}
         />
       )}
@@ -8904,10 +8680,6 @@ export default function GigTrack() {
           onWeeklyGoal={(g) => { setWeeklyGoal(g); DB.set("gt_weeklygoal", g); syncProfile({ weeklyGoal: g }); }}
           showScoring={showScoring}
           onShowScoring={saveShowScoring}
-          fuelEfficiency={fuelEfficiency}
-          onFuelEfficiency={(v) => { setFuelEfficiency(v); DB.set("gt_fuel_efficiency", v); syncProfile({ fuelEff: v }); }}
-          fuelPrice={fuelPrice}
-          onFuelPrice={(v) => { setFuelPrice(v); DB.set("gt_fuel_price", v); syncProfile({ fuelPrice: v }); }}
           region={region}
           onRegion={(r) => {
             setRegion(r);
