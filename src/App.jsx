@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -7429,15 +7429,15 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                 <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
               </div>
 
-              {/* Clear Local Data */}
+              {/* Delete Account and Data */}
               <div
                 className="settings-item"
                 style={{cursor:"pointer"}}
                 onClick={() => setDeleteStep(1)}
               >
                 <div className="settings-item-left">
-                  <div className="settings-item-label" style={{color:"var(--red)"}}>Clear Local Data</div>
-                  <div className="settings-item-sub">Erase all shifts and settings</div>
+                  <div className="settings-item-label" style={{color:"var(--red)"}}>Delete Account and Data</div>
+                  <div className="settings-item-sub">Permanently erase your account, shifts and settings</div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--red)"}}>›</span>
               </div>
@@ -7448,7 +7448,9 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
               <div style={{margin:"8px 14px 0",background:"var(--red-dim)",border:"0.5px solid var(--red-border)",borderRadius:"12px",padding:"16px",display:"flex",flexDirection:"column",gap:"12px"}}>
                 <div style={{fontSize:"14px",fontWeight:"700",color:"var(--red)"}}>Are you absolutely sure?</div>
                 <div style={{fontSize:"12px",color:"var(--muted)",lineHeight:"1.7"}}>
-                  This will permanently delete <strong style={{color:"var(--text)"}}>all your shifts, settings, and account data</strong>. This cannot be undone.
+                  This permanently deletes <strong style={{color:"var(--text)"}}>your account and everything in it</strong> — all your shifts, earnings history and settings, from this device and from the cloud.
+                  <br /><br />
+                  <strong style={{color:"var(--text)"}}>Your profile cannot be recovered.</strong> Signing in with the same email later will start a brand-new, empty account. If you want a copy of your data, export it first.
                 </div>
                 <div style={{display:"flex",gap:"8px"}}>
                   <button className="btn btn-outline" style={{flex:1,padding:"12px"}} onClick={() => setDeleteStep(0)}>Cancel</button>
@@ -8212,11 +8214,28 @@ export default function GigTrack() {
     syncProfile({ showScoring: v });
   };
 
-  const handleDeleteAccount = () => {
+  const handleDeleteAccount = async () => {
+    // Delete the CLOUD data + auth account FIRST — this needs the auth session
+    // to still exist, so it must happen before we wipe local state / sign out.
+    // If the user is signed in and this fails, do NOT pretend it worked: their
+    // shifts would still be sitting in Supabase while the UI claims otherwise.
+    if (authUser) {
+      const res = await deleteMyAccount();
+      if (!res.ok) {
+        showToast("Couldn't delete your account — check your connection and try again");
+        return; // stay put; nothing has been destroyed
+      }
+    }
+
     // Wipe every known localStorage key
     ["gt_user","gt_trips","gt_kmpref","gt_atorate","gt_targets","gt_weeklygoal",
      "gt_fuel_efficiency","gt_fuel_price","gt_region","gt_show_scoring","gt_activeshift",
-     "gt_active_orders","gt_order_prefill","gt_live_status"].forEach(k => DB.remove(k));
+     "gt_active_orders","gt_order_prefill","gt_live_status","gt_last_user_id",
+     "gt_voice_prefill"].forEach(k => DB.remove(k));
+
+    // Sign out — the auth user is gone server-side, so clear the local session too.
+    try { await signOut(); } catch { /* already gone; ignore */ }
+
     // Reset all app state
     setUser(null);
     setTrips([]);
@@ -8233,7 +8252,8 @@ export default function GigTrack() {
     setEditId(null);
     setDetailId(null);
     setTimerPrefill(null);
-    setScreen("setup");
+    reconciledRef.current = false;
+    setScreen("welcome");
   };
 
   const handleSetupComplete = (data) => {

@@ -234,3 +234,22 @@ export const fetchZoneBenchmark = async (region) => {
     return null;
   }
 };
+
+// ─── ACCOUNT DELETION ─────────────────────────────────────────────────────
+// Permanently deletes the CURRENT user's shifts, presence, profile and auth
+// account via the delete_my_account() security-definer function (a client can't
+// delete its own auth.users row). Returns { ok } — caller should sign out and
+// wipe local data regardless, but should NOT claim success if ok is false.
+export const deleteMyAccount = async () => {
+  try {
+    const { error } = await supabase.rpc("delete_my_account");
+    if (error) {
+      console.warn("[GigTrack] deleteMyAccount error:", error.message);
+      return { ok: false, error };
+    }
+    return { ok: true };
+  } catch (e) {
+    console.warn("[GigTrack] deleteMyAccount threw:", e);
+    return { ok: false, error: e };
+  }
+};
