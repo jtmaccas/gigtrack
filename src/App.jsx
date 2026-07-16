@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
+import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -7829,6 +7830,13 @@ export default function GigTrack() {
   const [timerPrefill, setTimerPrefill] = useState(null);
   const [toast, setToast]           = useState("");
   const [confirm, setConfirm]   = useState(null);
+
+  // PWA update banner: main.jsx registers the service worker with
+  // registerType:"prompt" and pushes the signal into pwaUpdate.js. Subscribe here
+  // so we can show a banner when a new version is waiting. onNeedRefresh fires
+  // immediately if the update landed before React mounted.
+  const [updateReady, setUpdateReady] = useState(false);
+  useEffect(() => onNeedRefresh(() => setUpdateReady(true)), []);
   const [liveStatus, setLiveStatus] = useState(null); // {online, platform, zone, since}
   const [platformPickerOpen, setPlatformPickerOpen] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
@@ -8769,6 +8777,34 @@ export default function GigTrack() {
         confirmLabel={confirm?.confirmLabel} cancelLabel={confirm?.cancelLabel}
         onConfirm={confirm?.onConfirm} onCancel={confirm?.onCancel || (() => setConfirm(null))}
       />
+      {updateReady && (
+        <div
+          role="status"
+          style={{
+            position:"fixed", left:"12px", right:"12px", bottom:"84px", zIndex:400,
+            background:"var(--text)", color:"var(--bg)",
+            borderRadius:"14px", padding:"12px 14px",
+            display:"flex", alignItems:"center", gap:"12px",
+            boxShadow:"0 10px 30px -8px rgba(0,0,0,.45)",
+          }}
+        >
+          <div style={{flex:1, minWidth:0}}>
+            <div style={{fontSize:"13px", fontWeight:"700", lineHeight:1.3}}>Update available</div>
+            <div style={{fontSize:"11px", opacity:.75, marginTop:"2px"}}>A new version of GigTrack is ready.</div>
+          </div>
+          <button
+            onClick={() => applyUpdate()}
+            style={{
+              flexShrink:0, border:"none", cursor:"pointer",
+              background:"var(--green)", color:"#fff",
+              borderRadius:"10px", padding:"9px 14px",
+              fontSize:"12px", fontWeight:"700",
+            }}
+          >
+            Refresh
+          </button>
+        </div>
+      )}
       <Toast msg={toast} />
       <PlatformPickerModal
         open={platformPickerOpen}
