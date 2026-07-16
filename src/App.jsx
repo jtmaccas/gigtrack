@@ -19,6 +19,22 @@ const ATO_FY_LABEL = "2025–26";
 // as the network grows.
 const LIVE_DRIVER_MIN = 3;
 
+// ─── LIVE DRIVERS: OFF FOR BETA ───────────────────────────────────────────
+// Live driver counts need people online in the SAME zone at the SAME time.
+// With a nationally-spread beta (~50 testers across every state), that density
+// doesn't exist — nearly every driver would just see "Be the first online here",
+// which broadcasts emptiness instead of making the app feel alive.
+//
+// So the whole feature is hidden for beta: no card, no go-online button, no
+// presence heartbeat, no presence writes to the DB.
+//
+// POST-BETA: flip this back to `true` to restore it in one line. Everything
+// underneath (LiveDriverCard, presence heartbeat, presenceBucket grouping,
+// updatePresence/fetchZonePresence, the presence table) is left intact and
+// working — only the flag gates it. Turn it on once a city has real density;
+// it then becomes a genuine launch moment rather than a permanently dead card.
+const LIVE_DRIVERS_ENABLED = false;
+
 // Auto-expire a forgotten online session after this much idle time (no ping).
 // Protects beta live-driver data from drivers who finished work but never tapped
 // "Go offline" — opening the app later won't resurrect a stale session. 3 hours.
@@ -3358,16 +3374,18 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
               </div>
             )}
 
-            {/* Live drivers in zone */}
-            <div style={{padding:"14px 16px 0"}}>
-              <LiveDriverCard
-                region={region}
-                onGoToSettings={onSettings}
-                liveStatus={liveStatus}
-                onGoOnline={onGoOnline}
-                onGoOffline={onGoOffline}
-              />
-            </div>
+            {/* Live drivers in zone — hidden for beta (see LIVE_DRIVERS_ENABLED) */}
+            {LIVE_DRIVERS_ENABLED && (
+              <div style={{padding:"14px 16px 0"}}>
+                <LiveDriverCard
+                  region={region}
+                  onGoToSettings={onSettings}
+                  liveStatus={liveStatus}
+                  onGoOnline={onGoOnline}
+                  onGoOffline={onGoOffline}
+                />
+              </div>
+            )}
 
             {/* Benchmarks */}
             <div style={{padding:"14px 16px 0"}}>
@@ -8153,6 +8171,11 @@ export default function GigTrack() {
     if (rg != null) setRegion(rg);
     if (ss != null) setShowScoring(!!ss);
     if (ls && ls.online) {
+      if (!LIVE_DRIVERS_ENABLED) {
+        // Beta: feature is off. Drop any leftover online session from a build
+        // where it was enabled — don't restore it, don't write to the cloud.
+        DB.remove("gt_live_status");
+      } else {
       // Auto-expire a forgotten "online" session: if it hasn't pinged in over
       // LIVE_SESSION_MAX_IDLE_MS (3h), the driver almost certainly finished work
       // without tapping offline. Flip them offline instead of resurrecting them
@@ -8164,6 +8187,7 @@ export default function GigTrack() {
         if (ls.zone || rg) updatePresence({ zone: presenceBucket(ls.zone || rg), platform: ls.platform, online: false });
       } else {
         setLiveStatus(ls);
+      }
       }
     }
     if (a) {
@@ -8194,6 +8218,7 @@ export default function GigTrack() {
   // foreground ping is the main mechanism keeping an active driver live —
   // every time they switch back to the app from Maps/UE/DD, they're re-marked.
   useEffect(() => {
+    if (!LIVE_DRIVERS_ENABLED) return; // beta: no presence writes at all
     if (!liveStatus?.online) return;
     const ping = () => {
       updatePresence({
