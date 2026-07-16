@@ -5,13 +5,59 @@ import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
-// UPDATE THIS RATE EACH NEW FINANCIAL YEAR
-// Current rate: 2025-2026 @ 88c/km
-// Source: ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/deductions-you-can-claim/vehicle-and-travel-expenses/car-expenses
-const ATO_RATE_PER_KM = 0.88;
+//
+// Rates are per FINANCIAL YEAR (1 July – 30 June) and attach to the DATE OF THE
+// SHIFT — a shift driven in June 2026 is deductible at that year's rate even if
+// you view it in 2027. So never apply "the current rate" to historical shifts.
+//
+// TO ADD A NEW YEAR: add one entry to ATO_RATES with the FY start year as the
+// key. Everything else (labels, calcs, reports) derives from this table.
+//
+// Sources:
+//   2026-27: 91c/km — LI 2026/19. NOTE: this is a base rate of 89c PLUS a
+//            temporary one-off 2c uplift for 2026-27 only. Future years index
+//            off the 89c BASE, not 91c — so 2027-28 may be LOWER than 91c.
+//            Do not assume the rate only ever rises.
+//   2025-26: 88c/km (held flat from 2024-25)
+//   2024-25: 88c/km
+//   ato.gov.au → cents per kilometre method
+const ATO_RATES = {
+  2026: 0.91, // FY 2026-27, from 1 July 2026
+  2025: 0.88, // FY 2025-26
+  2024: 0.88, // FY 2024-25
+};
+// Used for anything older than the table (and as a floor for odd dates).
+const ATO_RATE_FALLBACK = 0.88;
+
+// The FY start year for a given date: 1 Jul 2026 → 2026; 30 Jun 2026 → 2025.
+function atoFyStartYear(date) {
+  const d = date ? new Date(date) : new Date();
+  if (isNaN(d.getTime())) return new Date().getFullYear();
+  // Months are 0-indexed: June = 5, July = 6.
+  return d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1;
+}
+
+// The ATO cents-per-km rate that applies to a shift on this date.
+function atoRateForDate(date) {
+  const fy = atoFyStartYear(date);
+  if (ATO_RATES[fy] != null) return ATO_RATES[fy];
+  // Newer than the table (rate not published yet) → use the most recent known.
+  const known = Object.keys(ATO_RATES).map(Number).sort((a, b) => b - a);
+  if (fy > known[0]) return ATO_RATES[known[0]];
+  return ATO_RATE_FALLBACK;
+}
+
+// "2026–27" style label for a given date's financial year.
+function atoFyLabel(date) {
+  const y = atoFyStartYear(date);
+  return `${y}–${String(y + 1).slice(2)}`;
+}
+
+// Current-year conveniences (used for defaults, settings, and the FY view).
+const ATO_RATE_PER_KM = atoRateForDate(new Date());
 const ATO_KM_CAP = 5000;
 const ATO_KM_WARNING = 4500;
-const ATO_FY_LABEL = "2025–26";
+const ATO_FY_LABEL = atoFyLabel(new Date());
 // ─────────────────────────────────────────────
 
 // Live driver card only renders its COUNT TILES when a bucket has at least this
@@ -620,7 +666,19 @@ function computeStats(trips, kmPref) {
   const avgScore    = trips.reduce((s, t) => s + t.score, 0) / n;
   const bestScore   = Math.max(...trips.map(t => t.score));
   const deductKm    = totalKm;
-  const deduction   = Math.min(deductKm, ATO_KM_CAP) * ATO_RATE_PER_KM;
+  // Deduction must be worked out PER FINANCIAL YEAR: both the rate and the
+  // 5,000km cap are per-FY. Summing all km and applying one rate would be wrong
+  // for any set of shifts spanning 1 July (and would silently apply this year's
+  // rate to last year's driving).
+  const kmByFy = {};
+  trips.forEach(t => {
+    const fy = atoFyStartYear(t.ts);
+    kmByFy[fy] = (kmByFy[fy] || 0) + (t.totalKm || 0);
+  });
+  const deduction = Object.keys(kmByFy).reduce((sum, fy) => {
+    const rate = ATO_RATES[fy] != null ? ATO_RATES[fy] : atoRateForDate(`${fy}-07-01`);
+    return sum + Math.min(kmByFy[fy], ATO_KM_CAP) * rate;
+  }, 0);
   const daysSet     = new Set(trips.map(t => new Date(t.ts).toDateString()));
   return { n, totalEarned, totalHrs, totalKm, activeKm, totalDels, totalExp, avgScore, bestScore, deductKm, deduction, daysWorked: daysSet.size };
 }
@@ -737,7 +795,7 @@ const SEED_SHIFTS = (() => {
       activeKm,
       platform,
       ...inputs, ...c,
-      deduction: totalKm * ATO_RATE_PER_KM,
+      deduction: totalKm * atoRateForDate(ts),
       __seed: true,
     };
   };
@@ -4816,7 +4874,10 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   }, targets);
 
   const deductKm = derivedTotalKm;
-  const deduction = deductKm * (atoRate || ATO_RATE_PER_KM);
+  // Rate follows the SHIFT'S date, not today's — editing a June shift in July
+  // must still use last FY's rate. A user-set custom rate (Settings) overrides.
+  const effectiveRate = atoRate || atoRateForDate(shiftDate);
+  const deduction = deductKm * effectiveRate;
 
   const validate = () => {
     setSaveAttempted(true);
@@ -4850,7 +4911,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
       activeKm: activeKmInput !== "" ? n(activeKmInput) : null,
       platform: platform || null,
       notes: notes.trim() || null,
-      ...inputs, ...c, deduction: derivedTotalKm * (atoRate || ATO_RATE_PER_KM),
+      ...inputs, ...c, deduction: derivedTotalKm * effectiveRate,
     };
     onSaved(record, isEdit);
   };
@@ -5286,9 +5347,9 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
           {/* Live ATO deduction */}
           <div className="deduction-card">
             <div>
-              <div className="ded-label">Est. ATO Deduction ({ATO_FY_LABEL})</div>
+              <div className="ded-label">Est. ATO Deduction ({atoFyLabel(shiftDate)})</div>
               <div className="ded-value">{fmt$(deduction)}</div>
-              <div className="ded-sub">{deductKm.toFixed(1)} km × ${(atoRate||ATO_RATE_PER_KM).toFixed(2)}/km</div>
+              <div className="ded-sub">{deductKm.toFixed(1)} km × ${effectiveRate.toFixed(2)}/km</div>
             </div>
             <div className="ded-icon">🧾</div>
           </div>
@@ -5406,7 +5467,7 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
       platform: platform || null,
       notes: null,
       ...inputs, ...c,
-      deduction: derivedTotalKm * (atoRate || ATO_RATE_PER_KM),
+      deduction: derivedTotalKm * (atoRate || atoRateForDate(pf.startedAt || new Date())),
     };
     onSaved(record, false);
   };
@@ -5516,7 +5577,7 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
               <div>
                 <div className="score-label">This shift</div>
                 <div style={{fontSize:"11px",color:"var(--muted2)",marginTop:"2px"}}>
-                  ${calc.hourly ? calc.hourly.toFixed(2) : "0.00"}/hr · ${derivedTotalKm > 0 ? (derivedTotalKm * (atoRate || ATO_RATE_PER_KM)).toFixed(2) : "0.00"} ATO deduction
+                  ${calc.hourly ? calc.hourly.toFixed(2) : "0.00"}/hr · ${derivedTotalKm > 0 ? (derivedTotalKm * (atoRate || atoRateForDate(pf.startedAt || new Date()))).toFixed(2) : "0.00"} ATO deduction
                 </div>
               </div>
               <div className="score-num">${n(totalEarned).toFixed(2)}</div>
@@ -5712,7 +5773,7 @@ function StatsTile({ trips, kmPref, fuelEfficiency, fuelPrice }) {
             <div className="ded-stat">
               <div className="ded-stat-label">EST. DEDUCTION — CENTS PER KM METHOD</div>
               <div className="ded-stat-value">{fmt$(s.deduction)}</div>
-              <div className="ded-stat-sub">{s.deductKm.toFixed(1)} business km × ${ATO_RATE_PER_KM.toFixed(2)}/km · cap {ATO_KM_CAP.toLocaleString()}km/yr · {kmPref === "active" ? "delivery km only" : "all shift km"}</div>
+              <div className="ded-stat-sub">{s.deductKm.toFixed(1)} business km · rate applied per financial year (currently ${ATO_RATE_PER_KM.toFixed(2)}/km) · cap {ATO_KM_CAP.toLocaleString()}km/yr · {kmPref === "active" ? "delivery km only" : "all shift km"}</div>
             </div>
 
             {s.totalExp > 0 && (
@@ -5944,9 +6005,24 @@ function exportPDF(trips, user) {
   const totalDels     = reportTrips.reduce((s, t) => s + (t.dels || 0), 0);
   const totalHrs      = reportTrips.reduce((s, t) => s + (t.totalHrs || 0), 0);
 
-  // ATO deduction — use total km, capped at the FY 5000km limit
+  // ATO deduction — rate AND the 5,000km cap are per financial year, so group
+  // by FY rather than applying one rate to everything (a report spanning 1 July
+  // would otherwise re-rate last year's driving at this year's rate).
   const cappedKm    = Math.min(totalTotalKm, ATO_KM_CAP);
-  const totalDed    = cappedKm * ATO_RATE_PER_KM;
+  const reportKmByFy = {};
+  reportTrips.forEach(t => {
+    const fy = atoFyStartYear(t.ts);
+    reportKmByFy[fy] = (reportKmByFy[fy] || 0) + (t.totalKm || 0);
+  });
+  const totalDed = Object.keys(reportKmByFy).reduce((sum, fy) => {
+    const rate = ATO_RATES[fy] != null ? ATO_RATES[fy] : atoRateForDate(`${fy}-07-01`);
+    return sum + Math.min(reportKmByFy[fy], ATO_KM_CAP) * rate;
+  }, 0);
+  // Rates actually used in this report (usually one; two if it spans 1 July).
+  const reportRates = [...new Set(Object.keys(reportKmByFy).map(fy =>
+    ATO_RATES[fy] != null ? ATO_RATES[fy] : atoRateForDate(`${fy}-07-01`)
+  ))].sort((a, b) => a - b);
+  const reportRateLabel = reportRates.map(r => `$${r.toFixed(2)}`).join(" / ");
   const estTaxSaved = totalDed * 0.325; // estimate at common 32.5% marginal rate
 
   const fmtD = iso => new Date(iso).toLocaleDateString("en-AU", { day:"2-digit", month:"short", year:"numeric" });
@@ -5960,7 +6036,7 @@ function exportPDF(trips, user) {
       const m = Math.round((t.totalHrs || 0) * 60);
       return `${Math.floor(m/60)}h ${m%60}m`;
     })();
-    const tripDed = (t.totalKm || 0) * ATO_RATE_PER_KM;
+    const tripDed = (t.totalKm || 0) * atoRateForDate(t.ts);
     return `<tr>
       <td class="num">${i+1}</td>
       <td>${fmtD(t.ts)}</td>
@@ -6079,7 +6155,7 @@ tfoot td.ded{color:#15803D;}
   <div class="hero h-blue">
     <div class="hero-label">ATO Deduction</div>
     <div class="hero-value">${fmtMoney(totalDed)}</div>
-    <div class="hero-sub">${cappedKm.toFixed(1)} km × $${ATO_RATE_PER_KM.toFixed(2)}/km${totalTotalKm > ATO_KM_CAP ? ` (capped at ${ATO_KM_CAP.toLocaleString()})` : ""}</div>
+    <div class="hero-sub">${cappedKm.toFixed(1)} km × ${reportRateLabel}/km${totalTotalKm > ATO_KM_CAP ? ` (capped at ${ATO_KM_CAP.toLocaleString()})` : ""}</div>
   </div>
   <div class="hero h-amber">
     <div class="hero-label">Distance</div>
@@ -6138,7 +6214,7 @@ tfoot td.ded{color:#15803D;}
 
 <div class="notes">
   <strong>ATO disclaimer & method</strong>
-  This report uses the ATO cents per kilometre method for ${ATO_FY_LABEL}: $${ATO_RATE_PER_KM.toFixed(2)}/km, capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. Estimated tax saving applies a 32.5% marginal rate as a guide only — your actual rate depends on your total taxable income. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.
+  This report uses the ATO cents per kilometre method. Rates are applied per financial year based on each shift's date (${reportRateLabel}/km), capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. Estimated tax saving applies a 32.5% marginal rate as a guide only — your actual rate depends on your total taxable income. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.
 </div>
 
 <div class="footer">
@@ -6633,9 +6709,12 @@ function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice, showScoring 
   const avgHourly  = allHrs > 0 ? allEarned / allHrs : 0;
   const avgPerDel  = allDels > 0 ? allEarned / allDels : 0;
   const avgPerShift= trips.length ? allEarned / trips.length : 0;
-  const allDeduction = (kmPref === "active"
-    ? trips.reduce((s,t) => s+(t.kmDel||0), 0)
-    : allKm) * ATO_RATE_PER_KM;
+  // Rate each shift at its own FY rate rather than one blanket rate — a period
+  // spanning 1 July would otherwise re-rate older shifts.
+  const allDeduction = trips.reduce((s, t) => {
+    const km = kmPref === "active" ? (t.kmDel || 0) : (t.totalKm || 0);
+    return s + km * atoRateForDate(t.ts);
+  }, 0);
 
   const currentLabel = periods.find(p => p.id === period)?.label;
 
@@ -6963,7 +7042,9 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
   const sc = scoreClass(trip.score);
   const activeKmPct = trip.totalKm > 0 ? (trip.kmDel / trip.totalKm) * 100 : 0;
   const deductKm = kmPref === "active" ? trip.kmDel : trip.totalKm;
-  const deduction = deductKm * ATO_RATE_PER_KM;
+  // This shift's own FY rate — viewing a June shift in July must not re-rate it.
+  const tripAtoRate = atoRateForDate(trip.ts);
+  const deduction = deductKm * tripAtoRate;
 
   // Compute lifetime averages from all other trips (excluding this one for fairness)
   const otherTrips = trips.filter(t => t.id !== trip.id);
@@ -7038,12 +7119,12 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
 
         {/* ATO Deduction */}
         <div className="detail-section">
-          <div className="detail-section-title">ATO Deduction ({ATO_FY_LABEL})</div>
+          <div className="detail-section-title">ATO Deduction ({atoFyLabel(trip.ts)})</div>
           <div className="deduction-card" style={{margin:0}}>
             <div>
               <div className="ded-label">Est. Deduction — Cents Per KM</div>
               <div className="ded-value">{fmt$(deduction)}</div>
-              <div className="ded-sub">{deductKm.toFixed(1)} km × ${ATO_RATE_PER_KM.toFixed(2)} · {kmPref==="active"?"delivery km only":"all shift km"}</div>
+              <div className="ded-sub">{deductKm.toFixed(1)} km × ${tripAtoRate.toFixed(2)} · {kmPref==="active"?"delivery km only":"all shift km"}</div>
             </div>
             <div className="ded-icon">🧾</div>
           </div>
@@ -7190,7 +7271,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
   const [defaultPlatform, setDefaultPlatform] = useState(DB.get("gt_default_platform") || "none");
 
   // Advanced
-  const [rate,     setRate]     = useState(String(atoRate));
+  const [rate,     setRate]     = useState(String(atoRate ?? ATO_RATE_PER_KM));
   const [odo,      setOdo]      = useState(String(user?.startOdo || ""));
   const [goalInput,setGoalInput]= useState(String(weeklyGoal || 800));
   const [fuelEff,  setFuelEff]  = useState(fuelEfficiency ? String(fuelEfficiency) : "");
@@ -7872,7 +7953,8 @@ export default function GigTrack() {
   const [screenshotImportsUsed, setScreenshotImportsUsed] = useState(0); // Cloud-tracked cumulative counter
   const [accountCreatedAt, setAccountCreatedAt] = useState(null); // ISO date from profile.created_at, used for the 30-day benchmark grace
   const [kmPref, setKmPref]     = useState("active");
-  const [atoRate, setAtoRate]   = useState(ATO_RATE_PER_KM);
+  // null = no user override → each shift uses its own FY rate via atoRateForDate().
+  const [atoRate, setAtoRate]   = useState(null);
   const [targets, setTargets]   = useState(DEFAULT_TARGETS);
   const [showScoring, setShowScoring] = useState(true); // Pro-only display toggle; calcs always run
   const [weeklyGoal, setWeeklyGoal] = useState(800);
@@ -8115,7 +8197,7 @@ export default function GigTrack() {
           ...inputs,
           ...c,
           totalKm: newTotalKm,
-          deduction: newTotalKm * ATO_RATE_PER_KM,
+          deduction: newTotalKm * atoRateForDate(trip.ts),
         };
       });
       DB.set("gt_trips", t);
@@ -8152,7 +8234,17 @@ export default function GigTrack() {
     // Note: SEED_SHIFTS no longer auto-merged for new users.
     // Anyone with seed shifts already in localStorage keeps them; future installs start empty.
     const k = DB.get("gt_kmpref") || "active";
-    const r = DB.get("gt_atorate") || ATO_RATE_PER_KM;
+    // The rate is now derived from each shift's date, so a stored value is only
+    // meaningful as a DELIBERATE user override. Existing users have last year's
+    // default (0.88) sitting in localStorage — if we honoured that, they'd be
+    // stuck on the old rate forever and never pick up 91c. So discard a stored
+    // value that merely equals a known past FY default; keep genuinely custom ones.
+    const storedRate = DB.get("gt_atorate");
+    const isStaleDefault = storedRate != null &&
+      Object.values(ATO_RATES).includes(Number(storedRate)) &&
+      Number(storedRate) !== ATO_RATE_PER_KM;
+    if (isStaleDefault) DB.remove("gt_atorate");
+    const r = (storedRate != null && !isStaleDefault) ? storedRate : null;
     const tg = DB.get("gt_targets") || DEFAULT_TARGETS;
     const wg = DB.get("gt_weeklygoal");
     const fe = DB.get("gt_fuel_efficiency");
@@ -8301,7 +8393,7 @@ export default function GigTrack() {
     setUser(null);
     setTrips([]);
     setKmPref("active");
-    setAtoRate(ATO_RATE_PER_KM);
+    setAtoRate(null);
     setTargets(DEFAULT_TARGETS);
     setWeeklyGoal(800);
     setShowScoring(true);
@@ -8676,7 +8768,7 @@ export default function GigTrack() {
               hourly: c.hourly, perDel: c.perDel, perKm: c.perKm,
               ratioT: c.ratioA, ratioK: c.ratioK,
               score: c.score,
-              deduction: totalKm * ATO_RATE_PER_KM,
+              deduction: totalKm * atoRateForDate(ts),
               notes,
               imported_from_screenshot: true,  // Flag for screenshot-count gate
             };
