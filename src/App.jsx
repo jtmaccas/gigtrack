@@ -1561,7 +1561,7 @@ function RatioBar({ ratio, label }) {
 // ─── SETUP FLOW ───
 // ─── PREMIUM FEATURES DEFINITION ─────────────────
 const PREMIUM_FEATURES = [
-  { icon:"📷", title:"Unlimited Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. Free users get 3 imports — Pro unlocks unlimited." },
+  { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. Free users get 10 imports — Pro unlocks 100 per month." },
   { icon:"♾️", title:"Unlimited Shifts",               desc:"Log as many shifts as you like. Free is capped at 20 lifetime shifts." },
   { icon:"📍", title:"Local Benchmarks &amp; Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
   { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
@@ -8389,7 +8389,7 @@ export default function GigTrack() {
 
   // ── Free-tier gates ──
   const FREE_SHIFT_LIMIT = 20;
-  const FREE_SCREENSHOT_LIMIT = 3;
+  const FREE_SCREENSHOT_LIMIT = 10;
 
   // Returns true if the user can log another shift (under limit OR pro)
   const canLogNewShift = () => isPro || trips.length < FREE_SHIFT_LIMIT;
