@@ -3269,11 +3269,12 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
           </div>
         )}
 
-        {/* Live drivers + Benchmarks — gated for free users after 3-day grace */}
+        {/* Live drivers + Benchmarks — gated for free users after the 30-day grace */}
         {benchmarksUnlocked ? (
           <>
-            {/* Grace-period warning banner (free users still in their 3-day window) */}
-            {!isPro && benchmarkDaysRemaining > 0 && benchmarkDaysRemaining <= 3 && (
+            {/* Grace-period warning banner — only fires in the final week of the
+                free window (not the whole 30 days, so we're not nagging from day 1) */}
+            {!isPro && benchmarkDaysRemaining > 0 && benchmarkDaysRemaining <= 7 && (
               <div
                 onClick={onUpgrade}
                 style={{
@@ -3314,7 +3315,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
             </div>
           </>
         ) : (
-          /* Locked state — free user whose 3-day grace has expired */
+          /* Locked state — free user whose 30-day grace has expired */
           <div style={{padding:"14px 16px 0"}}>
             <div
               onClick={onUpgrade}
@@ -7791,7 +7792,7 @@ export default function GigTrack() {
   const [authUser, setAuthUser] = useState(null); // Supabase auth user (cloud identity)
   const [trips, setTrips]       = useState([]);
   const [screenshotImportsUsed, setScreenshotImportsUsed] = useState(0); // Cloud-tracked cumulative counter
-  const [accountCreatedAt, setAccountCreatedAt] = useState(null); // ISO date from profile.created_at, used for 3-day benchmark grace
+  const [accountCreatedAt, setAccountCreatedAt] = useState(null); // ISO date from profile.created_at, used for the 30-day benchmark grace
   const [kmPref, setKmPref]     = useState("active");
   const [atoRate, setAtoRate]   = useState(ATO_RATE_PER_KM);
   const [targets, setTargets]   = useState(DEFAULT_TARGETS);
@@ -8401,9 +8402,11 @@ export default function GigTrack() {
   const canImportScreenshot = () => isPro || screenshotImportsUsed < FREE_SCREENSHOT_LIMIT;
   const screenshotsRemaining = () => Math.max(0, FREE_SCREENSHOT_LIMIT - screenshotImportsUsed);
 
-  // ── 3-day grace for benchmarks/live drivers ──
-  // Free users can see benchmarks for 3 days from signup, then it's gated.
-  const BENCHMARK_GRACE_DAYS = 3;
+  // ── 30-day grace for benchmarks/live drivers ──
+  // Free users can see benchmarks for 30 days from signup, then it's gated.
+  // (Was 3 days — too short to be useful; a month gives them time to log enough
+  // shifts that the comparison actually means something.)
+  const BENCHMARK_GRACE_DAYS = 30;
   const benchmarkDaysRemaining = (() => {
     if (isPro) return Infinity; // Pro always has access
     if (!accountCreatedAt) return BENCHMARK_GRACE_DAYS; // unknown, give full grace
