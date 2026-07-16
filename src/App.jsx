@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -2865,20 +2865,27 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
 
 // ─── COMMUNITY BENCHMARK CARD ───
 function BenchmarkCard({ region, onGoToSettings }) {
-  const [benchmark, setBenchmark] = useState(undefined); // undefined=loading, null=not enough data, object=data
-  const isOnline = false;
+  // undefined = loading, null = not enough data, object = data
+  const [benchmark, setBenchmark] = useState(undefined);
+  const [national, setNational]   = useState(undefined);
 
   useEffect(() => {
-    if (!region) { setBenchmark(undefined); return; }
     let cancelled = false;
-    setBenchmark(undefined);
-    fetchZoneBenchmark(region).then(b => { if (!cancelled) setBenchmark(b); });
-    // Refresh on foreground return (cheap; number only changes daily).
-    const onVisible = () => {
-      if (document.visibilityState === "visible") {
+    const load = () => {
+      // National always loads — it's the fallback/context when the local zone is
+      // too quiet, which is the common case with a nationally-spread user base.
+      fetchNationalBenchmark().then(n => { if (!cancelled) setNational(n); });
+      if (region) {
         fetchZoneBenchmark(region).then(b => { if (!cancelled) setBenchmark(b); });
+      } else {
+        setBenchmark(null);
       }
     };
+    setBenchmark(undefined);
+    setNational(undefined);
+    load();
+    // Refresh on foreground return (cheap; numbers only change daily).
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { cancelled = true; document.removeEventListener("visibilitychange", onVisible); };
   }, [region]);
@@ -2898,13 +2905,13 @@ function BenchmarkCard({ region, onGoToSettings }) {
 
   const regionInfo = REGIONS.find(r => r.id === region);
 
-  // Loading state
-  if (benchmark === undefined) {
+  // Loading state — wait for both queries so the card doesn't visibly reshuffle
+  if (benchmark === undefined || national === undefined) {
     return (
       <div className="benchmark-card">
         <div className="benchmark-header">
           <div>
-            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Local Benchmarks</div>
+            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
             <div className="benchmark-region">{regionInfo?.label || region}</div>
             <div className="benchmark-week">Loading recent data…</div>
           </div>
@@ -2918,50 +2925,120 @@ function BenchmarkCard({ region, onGoToSettings }) {
     );
   }
 
-  // Not enough data yet (fewer than 3 distinct drivers in the last 7 days)
+  // ── Local zone too quiet → show Australia-wide as CONTEXT (clearly labelled).
+  // Never presented as "your zone" — a national number can't judge local
+  // performance, so it's framed as what's happening across the app.
   if (!benchmark) {
+    if (!national) {
+      // Neither local nor national has enough data (very early days).
+      return (
+        <div className="benchmark-card">
+          <div className="benchmark-header">
+            <div>
+              <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
+              <div className="benchmark-region">{regionInfo?.label || region}</div>
+              <div className="benchmark-week">Building — not enough shifts yet</div>
+            </div>
+          </div>
+          <div className="benchmark-footer" style={{paddingTop:"4px"}}>
+            We show averages once GigTrack drivers have logged enough shifts. Keep logging — it'll appear soon.
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="benchmark-card">
         <div className="benchmark-header">
           <div>
-            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Local Benchmarks</div>
-            <div className="benchmark-region">{regionInfo?.label || region}</div>
-            <div className="benchmark-week">Building — not enough shifts yet</div>
+            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>🇦🇺 Australia-wide</div>
+            <div className="benchmark-region">All GigTrack drivers</div>
+            <div className="benchmark-week">Last 7 days</div>
+          </div>
+          <div className="benchmark-live-dot" />
+        </div>
+        <div className="benchmark-stats">
+          <div className="benchmark-stat">
+            <div className="benchmark-stat-label">Avg/hr</div>
+            <div className="benchmark-stat-value">{national.hourly != null ? `$${national.hourly}` : "—"}</div>
+          </div>
+          <div className="benchmark-stat">
+            <div className="benchmark-stat-label">Avg/del</div>
+            <div className="benchmark-stat-value">{national.perDel != null ? `$${national.perDel}` : "—"}</div>
+          </div>
+          <div className="benchmark-stat">
+            <div className="benchmark-stat-label">Based on</div>
+            <div className="benchmark-stat-value">{national.shifts} shifts</div>
           </div>
         </div>
-        <div className="benchmark-footer" style={{paddingTop:"4px"}}>
-          We show your zone's averages once GigTrack drivers have logged at least a few shifts here in the last 7 days. Keep logging — it'll appear soon.
+        <div className="benchmark-footer">
+          Your zone ({regionInfo?.label || region}) needs a few more shifts before we can show local averages — these are Australia-wide figures in the meantime.
         </div>
       </div>
     );
   }
 
+  // ── Local data exists → show it side by side with the national figure.
+  // Both are labelled so the driver reads it as "my area vs the country",
+  // not as a verdict on their own performance.
   return (
     <div className="benchmark-card">
       <div className="benchmark-header">
         <div>
-          <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Local Benchmarks</div>
+          <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
           <div className="benchmark-region">{regionInfo?.label || region}</div>
           <div className="benchmark-week">Last 7 days · GigTrack drivers</div>
         </div>
         <div className="benchmark-live-dot" />
       </div>
-      <div className="benchmark-stats">
-        <div className="benchmark-stat">
-          <div className="benchmark-stat-label">Avg/hr</div>
-          <div className="benchmark-stat-value">{benchmark.hourly != null ? `$${benchmark.hourly}` : "—"}</div>
-        </div>
-        <div className="benchmark-stat">
-          <div className="benchmark-stat-label">Avg/del</div>
-          <div className="benchmark-stat-value">{benchmark.perDel != null ? `$${benchmark.perDel}` : "—"}</div>
-        </div>
-        <div className="benchmark-stat">
-          <div className="benchmark-stat-label">Based on</div>
-          <div className="benchmark-stat-value">{benchmark.shifts} shifts</div>
-        </div>
+
+      {/* Column headers */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:"10px",alignItems:"center",padding:"2px 2px 6px"}}>
+        <div />
+        <div style={{fontSize:"9.5px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",textAlign:"right",minWidth:"62px"}}>Your zone</div>
+        <div style={{fontSize:"9.5px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",textAlign:"right",minWidth:"62px"}}>Aus-wide</div>
       </div>
-      <div className="benchmark-footer">
-        Anonymised averages from GigTrack drivers in your zone · rolling last 7 days
+
+      <BenchmarkCompareRow
+        label="Avg/hr"
+        local={benchmark.hourly}
+        nat={national ? national.hourly : null}
+      />
+      <BenchmarkCompareRow
+        label="Avg/del"
+        local={benchmark.perDel}
+        nat={national ? national.perDel : null}
+      />
+
+      <div className="benchmark-footer" style={{marginTop:"8px"}}>
+        Anonymised averages · your zone from {benchmark.shifts} shift{benchmark.shifts === 1 ? "" : "s"}
+        {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 7 days
+      </div>
+    </div>
+  );
+}
+
+// One comparison row: label, your zone's value, the national value.
+// Kept dumb on purpose — no "you're above/below average" judgement, because a
+// national figure can't fairly judge a local market.
+function BenchmarkCompareRow({ label, local, nat }) {
+  return (
+    <div style={{
+      display:"grid", gridTemplateColumns:"1fr auto auto", gap:"10px",
+      alignItems:"center", padding:"7px 2px",
+      borderTop:"1px solid var(--border)",
+    }}>
+      <div style={{fontSize:"11.5px",color:"var(--muted)",fontWeight:"600"}}>{label}</div>
+      <div style={{
+        fontFamily:"'DM Mono',monospace", fontSize:"14px", fontWeight:"700",
+        color:"var(--text)", textAlign:"right", minWidth:"62px",
+      }}>
+        {local != null ? `$${local}` : "—"}
+      </div>
+      <div style={{
+        fontFamily:"'DM Mono',monospace", fontSize:"14px", fontWeight:"600",
+        color:"var(--muted2)", textAlign:"right", minWidth:"62px",
+      }}>
+        {nat != null ? `$${nat}` : "—"}
       </div>
     </div>
   );
@@ -8284,7 +8361,10 @@ export default function GigTrack() {
     setScreen("confirm");
   };
 
-  const handleSaved = (rawRecord, isEdit) => {
+  // onCommitted (optional) runs ONLY if the shift is actually saved — not when the
+  // user backs out of the 0-km warning. Callers use it for side effects that must
+  // not happen on a cancelled save (e.g. burning a screenshot-import credit).
+  const handleSaved = (rawRecord, isEdit, onCommitted) => {
     // Tag with owner user id for safety. Prevents this shift from being
     // pushed to a different user's cloud account if accounts switch on this device.
     // Stamp the zone the shift was done in (current region) so it stays put even
@@ -8298,6 +8378,9 @@ export default function GigTrack() {
 
     // The actual save — extracted so the 0-km warning can defer it.
     const commit = () => {
+      // Fire the caller's post-save hook first: this only ever runs on a real
+      // save, so a cancelled 0-km warning can't trigger it.
+      if (typeof onCommitted === "function") onCommitted();
       let updated;
       if (isEdit) {
         updated = trips.map(t => t.id === record.id ? record : t);
@@ -8590,10 +8673,13 @@ export default function GigTrack() {
               imported_from_screenshot: true,  // Flag for screenshot-count gate
             };
 
-            handleSaved(record, false);
-            // Bump cumulative screenshot counter (server-side, RLS-safe)
-            incrementScreenshotImportsUsed().then(newCount => {
-              if (newCount != null) setScreenshotImportsUsed(newCount);
+            // Only burn a screenshot-import credit if the shift is ACTUALLY saved.
+            // Screenshots almost never include km, so the 0-km warning fires most
+            // times — backing out of it must not cost the user one of their imports.
+            handleSaved(record, false, () => {
+              incrementScreenshotImportsUsed().then(newCount => {
+                if (newCount != null) setScreenshotImportsUsed(newCount);
+              });
             });
           }}
         />

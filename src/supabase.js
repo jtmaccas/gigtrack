@@ -253,3 +253,28 @@ export const deleteMyAccount = async () => {
     return { ok: false, error: e };
   }
 };
+
+// Australia-wide benchmark aggregate. Companion to fetchZoneBenchmark — used as
+// CONTEXT when a user's own zone doesn't have enough shifts yet (common when the
+// user base is spread nationally). Returns null when the national gate isn't met.
+// NOTE: this is deliberately NOT a substitute for the local number — the UI must
+// always label it "Australia-wide" so a driver never mistakes it for their zone.
+export const fetchNationalBenchmark = async () => {
+  try {
+    const { data, error } = await supabase.rpc("get_national_benchmark");
+    if (error) {
+      console.warn("[GigTrack] fetchNationalBenchmark error:", error.message);
+      return null;
+    }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return null;
+    return {
+      hourly: row.avg_hourly  != null ? Number(row.avg_hourly).toFixed(2)  : null,
+      perDel: row.avg_per_del != null ? Number(row.avg_per_del).toFixed(2) : null,
+      shifts: row.shift_count ?? 0,
+    };
+  } catch (e) {
+    console.warn("[GigTrack] fetchNationalBenchmark threw:", e);
+    return null;
+  }
+};
