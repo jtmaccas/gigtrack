@@ -1563,7 +1563,6 @@ function RatioBar({ ratio, label }) {
 // ─── PREMIUM FEATURES DEFINITION ─────────────────
 const PREMIUM_FEATURES = [
   { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. Free users get 10 imports — Pro unlocks 100 per month." },
-  { icon:"♾️", title:"Unlimited Shifts",               desc:"Log as many shifts as you like. Free is capped at 20 lifetime shifts." },
   { icon:"📍", title:"Local Benchmarks &amp; Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
   { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
   { icon:"📊", title:"CSV Export for Accountants",     desc:"PDF export is free, but CSV export — perfect for sending raw shift data to your accountant — is Pro only." },
@@ -4426,7 +4425,7 @@ function VoiceEntryScreen({ onBack, onParsed }) {
 }
 
 // ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
-function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScreenshotImport, isPro = false, onUpgrade, shiftsRemaining, screenshotsRemaining }) {
+function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScreenshotImport, isPro = false, onUpgrade, screenshotsRemaining }) {
   // Detect Web Speech API support
   const voiceSupported = typeof window !== "undefined" &&
     ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
@@ -4439,30 +4438,6 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScree
       </div>
       <div className="scroll-area">
         <div className="log-shift-list">
-
-          {/* Free tier remaining banner */}
-          {!isPro && shiftsRemaining != null && shiftsRemaining <= 5 && (
-            <div
-              onClick={onUpgrade}
-              style={{
-                background: shiftsRemaining === 0 ? "var(--red-dim)" : "var(--amber-dim)",
-                border: `1px solid ${shiftsRemaining === 0 ? "var(--red-border)" : "var(--amber-border)"}`,
-                borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",cursor:"pointer",
-                display:"flex",alignItems:"center",gap:"10px",
-              }}
-            >
-              <div style={{fontSize:"18px"}}>{shiftsRemaining === 0 ? "🔒" : "⚠️"}</div>
-              <div style={{flex:1}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",color:"var(--text)"}}>
-                  {shiftsRemaining === 0 ? "Free shift limit reached" : `${shiftsRemaining} free shifts left`}
-                </div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginTop:"2px"}}>
-                  Tap to upgrade for unlimited shifts.
-                </div>
-              </div>
-              <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-            </div>
-          )}
 
           {/* 1 — Start Shift Timer */}
           <div className="log-entry-card featured" onClick={onStartTimer}>
@@ -8416,12 +8391,10 @@ export default function GigTrack() {
   const isPro = !!user?.isPro;
 
   // ── Free-tier gates ──
-  const FREE_SHIFT_LIMIT = 20;
+  // Shifts are UNLIMITED on free (manual, timer and voice all cost nothing to run —
+  // they're just DB rows). Only screenshot import is metered, because it's the one
+  // entry method with a real per-use cost (Claude API, ~1.3c per import).
   const FREE_SCREENSHOT_LIMIT = 10;
-
-  // Returns true if the user can log another shift (under limit OR pro)
-  const canLogNewShift = () => isPro || trips.length < FREE_SHIFT_LIMIT;
-  const shiftsRemaining = () => Math.max(0, FREE_SHIFT_LIMIT - trips.length);
 
   // Returns true if the user can import another screenshot (under limit OR pro)
   // Uses cloud-tracked counter — never decreases when shifts are deleted
@@ -8529,37 +8502,22 @@ export default function GigTrack() {
       {screen === "logshift" && (
         <LogShiftScreen
           isPro={isPro}
-          shiftsRemaining={shiftsRemaining()}
           screenshotsRemaining={screenshotsRemaining()}
           onBack={() => setScreen("home")}
           onStartTimer={() => {
-            if (!canLogNewShift()) {
-              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
-              return;
-            }
             handleStartTimer();
           }}
           onNewTrip={() => {
-            if (!canLogNewShift()) {
-              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
-              return;
-            }
             setTimerPrefill(null); setEditId(null); setScreen("newtrip");
           }}
           onVoiceEntry={() => {
-            if (!canLogNewShift()) {
-              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
-              return;
-            }
             setScreen("voiceentry");
           }}
           onScreenshotImport={() => {
-            if (!canLogNewShift()) {
-              gateToPaywall(`You've reached the ${FREE_SHIFT_LIMIT} free shift limit. Upgrade to Pro for unlimited shifts.`);
-              return;
-            }
+            // Shifts are unlimited on free — only screenshot IMPORT is metered,
+            // because it's the only entry method with a real per-use cost (Claude API).
             if (!canImportScreenshot()) {
-              gateToPaywall(`You've used your ${FREE_SCREENSHOT_LIMIT} free screenshot imports. Upgrade to Pro for unlimited.`);
+              gateToPaywall(`You've used your ${FREE_SCREENSHOT_LIMIT} free screenshot imports. Upgrade to Pro for 100 per month.`);
               return;
             }
             setScreen("screenshotimport");
