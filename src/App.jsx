@@ -1165,7 +1165,10 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .benchmark-week{font-size:10px;color:var(--muted2);}
 .benchmark-live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 2s infinite;flex-shrink:0;margin-top:5px;}
 .benchmark-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px;}
+.benchmark-stats.two{grid-template-columns:repeat(2,1fr);}
+.benchmark-group-label{font-size:9px;color:var(--muted2);letter-spacing:.08em;text-transform:uppercase;font-weight:700;margin:0 0 6px 2px;}
 .benchmark-stat{background:var(--elevated);border:0.5px solid var(--border);border-radius:var(--rs);padding:10px 8px;text-align:center;}
+.benchmark-stat.muted .benchmark-stat-value{color:var(--muted);font-weight:600;}
 .benchmark-stat-label{font-size:9px;color:var(--muted2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px;font-weight:500;}
 .benchmark-stat-value{font-size:15px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;}
 .benchmark-footer{font-size:10px;color:var(--muted2);text-align:center;line-height:1.5;}
@@ -2916,10 +2919,9 @@ function BenchmarkCard({ region, onGoToSettings }) {
             <div className="benchmark-week">Loading recent data…</div>
           </div>
         </div>
-        <div className="benchmark-stats" style={{opacity:0.4}}>
+        <div className="benchmark-stats two" style={{opacity:0.4}}>
           <div className="benchmark-stat"><div className="benchmark-stat-label">Avg/hr</div><div className="benchmark-stat-value">—</div></div>
           <div className="benchmark-stat"><div className="benchmark-stat-label">Avg/del</div><div className="benchmark-stat-value">—</div></div>
-          <div className="benchmark-stat"><div className="benchmark-stat-label">Based on</div><div className="benchmark-stat-value">—</div></div>
         </div>
       </div>
     );
@@ -2956,7 +2958,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
           </div>
           <div className="benchmark-live-dot" />
         </div>
-        <div className="benchmark-stats">
+        <div className="benchmark-stats two">
           <div className="benchmark-stat">
             <div className="benchmark-stat-label">Avg/hr</div>
             <div className="benchmark-stat-value">{national.hourly != null ? `$${national.hourly}` : "—"}</div>
@@ -2965,13 +2967,9 @@ function BenchmarkCard({ region, onGoToSettings }) {
             <div className="benchmark-stat-label">Avg/del</div>
             <div className="benchmark-stat-value">{national.perDel != null ? `$${national.perDel}` : "—"}</div>
           </div>
-          <div className="benchmark-stat">
-            <div className="benchmark-stat-label">Based on</div>
-            <div className="benchmark-stat-value">{national.shifts} shifts</div>
-          </div>
         </div>
         <div className="benchmark-footer">
-          Your zone ({regionInfo?.label || region}) needs a few more shifts before we can show local averages — these are Australia-wide figures in the meantime.
+          Your zone ({regionInfo?.label || region}) needs a few more shifts before we can show local averages — these are Australia-wide figures from {national.shifts} shifts in the meantime.
         </div>
       </div>
     );
@@ -2991,54 +2989,39 @@ function BenchmarkCard({ region, onGoToSettings }) {
         <div className="benchmark-live-dot" />
       </div>
 
-      {/* Column headers */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:"10px",alignItems:"center",padding:"2px 2px 6px"}}>
-        <div />
-        <div style={{fontSize:"9.5px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",textAlign:"right",minWidth:"62px"}}>Your zone</div>
-        <div style={{fontSize:"9.5px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",textAlign:"right",minWidth:"62px"}}>Aus-wide</div>
+      {/* Your zone */}
+      <div className="benchmark-group-label">Your zone</div>
+      <div className="benchmark-stats two">
+        <div className="benchmark-stat">
+          <div className="benchmark-stat-label">Avg/hr</div>
+          <div className="benchmark-stat-value">{benchmark.hourly != null ? `$${benchmark.hourly}` : "—"}</div>
+        </div>
+        <div className="benchmark-stat">
+          <div className="benchmark-stat-label">Avg/del</div>
+          <div className="benchmark-stat-value">{benchmark.perDel != null ? `$${benchmark.perDel}` : "—"}</div>
+        </div>
       </div>
 
-      <BenchmarkCompareRow
-        label="Avg/hr"
-        local={benchmark.hourly}
-        nat={national ? national.hourly : null}
-      />
-      <BenchmarkCompareRow
-        label="Avg/del"
-        local={benchmark.perDel}
-        nat={national ? national.perDel : null}
-      />
+      {/* Australia-wide — muted so the local numbers stay the hero */}
+      {national && (
+        <>
+          <div className="benchmark-group-label">🇦🇺 Australia-wide</div>
+          <div className="benchmark-stats two">
+            <div className="benchmark-stat muted">
+              <div className="benchmark-stat-label">Avg/hr</div>
+              <div className="benchmark-stat-value">{national.hourly != null ? `$${national.hourly}` : "—"}</div>
+            </div>
+            <div className="benchmark-stat muted">
+              <div className="benchmark-stat-label">Avg/del</div>
+              <div className="benchmark-stat-value">{national.perDel != null ? `$${national.perDel}` : "—"}</div>
+            </div>
+          </div>
+        </>
+      )}
 
-      <div className="benchmark-footer" style={{marginTop:"8px"}}>
+      <div className="benchmark-footer">
         Anonymised averages · your zone from {benchmark.shifts} shift{benchmark.shifts === 1 ? "" : "s"}
         {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 7 days
-      </div>
-    </div>
-  );
-}
-
-// One comparison row: label, your zone's value, the national value.
-// Kept dumb on purpose — no "you're above/below average" judgement, because a
-// national figure can't fairly judge a local market.
-function BenchmarkCompareRow({ label, local, nat }) {
-  return (
-    <div style={{
-      display:"grid", gridTemplateColumns:"1fr auto auto", gap:"10px",
-      alignItems:"center", padding:"7px 2px",
-      borderTop:"1px solid var(--border)",
-    }}>
-      <div style={{fontSize:"11.5px",color:"var(--muted)",fontWeight:"600"}}>{label}</div>
-      <div style={{
-        fontFamily:"'DM Mono',monospace", fontSize:"14px", fontWeight:"700",
-        color:"var(--text)", textAlign:"right", minWidth:"62px",
-      }}>
-        {local != null ? `$${local}` : "—"}
-      </div>
-      <div style={{
-        fontFamily:"'DM Mono',monospace", fontSize:"14px", fontWeight:"600",
-        color:"var(--muted2)", textAlign:"right", minWidth:"62px",
-      }}>
-        {nat != null ? `$${nat}` : "—"}
       </div>
     </div>
   );
