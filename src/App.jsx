@@ -974,6 +974,8 @@ const css = `
   --hairline:#F1EBE1; --chip:#EDE6DC;
   --on-coral:#FFFFFF;
   --coral-press:#D8441F;
+  --coral-border:rgba(240,86,46,.25);
+  --coral-dim:#FDEDE7;
 }
 [data-theme="dark"]{
   --bg:#1B1815;
@@ -1020,6 +1022,8 @@ const css = `
   --hairline:rgba(255,255,255,.08); --chip:#2E2721;
   --on-coral:#FFFFFF;
   --coral-press:#D8441F;
+  --coral-border:rgba(240,86,46,.25);
+  --coral-dim:rgba(240,86,46,.16);
 }
 html,body,#root{background:var(--bg) !important;color:var(--text) !important;transition:background .3s ease, color .3s ease;}
 body{font-family:'Inter',system-ui,sans-serif;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;letter-spacing:-.005em;}
@@ -3087,6 +3091,327 @@ function BenchmarkCard({ region, onGoToSettings }) {
       <div className="benchmark-footer">
         Anonymised averages · your zone from {benchmark.shifts} shift{benchmark.shifts === 1 ? "" : "s"}
         {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 7 days
+      </div>
+    </div>
+  );
+}
+
+// ─── BENCHMARKS SCREEN (Local / State / National) ───
+// Presentation recreates mockups 3a/3b/3c. Data is mocked behind a single
+// seam (buildBenchmarkData) that matches the spec copy until the backend
+// provides real Local/State/National payloads. Real seams (fetchZoneBenchmark,
+// fetchZonePresence) are wired where they already exist; the richer shapes
+// (percentiles, histograms, leaderboards, city bars, trend) are placeholder.
+
+// Small reusable heatmap (7 day-cols × 4 time-rows) with a coral opacity ramp.
+function BenchHeatmap() {
+  const rows = ["Lunch", "Arvo", "Dinner", "Late"];
+  const cols = ["M", "T", "W", "T", "F", "S", "S"];
+  // Intensity grid 0..1 — peaks Fri/Sat dinner. Mock, spec-shaped.
+  const grid = [
+    [0.30, 0.28, 0.32, 0.40, 0.55, 0.62, 0.48], // Lunch
+    [0.22, 0.20, 0.24, 0.30, 0.42, 0.50, 0.38], // Arvo
+    [0.55, 0.52, 0.58, 0.70, 0.95, 1.00, 0.80], // Dinner
+    [0.30, 0.28, 0.34, 0.44, 0.66, 0.72, 0.50], // Late
+  ];
+  return (
+    <div>
+      <div style={{ display: "flex", gap: "4px", marginBottom: "4px" }}>
+        <div style={{ width: "34px", flexShrink: 0 }} />
+        {cols.map((c, i) => (
+          <div key={i} style={{ flex: 1, textAlign: "center", fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>{c}</div>
+        ))}
+      </div>
+      {grid.map((row, ri) => (
+        <div key={ri} style={{ display: "flex", gap: "4px", marginBottom: "4px", alignItems: "center" }}>
+          <div style={{ width: "34px", flexShrink: 0, fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>{rows[ri]}</div>
+          {row.map((v, ci) => (
+            <div key={ci} style={{
+              flex: 1, aspectRatio: "1", borderRadius: "6px",
+              background: `rgba(240,86,46,${Math.max(0.14, v)})`,
+              transition: "background .4s ease",
+            }} />
+          ))}
+        </div>
+      ))}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
+        <span style={{ fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>Quiet</span>
+        <div style={{ flex: 1, height: "6px", borderRadius: "100px", background: "linear-gradient(90deg, rgba(240,86,46,.14), #F0562E)" }} />
+        <span style={{ fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>Peak $</span>
+      </div>
+    </div>
+  );
+}
+
+// Distribution histogram (bell-ish) with the user's bar highlighted + "YOU".
+function BenchHistogram({ youIndex = 7, axisLo = "$18/hr", axisHi = "$40/hr" }) {
+  const bars = [0.18, 0.34, 0.52, 0.72, 0.88, 1.0, 0.94, 0.78, 0.6, 0.4];
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: "3px", height: "62px" }}>
+        {bars.map((h, i) => {
+          const isYou = i === youIndex;
+          return (
+            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", position: "relative" }}>
+              {isYou && (
+                <div style={{ fontSize: "8px", fontWeight: "800", color: "var(--coral-hi)", marginBottom: "3px", letterSpacing: ".08em" }}>YOU</div>
+              )}
+              <div style={{
+                width: "100%", height: `${Math.round(h * 100)}%`, minHeight: "4px",
+                borderRadius: "3px 3px 0 0",
+                background: isYou ? "var(--coral)" : "rgba(255,255,255,.14)",
+              }} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "6px", fontSize: "8.5px", color: "var(--hero-muted)", fontWeight: "500" }}>
+        <span>{axisLo}</span><span>zone spread</span><span>{axisHi}</span>
+      </div>
+    </div>
+  );
+}
+
+// Mini 12-week trend area line (coral-hi), SVG.
+function BenchTrendLine() {
+  const pts = [20.1, 20.8, 21.2, 20.9, 21.6, 22.0, 21.7, 22.3, 22.5, 22.4, 22.8, 22.9];
+  const W = 260, H = 54, lo = 19, hi = 24;
+  const x = i => (i / (pts.length - 1)) * W;
+  const y = v => H - ((v - lo) / (hi - lo)) * H;
+  const line = pts.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
+  const area = `${line} L ${W} ${H} L 0 ${H} Z`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: "block" }}>
+      <defs>
+        <linearGradient id="benchTrendFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(246,134,58,.30)" />
+          <stop offset="100%" stopColor="rgba(246,134,58,0)" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill="url(#benchTrendFill)" />
+      <path d={line} fill="none" stroke="var(--coral-hi)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// A white stat card (label + value + sub).
+function BenchStat({ label, value, sub, tone = "coral" }) {
+  const toneColor = tone === "green" ? "var(--pos)" : tone === "indigo" ? "var(--indigo)" : "var(--coral)";
+  return (
+    <div style={{ flex: 1, background: "var(--surface)", borderRadius: "18px", padding: "14px", boxShadow: "var(--shadow-card)" }}>
+      <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".08em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: "20px", fontWeight: "800", color: toneColor, letterSpacing: "-.02em", marginTop: "6px", fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      {sub && <div style={{ fontSize: "10px", color: "var(--muted)", marginTop: "3px", fontWeight: "500" }}>{sub}</div>}
+    </div>
+  );
+}
+
+// A leaderboard / city-bars row.
+function BenchRankRow({ rank, name, value, pct, highlight = false, barTone = "beige" }) {
+  const barBg = highlight ? "var(--coral)" : barTone === "beige" ? "#E4B9A6" : "var(--indigo)";
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: "10px", padding: "8px 10px", borderRadius: "12px",
+      background: highlight ? "var(--coral-dim, #FDEDE7)" : "transparent",
+    }}>
+      {rank != null && (
+        <div style={{ width: "16px", fontSize: "12px", fontWeight: "800", color: highlight ? "var(--coral)" : "var(--muted2)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{rank}</div>
+      )}
+      <div style={{ width: "104px", fontSize: "12px", fontWeight: highlight ? "800" : "600", color: highlight ? "var(--coral)" : "var(--text)", flexShrink: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
+      <div style={{ flex: 1, height: "8px", borderRadius: "100px", background: "var(--hairline)", overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, borderRadius: "100px", background: barBg, transition: "width .6s cubic-bezier(.4,0,.2,1)" }} />
+      </div>
+      <div style={{ width: "44px", textAlign: "right", fontSize: "12px", fontWeight: "700", color: highlight ? "var(--coral)" : "var(--text)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+    </div>
+  );
+}
+
+function BenchmarksScreen({ region, onBack, onGoToSettings }) {
+  const [level, setLevel] = useState("local");
+  const regionInfo = REGIONS.find(r => r.id === region);
+  const zoneLabel = regionInfo?.label || "your zone";
+  const stateLabel = regionInfo?.state || "your state";
+
+  // Real seams wired where they exist (used lightly; richer shapes are mocked).
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (region) {
+      fetchZonePresence(presenceBucket(region)).then(c => { if (!cancelled) setLive(c); });
+    }
+    return () => { cancelled = true; };
+  }, [region]);
+
+  const levels = [
+    { id: "local", label: "Local" },
+    { id: "state", label: "State" },
+    { id: "national", label: "National" },
+  ];
+
+  const Footer = ({ children }) => (
+    <div style={{ textAlign: "center", fontSize: "10px", color: "var(--muted2)", fontWeight: "500", padding: "16px 8px 4px" }}>{children}</div>
+  );
+
+  const HeroBubble = ({ children }) => (
+    <div style={{ position: "relative", overflow: "hidden", background: "var(--hero-bg)", borderRadius: "24px", padding: "20px 18px", boxShadow: "0 18px 34px -16px rgba(27,26,23,.5)" }}>
+      <div style={{ position: "absolute", top: "-40px", right: "-30px", width: "180px", height: "180px", pointerEvents: "none", background: "radial-gradient(circle, rgba(240,86,46,.45), transparent 70%)" }} />
+      <div style={{ position: "relative" }}>{children}</div>
+    </div>
+  );
+
+  return (
+    <div className="view active">
+      {/* Header */}
+      <div style={{ padding: "14px 16px 6px", display: "flex", alignItems: "center", gap: "12px" }}>
+        <div onClick={onBack} role="button" aria-label="Back" style={{
+          width: "34px", height: "34px", borderRadius: "9px", background: "var(--chip)",
+          display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+          fontSize: "18px", color: "var(--text)", flexShrink: 0,
+        }}>‹</div>
+        <div>
+          <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--text)", letterSpacing: "-.02em" }}>Benchmarks</div>
+          <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--muted)" }}>Anonymised · last 7 days</div>
+        </div>
+      </div>
+
+      {/* Segmented control */}
+      <div style={{ padding: "8px 16px 4px" }}>
+        <div style={{ display: "flex", gap: "0", background: "var(--chip)", borderRadius: "100px", padding: "3px" }}>
+          {levels.map(l => {
+            const active = level === l.id;
+            return (
+              <div key={l.id} onClick={() => setLevel(l.id)} role="button" style={{
+                flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
+                fontSize: "12px", fontWeight: "700",
+                color: active ? "var(--on-coral)" : "var(--muted)",
+                background: active ? "var(--coral)" : "transparent",
+                boxShadow: active ? "var(--shadow-green)" : "none",
+                transition: "background .2s, color .2s",
+              }}>{l.label}</div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="scroll-area">
+        <div style={{ padding: "12px 16px 90px" }}>
+
+          {/* ── LOCAL ── */}
+          {level === "local" && (
+            <>
+              <HeroBubble>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--coral-hi)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></svg>
+                  <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".04em" }}>{zoneLabel}</span>
+                </div>
+                <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
+                  You earn more than <span style={{ color: "var(--coral-hi)" }}>82% of drivers</span> here
+                </div>
+                <BenchHistogram youIndex={7} axisLo="$18/hr" axisHi="$40/hr" />
+              </HeroBubble>
+
+              <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                <BenchStat label="You" value="$27.40" sub="per hour" tone="coral" />
+                <BenchStat label="Zone median" value="$25.30" sub="+$2.10 you" tone="green" />
+                <BenchStat label="Top 10%" value="$34.10" sub="reach goal" tone="indigo" />
+              </div>
+
+              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)", border: "1px solid var(--coral-border)" }}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "14px" }}>
+                  <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--coral)", letterSpacing: ".06em", textTransform: "uppercase" }}>Best times to drive here</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "600" }}>Fri–Sat dinner</div>
+                </div>
+                <BenchHeatmap />
+              </div>
+
+              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "16px 18px", marginTop: "10px", boxShadow: "var(--shadow-card)", display: "flex", alignItems: "center" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{live?.total != null ? live.total : 46}</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>online now</div>
+                </div>
+                <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
+                <div style={{ flex: 2 }}>
+                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "700", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "4px" }}>$/delivery here</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>You $13.37 · zone $12.10</span>
+                    <span style={{ fontSize: "10px", fontWeight: "700", color: "var(--pos)", background: "var(--pos-dim)", padding: "2px 7px", borderRadius: "100px" }}>+10%</span>
+                  </div>
+                </div>
+              </div>
+
+              <Footer>Based on 142 CBD drivers this week</Footer>
+            </>
+          )}
+
+          {/* ── STATE ── */}
+          {level === "state" && (
+            <>
+              <HeroBubble>
+                <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "10px" }}>Your zone rank · {stateLabel}</div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+                  <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>#3 <span style={{ fontSize: "20px", fontWeight: "600", color: "var(--hero-muted)" }}>/ 24</span></div>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>↑ 2 this week</div>
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "12px", lineHeight: "1.5" }}>
+                  {zoneLabel} is a top-earning {stateLabel} zone. State median is <span style={{ color: "var(--hero-ink)", fontWeight: "700" }}>$23.80/hr</span>.
+                </div>
+              </HeroBubble>
+
+              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Top {stateLabel} zones · $/hr</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  <BenchRankRow rank={1} name="Docklands" value="$29.1" pct={100} />
+                  <BenchRankRow rank={2} name="Southbank" value="$28.0" pct={96} />
+                  <BenchRankRow rank={3} name={zoneLabel} value="$27.4" pct={94} highlight />
+                  <BenchRankRow rank={4} name="St Kilda" value="$24.6" pct={84} />
+                  <BenchRankRow rank={5} name="Geelong" value="$21.7" pct={74} />
+                  <BenchRankRow rank={6} name="Ballarat" value="$18.9" pct={65} />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                <BenchStat label="Busiest platform" value="Uber Eats" sub={`58% of ${stateLabel} trips`} tone="coral" />
+                <BenchStat label="Drivers online" value="1,240" sub={`across ${stateLabel}`} tone="green" />
+              </div>
+
+              <Footer>Based on 2,180 {stateLabel} drivers this week</Footer>
+            </>
+          )}
+
+          {/* ── NATIONAL ── */}
+          {level === "national" && (
+            <>
+              <HeroBubble>
+                <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "8px" }}>National median · $/hr</div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginBottom: "14px" }}>
+                  <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>$22.90</div>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>Melbourne ranks #2</div>
+                </div>
+                <BenchTrendLine />
+                <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "6px" }}>12-week national trend · <span style={{ color: "var(--coral-hi)", fontWeight: "700" }}>+6%</span></div>
+              </HeroBubble>
+
+              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Best cities · $/hr</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  <BenchRankRow name="Sydney" value="$28.6" pct={100} />
+                  <BenchRankRow name="Melbourne" value="$27.4" pct={96} highlight />
+                  <BenchRankRow name="Brisbane" value="$22.9" pct={80} />
+                  <BenchRankRow name="Perth" value="$20.6" pct={72} />
+                  <BenchRankRow name="Adelaide" value="$18.3" pct={64} />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                <BenchStat label="Drivers nationwide" value="9,860" sub="online now" tone="green" />
+                <BenchStat label="Peak day (AU)" value="Saturday" sub="+31% vs avg" tone="coral" />
+              </div>
+
+              <Footer>Based on 41,300 AU drivers this week</Footer>
+            </>
+          )}
+
+        </div>
       </div>
     </div>
   );
@@ -6332,11 +6657,15 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
 // existing fields (ts, totalEarned, totalHrs, dels, platform) — no new data.
 
 // Small shared section wrapper to match the Insights card aesthetic.
-function InsightCard({ title, subtitle, children }) {
+function InsightCard({ title, subtitle, children, featured = false }) {
   return (
-    <div style={{background:"var(--surface)",borderRadius:"16px",padding:"18px",marginBottom:"10px",boxShadow:"var(--shadow-card)"}}>
+    <div style={{
+      background:"var(--surface)",borderRadius:"18px",padding:"18px",marginBottom:"10px",
+      boxShadow:"var(--shadow-card)",
+      border: featured ? "1px solid var(--coral-border, rgba(240,86,46,.25))" : "none",
+    }}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:"14px"}}>
-        <div style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"600",letterSpacing:".04em",textTransform:"uppercase"}}>{title}</div>
+        <div style={{fontSize:"11px",color: featured ? "var(--coral)" : "var(--muted2)",fontWeight:"700",letterSpacing:".06em",textTransform:"uppercase"}}>{title}</div>
         {subtitle && <div style={{fontSize:"10px",color:"var(--muted2)"}}>{subtitle}</div>}
       </div>
       {children}
@@ -6381,8 +6710,8 @@ function DayOfWeekChart({ trips }) {
               </div>
               <div style={{
                 width:"66%",height:`${h}px`,
-                background: b.earned > 0 ? (isBest ? "var(--green)" : "rgba(0,143,68,.4)") : "var(--elevated)",
-                borderRadius:"3px 3px 0 0",
+                background: b.earned > 0 ? (isBest ? "var(--coral-grad)" : "var(--hairline)") : "var(--hairline)",
+                borderRadius:"6px 6px 0 0",
               }} />
               <div style={{fontSize:"10px",color: isBest ? "var(--green)" : "var(--muted)",fontWeight: isBest ? "700" : "500"}}>{labels[i]}</div>
             </div>
@@ -6440,23 +6769,30 @@ function HourOfDayChart({ trips }) {
       <div style={{display:"flex",gap:"4px"}}>
         {data.map((d, i) => {
           const rate = d.hrs > 0 ? d.earned/d.hrs : 0;
-          const intensity = d.count > 0 ? Math.max(0.12, rate / maxRate) : 0;
+          const intensity = d.count > 0 ? Math.max(0.14, rate / maxRate) : 0;
           return (
             <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"6px"}}>
               <div style={{
-                width:"100%",aspectRatio:"1",borderRadius:"8px",
-                background: d.count > 0 ? `rgba(0,143,68,${intensity})` : "var(--elevated)",
+                width:"100%",aspectRatio:"1",borderRadius:"9px",
+                background: d.count > 0 ? `rgba(240,86,46,${intensity})` : "var(--hairline)",
                 display:"flex",alignItems:"center",justifyContent:"center",
                 fontSize:"11px",fontWeight:"700",
                 color: intensity > 0.5 ? "#fff" : "var(--text)",
                 fontVariantNumeric:"tabular-nums",
+                transition:"background .4s ease",
               }}>{d.count > 0 ? `$${rate.toFixed(0)}` : "—"}</div>
               <div style={{fontSize:"8px",color:"var(--muted)",textAlign:"center",lineHeight:1.2,whiteSpace:"pre-line"}}>{blocks[i].label}</div>
             </div>
           );
         })}
       </div>
-      <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"10px",textAlign:"center"}}>
+      {/* Quiet → Peak legend */}
+      <div style={{display:"flex",alignItems:"center",gap:"8px",marginTop:"12px"}}>
+        <span style={{fontSize:"9px",color:"var(--muted2)",fontWeight:"600"}}>Quiet</span>
+        <div style={{flex:1,height:"6px",borderRadius:"100px",background:"linear-gradient(90deg, rgba(240,86,46,.14), #F0562E)"}} />
+        <span style={{fontSize:"9px",color:"var(--muted2)",fontWeight:"600"}}>Peak $</span>
+      </div>
+      <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"8px",textAlign:"center"}}>
         Colour intensity = $/hr · by shift start time
         {excluded > 0 && <><br />{excluded} date-only shift{excluded!==1?"s":""} excluded (no start time)</>}
       </div>
@@ -6488,28 +6824,44 @@ function PlatformComparison({ trips }) {
   return (
     <>
       <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
-        {active.map(([id, g]) => {
-          const rate = g.hrs > 0 ? g.earned/g.hrs : 0;
-          const perDel = g.dels > 0 ? g.earned/g.dels : 0;
-          return (
-            <div key={id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 12px",borderRadius:"10px",background:"var(--elevated)"}}>
-              <div>
-                <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)"}}>{g.label}</div>
-                <div style={{fontSize:"10px",color:"var(--muted2)",marginTop:"2px"}}>{g.count} shift{g.count!==1?"s":""}</div>
-              </div>
-              <div style={{display:"flex",gap:"16px",textAlign:"right"}}>
-                <div>
-                  <div style={{fontSize:"14px",fontWeight:"700",color:"var(--green)",fontVariantNumeric:"tabular-nums"}}>${rate.toFixed(0)}</div>
-                  <div style={{fontSize:"9px",color:"var(--muted2)"}}>/hr</div>
+        {(() => {
+          const maxEarned = Math.max(...active.map(([,g]) => g.earned), 1);
+          const platColor = { uber_eats:"var(--coral)", doordash:"var(--indigo)", both:"var(--coral-hi)" };
+          const platGrad  = {
+            uber_eats:"var(--coral-grad)",
+            doordash:"linear-gradient(90deg,#4F46E5,#7C74F0)",
+            both:"linear-gradient(90deg,#F6863A,#F0562E)",
+          };
+          return active.map(([id, g]) => {
+            const rate = g.hrs > 0 ? g.earned/g.hrs : 0;
+            const perDel = g.dels > 0 ? g.earned/g.dels : 0;
+            const w = Math.max(6, (g.earned / maxEarned) * 100);
+            return (
+              <div key={id} style={{padding:"12px 14px",borderRadius:"14px",background:"var(--surface)",boxShadow:"var(--shadow-card)"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"8px"}}>
+                  <div>
+                    <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)"}}>{g.label}</div>
+                    <div style={{fontSize:"10px",color:"var(--muted2)",marginTop:"2px"}}>{g.count} shift{g.count!==1?"s":""}</div>
+                  </div>
+                  <div style={{display:"flex",gap:"16px",textAlign:"right"}}>
+                    <div>
+                      <div style={{fontSize:"14px",fontWeight:"800",color:platColor[id]||"var(--coral)",fontVariantNumeric:"tabular-nums"}}>${rate.toFixed(0)}</div>
+                      <div style={{fontSize:"9px",color:"var(--muted2)"}}>/hr</div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:"14px",fontWeight:"700",color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>${perDel.toFixed(1)}</div>
+                      <div style={{fontSize:"9px",color:"var(--muted2)"}}>/del</div>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <div style={{fontSize:"14px",fontWeight:"700",color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>${perDel.toFixed(1)}</div>
-                  <div style={{fontSize:"9px",color:"var(--muted2)"}}>/del</div>
+                <div style={{height:"10px",borderRadius:"100px",background:"var(--hairline)",overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${w}%`,borderRadius:"100px",background:platGrad[id]||"var(--coral-grad)",transition:"width .6s cubic-bezier(.4,0,.2,1)"}} />
                 </div>
+                <div style={{fontSize:"10px",color:"var(--muted2)",marginTop:"6px",fontWeight:"600",fontVariantNumeric:"tabular-nums"}}>${g.earned.toFixed(0)}</div>
               </div>
-            </div>
-          );
-        })}
+            );
+          });
+        })()}
       </div>
       {untagged > 0 && (
         <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"10px",textAlign:"center"}}>{untagged} untagged shift{untagged!==1?"s":""} not shown</div>
@@ -6750,9 +7102,9 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
                 fontSize:"12px",fontWeight:"700",
                 color: diff >= 0 ? "var(--green)" : "var(--red)",
                 background: diff >= 0 ? "var(--green-dim)" : "var(--red-dim)",
-                padding:"4px 9px",borderRadius:"8px",
+                padding:"4px 9px",borderRadius:"100px",
               }}>
-                {diff >= 0 ? "▲" : "▼"} ${Math.abs(diff).toFixed(2)} vs {period === "7days" ? "prev 7 days" : period === "week" ? "last week" : period === "month" ? "last month" : "last year"}
+                {diff >= 0 ? "↑" : "↓"} ${Math.abs(diff).toFixed(2)} vs {period === "7days" ? "prev 7 days" : period === "week" ? "last week" : period === "month" ? "last month" : "last year"}
               </div>
             )}
 
@@ -6782,15 +7134,15 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
                           width: "60%",
                           height: `${barH}px`,
                           background: bar.val > 0
-                            ? (isToday ? "var(--green)" : "rgba(0,143,68,.4)")
-                            : "var(--elevated)",
-                          borderRadius: "3px 3px 0 0",
+                            ? (isToday ? "var(--coral-grad)" : "var(--hairline)")
+                            : "var(--hairline)",
+                          borderRadius: "6px 6px 0 0",
                           transition: "height .4s ease",
                           flexShrink: 0,
                         }} />
                         <div style={{
                           fontSize: "9px",
-                          color: isToday ? "var(--green)" : "var(--muted2)",
+                          color: isToday ? "var(--coral)" : "var(--muted2)",
                           fontWeight: isToday ? "700" : "600",
                           height: `${LABEL_H}px`,
                           display: "flex",
@@ -6971,14 +7323,14 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
             )}
           </div>
 
+          {/* Best times to drive — featured heatmap (highest-value view) */}
+          <InsightCard title="Best times to drive" subtitle="by shift start" featured>
+            <HourOfDayChart trips={filtered} />
+          </InsightCard>
+
           {/* Day of week */}
           <InsightCard title="Best Days" subtitle={currentLabel}>
             <DayOfWeekChart trips={filtered} />
-          </InsightCard>
-
-          {/* Hour of day */}
-          <InsightCard title="Best Times" subtitle="by shift start">
-            <HourOfDayChart trips={filtered} />
           </InsightCard>
 
           {/* Platform comparison */}
@@ -8579,22 +8931,11 @@ export default function GigTrack() {
         />
       )}
       {screen === "benchmarks" && (
-        <div className="view active">
-          <div style={{padding:"14px 16px",display:"flex",alignItems:"center",gap:"12px"}}>
-            <div onClick={() => setScreen("home")} role="button" style={{
-              width:"34px",height:"34px",borderRadius:"9px",background:"var(--chip)",
-              display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",
-              fontSize:"18px",color:"var(--text)",flexShrink:0,
-            }}>‹</div>
-            <div>
-              <div style={{fontSize:"18px",fontWeight:"800",color:"var(--text)"}}>Benchmarks</div>
-              <div style={{fontSize:"11px",fontWeight:"600",color:"var(--muted)"}}>Anonymised · last 7 days</div>
-            </div>
-          </div>
-          <div style={{padding:"40px 24px",textAlign:"center",color:"var(--muted)",fontSize:"13px"}}>
-            Full Local / State / National benchmarks coming in the next step.
-          </div>
-        </div>
+        <BenchmarksScreen
+          region={region}
+          onBack={() => setScreen("home")}
+          onGoToSettings={() => setScreen("settings")}
+        />
       )}
       {screen === "logshift" && (
         <LogShiftScreen
