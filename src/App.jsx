@@ -929,81 +929,97 @@ const css = `
 
 *{box-sizing:border-box;margin:0;padding:0;}
 :root{
-  --bg:#FAFAFA;
+  --bg:#FBF7F1;
   --surface:#FFFFFF;
-  --elevated:#F4F4F6;
-  --border:rgba(0,0,0,.08);
-  --border2:rgba(0,0,0,.15);
-  --text:#000000;
-  --muted:#6E6E73;
-  --muted2:#98989D;
-  --green:#008F44;
-  --green-dim:rgba(0,143,68,.1);
-  --green-border:rgba(0,143,68,.25);
-  --blue:#0A84FF;
-  --blue-dim:rgba(10,132,255,.1);
-  --blue-border:rgba(10,132,255,.25);
-  --amber:#FF9500;
-  --amber-dim:rgba(255,149,0,.1);
-  --amber-border:rgba(255,149,0,.25);
+  --elevated:#EDE6DC;
+  --border:#F1EBE1;
+  --border2:rgba(27,26,23,.15);
+  --text:#1B1A17;
+  --muted:#8A8071;
+  --muted2:#A69E92;
+  --green:#F0562E;
+  --green-dim:#FDEDE7;
+  --green-border:rgba(240,86,46,.25);
+  --blue:#4F46E5;
+  --blue-dim:#EAE8FB;
+  --blue-border:rgba(79,70,229,.25);
+  --amber:#F6863A;
+  --amber-dim:rgba(246,134,58,.12);
+  --amber-border:rgba(246,134,58,.28);
   --red:#FF453A;
   --red-dim:rgba(255,69,58,.1);
   --red-border:rgba(255,69,58,.25);
-  --purple:#AF52DE;
-  --purple-dim:rgba(175,82,222,.1);
-  --purple-border:rgba(175,82,222,.25);
-  --grad:linear-gradient(90deg,#008F44,#0A84FF);
+  --purple:#4F46E5;
+  --purple-dim:#EAE8FB;
+  --purple-border:rgba(79,70,229,.25);
+  --grad:linear-gradient(120deg,#F0562E,#F6863A);
   --r:14px;--rs:10px;--tr:0.18s cubic-bezier(.4,0,.2,1);
   --surface-grad:#FFFFFF;
-  --elev-grad:#F4F4F6;
-  --green-grad:linear-gradient(180deg, #00A050 0%, #008F44 100%);
-  --green-arc-grad:linear-gradient(90deg, #008F44 0%, #00A050 100%);
+  --elev-grad:#EDE6DC;
+  --green-grad:linear-gradient(120deg, #F0562E 0%, #F6863A 100%);
+  --green-arc-grad:linear-gradient(90deg, #F0562E 0%, #F6863A 100%);
   --hl-top:inset 0 1px 0 rgba(255,255,255,.5);
   --hl-top-strong:inset 0 1px 0 rgba(255,255,255,.8);
-  --shadow-soft:0 1px 2px rgba(0,0,0,.04);
-  --shadow-card:0 1px 2px rgba(0,0,0,.04);
-  --shadow-green:0 4px 14px rgba(0,143,68,.3), inset 0 1px 0 rgba(255,255,255,.2);
-  --nav-bg:rgba(250,250,250,.78);
+  --shadow-soft:0 8px 20px -16px rgba(0,0,0,.3);
+  --shadow-card:0 8px 20px -16px rgba(0,0,0,.3);
+  --shadow-green:0 14px 28px -14px rgba(240,86,46,.65);
+  --nav-bg:rgba(251,247,241,.82);
   --picker-option:#FFFFFF;
-  --picker-option-text:#000000;
+  --picker-option-text:#1B1A17;
+  --coral:#F0562E; --coral-hi:#F6863A;
+  --coral-grad:linear-gradient(120deg,#F0562E,#F6863A);
+  --indigo:#4F46E5; --indigo-dim:#EAE8FB;
+  --pos:#1E9E68; --pos-dim:#E7F4EC;
+  --hero-bg:#1B1A17; --hero-ink:#F7F2EA; --hero-muted:#C9C1B4;
+  --hairline:#F1EBE1; --chip:#EDE6DC;
+  --on-coral:#FFFFFF;
+  --coral-press:#D8441F;
 }
 [data-theme="dark"]{
-  --bg:#0B0F14;
-  --surface:#161B22;
-  --elevated:#1F242D;
+  --bg:#1B1815;
+  --surface:#251F1B;
+  --elevated:#2E2721;
   --border:rgba(255,255,255,.08);
   --border2:rgba(255,255,255,.16);
-  --text:#FFFFFF;
-  --muted:#9BA3AF;
-  --muted2:#6B7280;
-  --green:#22C55E;
-  --green-dim:rgba(34,197,94,.14);
-  --green-border:rgba(34,197,94,.32);
-  --blue:#3B82F6;
-  --blue-dim:rgba(59,130,246,.14);
-  --blue-border:rgba(59,130,246,.32);
-  --amber:#F59E0B;
-  --amber-dim:rgba(245,158,11,.14);
-  --amber-border:rgba(245,158,11,.32);
+  --text:#F7F2EA;
+  --muted:#A69E92;
+  --muted2:#8A8071;
+  --green:#F0562E;
+  --green-dim:rgba(240,86,46,.16);
+  --green-border:rgba(240,86,46,.32);
+  --blue:#9089F2;
+  --blue-dim:rgba(124,116,240,.18);
+  --blue-border:rgba(124,116,240,.34);
+  --amber:#F6863A;
+  --amber-dim:rgba(246,134,58,.16);
+  --amber-border:rgba(246,134,58,.34);
   --red:#EF4444;
   --red-dim:rgba(239,68,68,.14);
   --red-border:rgba(239,68,68,.32);
-  --purple:#A855F7;
-  --purple-dim:rgba(168,85,247,.14);
-  --purple-border:rgba(168,85,247,.32);
-  --grad:linear-gradient(90deg,#22C55E,#3B82F6);
-  --surface-grad:#161B22;
-  --elev-grad:#1F242D;
-  --green-grad:linear-gradient(180deg, #2DD46E 0%, #22C55E 100%);
-  --green-arc-grad:linear-gradient(90deg, #22C55E 0%, #4ADE80 100%);
+  --purple:#9089F2;
+  --purple-dim:rgba(124,116,240,.18);
+  --purple-border:rgba(124,116,240,.34);
+  --grad:linear-gradient(120deg,#F0562E,#F6863A);
+  --surface-grad:#251F1B;
+  --elev-grad:#2E2721;
+  --green-grad:linear-gradient(120deg, #F0562E 0%, #F6863A 100%);
+  --green-arc-grad:linear-gradient(90deg, #F0562E 0%, #F6863A 100%);
   --hl-top:inset 0 1px 0 rgba(255,255,255,.04);
   --hl-top-strong:inset 0 1px 0 rgba(255,255,255,.08);
   --shadow-soft:0 1px 3px rgba(0,0,0,.4);
   --shadow-card:0 1px 2px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.04);
-  --shadow-green:0 4px 14px rgba(34,197,94,.3), inset 0 1px 0 rgba(255,255,255,.15);
-  --nav-bg:rgba(11,15,20,.78);
-  --picker-option:#1F242D;
-  --picker-option-text:#FFFFFF;
+  --shadow-green:0 14px 28px -14px rgba(240,86,46,.55);
+  --nav-bg:rgba(16,14,12,.82);
+  --picker-option:#2E2721;
+  --picker-option-text:#F7F2EA;
+  --coral:#F0562E; --coral-hi:#F6863A;
+  --coral-grad:linear-gradient(120deg,#F0562E,#F6863A);
+  --indigo:#9089F2; --indigo-dim:rgba(124,116,240,.18);
+  --pos:#3DB47F; --pos-dim:rgba(30,158,104,.18);
+  --hero-bg:#100E0C; --hero-ink:#F7F2EA; --hero-muted:#8A8071;
+  --hairline:rgba(255,255,255,.08); --chip:#2E2721;
+  --on-coral:#FFFFFF;
+  --coral-press:#D8441F;
 }
 html,body,#root{background:var(--bg) !important;color:var(--text) !important;transition:background .3s ease, color .3s ease;}
 body{font-family:'Inter',system-ui,sans-serif;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;letter-spacing:-.005em;}
@@ -1036,16 +1052,16 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 
 /* Buttons */
 .btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 22px;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:all var(--tr);}
-.btn-primary{background:var(--green-grad);color:#0B0F14;box-shadow:var(--shadow-green);}
-.btn-primary:hover{background:#16a34a;}
+.btn-primary{background:var(--green-grad);color:var(--on-coral);box-shadow:var(--shadow-green);}
+.btn-primary:hover{background:var(--coral-press);}
 .btn-outline{background:transparent;color:var(--text);border:0.5px solid var(--border2);}
 .btn-outline:hover{border-color:var(--green);color:var(--green);}
 .btn-danger{background:transparent;color:var(--red);border:0.5px solid var(--red-border);}
 .btn-danger:hover{background:var(--red-dim);}
 .btn-edit-style{background:transparent;color:var(--blue);border:0.5px solid var(--blue-border);}
 .btn-edit-style:hover{background:var(--blue-dim);}
-.btn-save{width:100%;padding:16px;background:var(--green-grad);color:#0B0F14;border:none;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);box-shadow:var(--shadow-green);}
-.btn-save:hover{background:#16a34a;}
+.btn-save{width:100%;padding:16px;background:var(--green-grad);color:var(--on-coral);border:none;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);box-shadow:var(--shadow-green);}
+.btn-save:hover{background:var(--coral-press);}
 .save-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px 20px;background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
 .val-msg{font-size:12px;color:var(--red);padding:10px 14px;background:var(--red-dim);border:0.5px solid var(--red-border);border-radius:var(--rs);margin-bottom:10px;display:none;}
 .val-msg.show{display:block;}
@@ -1054,7 +1070,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .gt-logo-wrap{display:flex;align-items:center;gap:9px;}
 .gt-wordmark{font-size:18px;font-weight:700;letter-spacing:-.01em;line-height:1;}
 .gt-wordmark-gig{color:var(--text);}
-.gt-wordmark-track{color:#22C55E;}
+.gt-wordmark-track{color:var(--coral);}
 .gt-logo-sm .gt-wordmark{font-size:14px;}
 
 /* Setup */
@@ -1119,10 +1135,10 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .home-cards-2col{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .home-actions{padding:0 12px 16px;display:flex;flex-direction:column;gap:8px;}
 .home-btn-log{background:var(--green-grad);border-radius:12px;padding:16px 18px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:all var(--tr);box-shadow:var(--shadow-green);}
-.home-btn-log:hover{background:#16a34a;}
-.home-btn-log-title{font-size:15px;font-weight:700;color:#0B0F14;}
-.home-btn-log-sub{font-size:11px;color:rgba(11,15,20,.55);margin-top:2px;}
-.home-btn-log-icon{font-size:22px;color:rgba(11,15,20,.4);}
+.home-btn-log:hover{background:var(--coral-press);}
+.home-btn-log-title{font-size:15px;font-weight:700;color:var(--on-coral);}
+.home-btn-log-sub{font-size:11px;color:rgba(255,255,255,.72);margin-top:2px;}
+.home-btn-log-icon{font-size:22px;color:rgba(255,255,255,.55);}
 .home-sec-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .home-btn-sec{background:var(--elevated);border:0.5px solid var(--border);border-radius:10px;padding:13px;font-size:12px;font-weight:600;color:var(--muted);text-align:center;cursor:pointer;transition:all var(--tr);}
 .home-btn-sec:hover{border-color:var(--green);color:var(--green);}
@@ -1336,8 +1352,8 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .order-modal{background:var(--surface);border-radius:18px 18px 0 0;padding:24px 18px 36px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 32px rgba(0,0,0,.15);}
 .order-modal-title{font-size:19px;font-weight:800;color:var(--text);margin-bottom:16px;letter-spacing:-.02em;}
 .finish-shift-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px 20px;background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
-.finish-shift-btn{width:100%;padding:16px;background:var(--green);color:#0B0F14;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);}
-.finish-shift-btn:hover{background:#16a34a;}
+.finish-shift-btn{width:100%;padding:16px;background:var(--green);color:var(--on-coral);border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);}
+.finish-shift-btn:hover{background:var(--coral-press);}
 .finish-shift-btn:disabled{background:var(--elevated);color:var(--muted2);cursor:not-allowed;}
 
 /* Import / Export buttons */
@@ -1375,8 +1391,8 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .shift-ctrl-btn{padding:13px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;transition:all var(--tr);text-align:center;}
 .shift-ctrl-btn.pause{background:var(--amber-dim);color:var(--amber);border:0.5px solid var(--amber-border);}
 .shift-ctrl-btn.resume{background:var(--green-dim);color:var(--green);border:0.5px solid var(--green-border);}
-.shift-ctrl-btn.end{background:var(--green);color:#0B0F14;}
-.shift-ctrl-btn.end:hover{background:#16a34a;}
+.shift-ctrl-btn.end{background:var(--green);color:var(--on-coral);}
+.shift-ctrl-btn.end:hover{background:var(--coral-press);}
 
 /* Confirm dialog */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:300;display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s ease;}
@@ -1401,7 +1417,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .timer-btns{display:flex;gap:8px;}
 .timer-btn{flex:1;padding:12px 8px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;border:none;transition:all var(--tr);}
 .timer-btn-pause{background:var(--amber-dim);color:var(--amber);border:0.5px solid var(--amber-border);}
-.timer-btn-end{background:var(--green);color:#0B0F14;}
+.timer-btn-end{background:var(--green);color:var(--on-coral);}
 .timer-btn-start{background:var(--green-dim);color:var(--green);border:0.5px solid var(--green-border);}
 
 /* Settings */
@@ -1435,9 +1451,9 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 /* Paywall */
 .paywall-billing-toggle{display:flex;background:var(--elevated);border:0.5px solid var(--border);border-radius:10px;padding:4px;margin-bottom:20px;gap:4px;}
 .paywall-billing-btn{flex:1;padding:10px;border-radius:var(--rs);border:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:13px;font-weight:600;transition:all .2s ease;position:relative;}
-.paywall-billing-btn.active{background:var(--green);color:#0B0F14;}
+.paywall-billing-btn.active{background:var(--green);color:var(--on-coral);}
 .paywall-billing-btn.inactive{background:transparent;color:var(--muted);}
-.paywall-save-badge{position:absolute;top:-8px;right:6px;font-size:8px;background:var(--amber);color:#0B0F14;padding:2px 5px;border-radius:6px;font-weight:800;letter-spacing:.04em;}
+.paywall-save-badge{position:absolute;top:-8px;right:6px;font-size:8px;background:var(--amber);color:var(--on-coral);padding:2px 5px;border-radius:6px;font-weight:800;letter-spacing:.04em;}
 .paywall-price-card{text-align:center;padding:22px;background:var(--green-dim);border:1.5px solid var(--green-border);border-radius:14px;margin-bottom:20px;}
 .paywall-amount{font-size:48px;font-weight:700;color:var(--text);line-height:1;font-variant-numeric:tabular-nums;}
 .paywall-trial-badge{font-size:11px;font-weight:700;color:var(--blue);letter-spacing:.08em;text-transform:uppercase;margin-top:10px;}
@@ -1472,7 +1488,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 }
 .bottom-nav-center-icon{
   width:46px;height:46px;
-  background:linear-gradient(180deg,#00A050 0%,#008F44 100%);
+  background:var(--coral-grad);
   border-radius:14px;
   display:flex;align-items:center;justify-content:center;
   margin-top:-20px;
@@ -1500,7 +1516,7 @@ function BottomNav({ active, onHome, onLogShift, onLog, onInsights, onSettings }
     </svg>
   );
   const IconLogShift = () => (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0B0F14" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--on-coral)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="9" />
       <path d="M8.5 12.5l2.5 2.5 4.5-5" />
     </svg>
@@ -1531,7 +1547,7 @@ function BottomNav({ active, onHome, onLogShift, onLog, onInsights, onSettings }
     </svg>
   );
 
-  const activeColor   = "#22C55E";
+  const activeColor   = "var(--coral)";
   const inactiveColor = "#6B7888";
 
   return (
@@ -1681,7 +1697,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
               onClick={() => setBilling(k)}
               style={{flex:1,padding:"11px",borderRadius:"9px",border:"none",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",transition:"all .2s ease",
                 background: billing===k ? "var(--green)" : "transparent",
-                color: billing===k ? "#0B0F14" : "var(--muted2)",
+                color: billing===k ? "var(--on-coral)" : "var(--muted2)",
                 position:"relative",
                 letterSpacing:".01em",
               }}
@@ -1691,8 +1707,8 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
                 <span style={{
                   position:"absolute",top:"-8px",right:"6px",
                   fontFamily:"'Inter',sans-serif",fontSize:"9px",
-                  background: billing==="annual" ? "#0B0F14" : "var(--green)",
-                  color: billing==="annual" ? "var(--green)" : "#0B0F14",
+                  background: billing==="annual" ? "var(--hero-bg)" : "var(--green)",
+                  color: billing==="annual" ? "var(--green)" : "var(--on-coral)",
                   padding:"2px 7px",borderRadius:"6px",
                   fontWeight:"800",letterSpacing:".04em",
                 }}>SAVE {saving}%</span>
@@ -1791,7 +1807,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
           onClick={() => onSubscribe(billing)}
           style={{
             width:"100%",padding:"17px",
-            background:"var(--green)",color:"#0B0F14",
+            background:"var(--green)",color:"var(--on-coral)",
             border:"none",borderRadius:"14px",
             fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",
             cursor:"pointer",letterSpacing:".01em",
@@ -1832,7 +1848,7 @@ function WelcomeScreen({ onSignIn }) {
           onClick={onSignIn}
           style={{
             width:"100%",padding:"16px",
-            background:"var(--green)",color:"#0B0F14",
+            background:"var(--green)",color:"var(--on-coral)",
             border:"none",borderRadius:"13px",cursor:"pointer",
             fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",
             letterSpacing:".01em",
@@ -2013,7 +2029,7 @@ function SetupScreen({ onComplete }) {
             </div>
             <div style={{
               width:"100%",padding:"13px",
-              background:"var(--green)",color:"#0B0F14",
+              background:"var(--green)",color:"var(--on-coral)",
               border:"none",borderRadius:"11px",
               fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
               textAlign:"center",letterSpacing:".01em",
@@ -2400,7 +2416,7 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
             onClick={handleEnd}
             style={{
               flex: 2, padding: "15px",
-              background: "linear-gradient(180deg, #00A050 0%, #008F44 100%)",
+              background: "var(--coral-grad)",
               border: "none", borderRadius: "14px",
               color: "#fff",
               fontSize: "14px", fontWeight: "700",
@@ -2679,7 +2695,7 @@ function SignInModal({ open, onSendLink, onClose }) {
             <button
               onClick={onClose}
               style={{
-                width:"100%",padding:"14px",background:"var(--green)",color:"#0B0F14",
+                width:"100%",padding:"14px",background:"var(--green)",color:"var(--on-coral)",
                 border:"none",borderRadius:"12px",cursor:"pointer",
                 fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
               }}
@@ -2724,7 +2740,7 @@ function SignInModal({ open, onSendLink, onClose }) {
               style={{
                 width:"100%",padding:"14px",
                 background: status==="sending" ? "var(--muted2)" : "var(--green)",
-                color:"#0B0F14",border:"none",borderRadius:"12px",
+                color:"var(--on-coral)",border:"none",borderRadius:"12px",
                 cursor: status==="sending" ? "default" : "pointer",
                 fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
               }}
@@ -2892,7 +2908,7 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
           onClick={onGoOnline}
           style={{
             width:"100%",padding:"13px",
-            background:"var(--green)",color:"#0B0F14",
+            background:"var(--green)",color:"var(--on-coral)",
             border:"none",borderRadius:"11px",
             fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
             cursor:"pointer",letterSpacing:".01em",
@@ -3436,7 +3452,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
               </div>
               <div style={{
                 display:"inline-block",padding:"8px 16px",
-                background:"var(--green)",color:"#0B0F14",
+                background:"var(--green)",color:"var(--on-coral)",
                 borderRadius:"9px",
                 fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",
               }}>
@@ -3466,7 +3482,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
           <div
             onClick={onLogShift}
             style={{
-              background:"linear-gradient(135deg, #008F44 0%, #00A050 100%)",
+              background:"var(--coral-grad)",
               borderRadius:"16px",padding:"16px 18px",
               display:"flex",alignItems:"center",justifyContent:"space-between",
               cursor:"pointer",
@@ -3891,7 +3907,7 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAd
           onClick={handleSave}
           style={{
             width:"100%",padding:"15px",
-            background:"var(--green)",color:"#0B0F14",
+            background:"var(--green)",color:"var(--on-coral)",
             border:"none",borderRadius:"13px",cursor:"pointer",
             fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
           }}
@@ -4022,7 +4038,7 @@ function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, on
           style={{
             width:"100%",padding:"15px",
             background: blocked ? "var(--elevated)" : "var(--green)",
-            color: blocked ? "var(--muted2)" : "#0B0F14",
+            color: blocked ? "var(--muted2)" : "var(--on-coral)",
             border:"none",borderRadius:"13px",cursor: blocked ? "not-allowed" : "pointer",
             fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
           }}
@@ -4200,7 +4216,7 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
             onClick={() => fileInputRef.current?.click()}
             style={{
               width:"100%",maxWidth:"360px",padding:"15px",
-              background:"var(--green)",color:"#0B0F14",
+              background:"var(--green)",color:"var(--on-coral)",
               border:"none",borderRadius:"13px",cursor:"pointer",
               fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
             }}
@@ -4319,7 +4335,7 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
             onClick={() => { setStage("pick"); setErrorMsg(""); }}
             style={{
               width:"100%",maxWidth:"320px",padding:"14px",
-              background:"var(--green)",color:"#0B0F14",
+              background:"var(--green)",color:"var(--on-coral)",
               border:"none",borderRadius:"13px",cursor:"pointer",
               fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
             }}
@@ -4508,7 +4524,7 @@ function VoiceEntryScreen({ onBack, onParsed }) {
             <button
               onClick={handleConfirm}
               style={{
-                width:"100%",padding:"15px",background:"var(--green)",color:"#0B0F14",
+                width:"100%",padding:"15px",background:"var(--green)",color:"var(--on-coral)",
                 border:"none",borderRadius:"13px",
                 fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",cursor:"pointer",
               }}
@@ -5949,9 +5965,9 @@ function exportPDF(trips, user) {
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:11px;color:#0F172A;background:#fff;padding:32px;}
 
 /* Header */
-.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;padding-bottom:16px;border-bottom:2px solid #22C55E;}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;padding-bottom:16px;border-bottom:2px solid var(--coral);}
 .brand-block{display:flex;align-items:center;gap:10px;}
-.brand-logo{width:32px;height:32px;background:linear-gradient(135deg,#22C55E,#16A34A);border-radius:8px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;}
+.brand-logo{width:32px;height:32px;background:var(--coral-grad);border-radius:8px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;}
 .brand-name{font-size:22px;font-weight:800;color:#0F172A;letter-spacing:-.02em;}
 .brand-tag{font-size:10px;color:#64748B;letter-spacing:.04em;margin-top:1px;}
 .header-right{text-align:right;font-size:10px;color:#64748B;line-height:1.6;}
@@ -5964,7 +5980,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;fo
 .hero-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
 .hero{border:1px solid #E2E8F0;border-radius:10px;padding:14px 14px 12px;background:#fff;position:relative;overflow:hidden;}
 .hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
-.hero.h-green::before{background:#22C55E;}
+.hero.h-green::before{background:var(--coral);}
 .hero.h-blue::before{background:#3B82F6;}
 .hero.h-amber::before{background:#F59E0B;}
 .hero.h-purple::before{background:#A855F7;}
@@ -7221,7 +7237,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
               <div style={{display:"flex",alignItems:"center",gap:"14px",padding:"16px",borderBottom:"0.5px solid var(--border)"}}>
                 <div style={{
                   width:"46px",height:"46px",borderRadius:"50%",
-                  background:"linear-gradient(135deg, #00A050 0%, #008F44 100%)",
+                  background:"var(--coral-grad)",
                   display:"flex",alignItems:"center",justifyContent:"center",
                   color:"#fff",fontSize:"19px",fontWeight:"700",flexShrink:0,
                   boxShadow:"0 2px 6px rgba(0,143,68,.25)",
@@ -7242,7 +7258,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                     onClick={onUpgrade}
                     style={{
                       padding:"8px 14px",
-                      background:"linear-gradient(180deg, #00A050 0%, #008F44 100%)",
+                      background:"var(--coral-grad)",
                       color:"#fff",border:"none",borderRadius:"10px",
                       fontSize:"12px",fontWeight:"700",cursor:"pointer",flexShrink:0,
                       boxShadow:"0 4px 12px -2px rgba(0,143,68,.35)",
@@ -7553,7 +7569,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                   {!isPro ? (
                     <div style={{textAlign:"center",padding:"12px 0"}}>
                       <div style={{fontSize:"12px",color:"var(--muted)",marginBottom:"10px"}}>Unlock custom scoring targets with Pro.</div>
-                      <button onClick={onUpgrade} style={{padding:"9px 20px",background:"var(--green)",color:"#0B0F14",border:"none",borderRadius:"8px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Upgrade to Pro →</button>
+                      <button onClick={onUpgrade} style={{padding:"9px 20px",background:"var(--green)",color:"var(--on-coral)",border:"none",borderRadius:"8px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Upgrade to Pro →</button>
                     </div>
                   ) : (
                     <>
