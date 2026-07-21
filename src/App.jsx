@@ -3805,10 +3805,8 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
               </div>
             )}
 
-            {/* Benchmarks */}
-            <div style={{padding:"14px 16px 0"}}>
-              <BenchmarkCard region={region} onGoToSettings={onSettings} />
-            </div>
+            {/* On-Home benchmarks teaser removed — the zone card above now opens
+                the full Benchmarks screen (Local/State/National). */}
           </>
         ) : (
           /* Locked state — free user whose 30-day grace has expired */
