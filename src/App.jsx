@@ -81,6 +81,21 @@ const LIVE_DRIVER_MIN = 3;
 // it then becomes a genuine launch moment rather than a permanently dead card.
 const LIVE_DRIVERS_ENABLED = false;
 
+// ─── TIMER GPS: OFF FOR BETA ──────────────────────────────────────────────
+// A PWA can't sample GPS in the background — the moment the driver switches to
+// Maps / Uber / DoorDash (i.e. the entire shift), watchPosition stops firing.
+// The result isn't "slightly low", it's arbitrarily low, and it feeds straight
+// into the ATO deduction. A silently wrong km figure is worse than no figure:
+// the driver has no signal it's wrong and may under-claim on their tax return.
+//
+// So for beta the timer captures TIME ONLY and km is entered manually on the
+// confirm screen (which already has a km field and the 0-km warning).
+//
+// POST-BETA: flip back to `true` once wrapped with Capacitor, where background
+// location actually works. Everything underneath (the watchPosition loop, the
+// Haversine accumulator, the permission banner, the KMs tile) is left intact.
+const TIMER_GPS_ENABLED = false;
+
 // Auto-expire a forgotten online session after this much idle time (no ping).
 // Protects beta live-driver data from drivers who finished work but never tapped
 // "Go offline" — opening the app later won't resurrect a stale session. 3 hours.
@@ -2150,6 +2165,7 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
 
   // GPS tracking — Haversine distance accumulator
   useEffect(() => {
+    if (!TIMER_GPS_ENABLED) return; // beta: no GPS, no permission prompt, no battery drain
     if (!activeShift) return;
     if (activeShift.paused) return; // don't track while paused
     if (!("geolocation" in navigator)) { setGpsStatus("unsupported"); return; }
@@ -2299,7 +2315,7 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
         </div>
 
         {/* GPS status banner — denied/unsupported */}
-        {(gpsStatus === "denied" || gpsStatus === "unsupported") && (
+        {TIMER_GPS_ENABLED && (gpsStatus === "denied" || gpsStatus === "unsupported") && (
           <div style={{
             background: "var(--amber-dim)",
             borderRadius: "10px",
@@ -2317,10 +2333,24 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
           </div>
         )}
 
+        {/* Beta: GPS is off, so tell the driver where km comes from */}
+        {!TIMER_GPS_ENABLED && (
+          <div style={{
+            fontSize: "11px",
+            color: "var(--muted2)",
+            textAlign: "center",
+            maxWidth: "320px",
+            width: "100%",
+            lineHeight: "1.5",
+          }}>
+            Timing your shift — you'll add your KMs when you save.
+          </div>
+        )}
+
         {/* Stat tiles */}
         <div style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
+          gridTemplateColumns: TIMER_GPS_ENABLED ? "1fr 1fr 1fr" : "1fr 1fr",
           gap: "8px",
           width: "100%",
           maxWidth: "320px",
@@ -2328,7 +2358,9 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
           {[
             ["Hours", String(h)],
             ["Minutes", pad(m)],
-            ["KMs", gpsStatus === "granted" || gpsKm > 0 ? gpsKm.toFixed(1) : "—"],
+            ...(TIMER_GPS_ENABLED
+              ? [["KMs", gpsStatus === "granted" || gpsKm > 0 ? gpsKm.toFixed(1) : "—"]]
+              : []),
           ].map(([label, value]) => (
             <div key={label} style={{
               background: "var(--surface)",
@@ -4514,7 +4546,9 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScree
             </div>
             <div className="log-entry-text">
               <div className="log-entry-title">Start shift timer</div>
-              <div className="log-entry-desc">Tap to start timing your shift live. GPS tracks your KMs automatically.</div>
+              <div className="log-entry-desc">{TIMER_GPS_ENABLED
+                ? "Tap to start timing your shift live. GPS tracks your KMs automatically."
+                : "Tap to start timing your shift live. You'll add your KMs when you save."}</div>
             </div>
             <div className="log-entry-arrow">›</div>
           </div>
@@ -7844,8 +7878,6 @@ export default function GigTrack() {
             DB.remove("gt_region");
             DB.remove("gt_kmpref");
             DB.remove("gt_weeklygoal");
-            DB.remove("gt_fuel_efficiency");
-            DB.remove("gt_fuel_price");
             DB.remove("gt_activeshift");
             DB.remove("gt_live_status");
             DB.remove("gt_voice_prefill");
@@ -7929,8 +7961,6 @@ export default function GigTrack() {
           DB.remove("gt_region");
           DB.remove("gt_kmpref");
           DB.remove("gt_weeklygoal");
-          DB.remove("gt_fuel_efficiency");
-          DB.remove("gt_fuel_price");
           DB.remove("gt_show_scoring");
           DB.remove("gt_last_user_id");
           reconciledRef.current = false;
@@ -8172,7 +8202,9 @@ export default function GigTrack() {
       }
     }
 
-    // Wipe every known localStorage key
+    // Wipe every known localStorage key — including LEGACY keys (gt_fuel_*) that
+    // the app no longer writes. Devices that used GigTrack before the fuel
+    // estimator was removed still have them, and "delete my data" must mean it.
     ["gt_user","gt_trips","gt_kmpref","gt_atorate","gt_targets","gt_weeklygoal",
      "gt_fuel_efficiency","gt_fuel_price","gt_region","gt_show_scoring","gt_activeshift",
      "gt_active_orders","gt_order_prefill","gt_live_status","gt_last_user_id",
