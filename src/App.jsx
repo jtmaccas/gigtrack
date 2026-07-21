@@ -3105,10 +3105,13 @@ function BenchmarkCard({ region, onGoToSettings }) {
 
 // Small reusable heatmap (7 day-cols × 4 time-rows) with a coral opacity ramp.
 function BenchHeatmap() {
-  const rows = ["Lunch", "Arvo", "Dinner", "Late"];
+  const rows = ["Brekky", "Lunch", "Arvo", "Dinner", "Late"];
   const cols = ["M", "T", "W", "T", "F", "S", "S"];
   // Intensity grid 0..1 — peaks Fri/Sat dinner. Mock, spec-shaped.
+  // Brekky = early-morning coffee/breakfast runs: quieter midweek, stronger
+  // on the weekend brunch trade (Sat/Sun).
   const grid = [
+    [0.24, 0.22, 0.26, 0.28, 0.34, 0.58, 0.62], // Brekky
     [0.30, 0.28, 0.32, 0.40, 0.55, 0.62, 0.48], // Lunch
     [0.22, 0.20, 0.24, 0.30, 0.42, 0.50, 0.38], // Arvo
     [0.55, 0.52, 0.58, 0.70, 0.95, 1.00, 0.80], // Dinner
