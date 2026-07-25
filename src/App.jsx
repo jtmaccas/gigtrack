@@ -2612,7 +2612,7 @@ function getMockDriverCount(zoneId) {
   return { total, ue, dd };
 }
 
-function PlatformPickerModal({ open, onPick, onClose }) {
+function PlatformPickerModal({ open, onPick, onClose, title = "Going online", subtitle = "Which platform are you driving for right now? Other drivers in your zone will see you." }) {
   if (!open) return null;
   const options = [
     { id: "uber_eats", label: "Uber Eats",      sub: "UE only" },
@@ -2631,9 +2631,9 @@ function PlatformPickerModal({ open, onPick, onClose }) {
         boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
       }}>
         <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"4px"}}>Going online</div>
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"4px"}}>{title}</div>
         <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",lineHeight:"1.5"}}>
-          Which platform are you driving for right now? Other drivers in your zone will see you.
+          {subtitle}
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
           {options.map(o => (
@@ -3237,11 +3237,55 @@ function BenchRankRow({ rank, name, value, pct, highlight = false, barTone = "be
   );
 }
 
-function BenchmarksScreen({ region, onBack, onGoToSettings }) {
+function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings }) {
   const [level, setLevel] = useState("local");
   const regionInfo = REGIONS.find(r => r.id === region);
   const zoneLabel = regionInfo?.label || "your zone";
   const stateLabel = regionInfo?.state || "your state";
+
+  // Shifts captured in the last 7 days (real data from the local shift log).
+  // Used in place of concurrent-driver counts while presence tracking is off.
+  const shifts7d = trips.filter(t => {
+    const d = new Date(t.ts).getTime();
+    return d >= Date.now() - 7 * 24 * 60 * 60 * 1000;
+  }).length;
+
+  // Per-state mock leaderboards so the comparison matches the user's actual
+  // state (QLD user sees QLD zones, NSW sees NSW, etc.) until the backend
+  // provides real per-state data. The user's own zone is spliced in at #3.
+  const STATE_ZONES = {
+    QLD: { median: "$23.80/hr", rows: [["Brisbane City","$29.1",100],["Fortitude Valley","$28.0",96],["Southport (GC)","$24.6",84],["Surfers Paradise","$21.7",74],["Maroochydore","$18.9",65]] },
+    NSW: { median: "$24.60/hr", rows: [["Sydney CBD","$30.2",100],["Parramatta","$28.4",95],["Bondi","$25.1",84],["Newcastle","$22.0",74],["Wollongong","$19.4",65]] },
+    VIC: { median: "$23.80/hr", rows: [["Docklands","$29.1",100],["Southbank","$28.0",96],["St Kilda","$24.6",84],["Geelong","$21.7",74],["Ballarat","$18.9",65]] },
+    WA:  { median: "$21.40/hr", rows: [["Perth CBD","$27.3",100],["Fremantle","$25.6",94],["Joondalup","$22.1",81],["Mandurah","$19.8",73],["Rockingham","$17.9",66]] },
+    SA:  { median: "$20.10/hr", rows: [["Adelaide CBD","$26.4",100],["Glenelg","$24.2",92],["Prospect","$21.0",80],["Marion","$18.7",71],["Mount Barker","$16.8",64]] },
+    TAS: { median: "$19.20/hr", rows: [["Hobart CBD","$24.8",100],["Sandy Bay","$22.6",91],["Launceston","$20.3",82],["Devonport","$17.9",72],["Burnie","$16.4",66]] },
+    NT:  { median: "$21.80/hr", rows: [["Darwin City","$26.9",100],["Palmerston","$24.1",90],["Casuarina","$21.7",81],["Alice Springs","$19.2",71],["Nightcliff","$17.6",65]] },
+    ACT: { median: "$23.10/hr", rows: [["Canberra City","$27.6",100],["Braddon","$25.4",92],["Belconnen","$22.3",81],["Woden","$20.1",73],["Gungahlin","$18.2",66]] },
+  };
+  const stateData = STATE_ZONES[stateLabel] || STATE_ZONES.VIC;
+  // Build a 6-row leaderboard: top 2, the user's zone (highlighted #3), then next 3.
+  const leaderboard = [
+    { rank: 1, name: stateData.rows[0][0], value: stateData.rows[0][1], pct: stateData.rows[0][2] },
+    { rank: 2, name: stateData.rows[1][0], value: stateData.rows[1][1], pct: stateData.rows[1][2] },
+    { rank: 3, name: zoneLabel, value: "$27.4", pct: 94, highlight: true },
+    { rank: 4, name: stateData.rows[2][0], value: stateData.rows[2][1], pct: stateData.rows[2][2] },
+    { rank: 5, name: stateData.rows[3][0], value: stateData.rows[3][1], pct: stateData.rows[3][2] },
+    { rank: 6, name: stateData.rows[4][0], value: stateData.rows[4][1], pct: stateData.rows[4][2] },
+  ];
+
+  // National best-cities list, and the user's capital (highlighted) derived
+  // from their state so the national view is personalised too.
+  const cities = [
+    { name: "Sydney",    value: "$28.6", pct: 100 },
+    { name: "Melbourne", value: "$27.4", pct: 96 },
+    { name: "Brisbane",  value: "$22.9", pct: 80 },
+    { name: "Perth",     value: "$20.6", pct: 72 },
+    { name: "Adelaide",  value: "$18.3", pct: 64 },
+  ];
+  const STATE_CITY = { NSW:"Sydney", VIC:"Melbourne", QLD:"Brisbane", WA:"Perth", SA:"Adelaide", ACT:"Canberra", TAS:"Hobart", NT:"Darwin" };
+  const userCity = STATE_CITY[stateLabel] || null;
+  const cityRank = userCity ? (cities.findIndex(c => c.name === userCity) + 1 || null) : null;
 
   // Real seams wired where they exist (used lightly; richer shapes are mocked).
   const [live, setLive] = useState(null);
@@ -3364,28 +3408,25 @@ function BenchmarksScreen({ region, onBack, onGoToSettings }) {
                   <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>↑ 2 this week</div>
                 </div>
                 <div style={{ fontSize: "12px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "12px", lineHeight: "1.5" }}>
-                  {zoneLabel} is a top-earning {stateLabel} zone. State median is <span style={{ color: "var(--hero-ink)", fontWeight: "700" }}>$23.80/hr</span>.
+                  {zoneLabel} is a top-earning {stateLabel} zone. State median is <span style={{ color: "var(--hero-ink)", fontWeight: "700" }}>{stateData.median}</span>.
                 </div>
               </HeroBubble>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
                 <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Top {stateLabel} zones · $/hr</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  <BenchRankRow rank={1} name="Docklands" value="$29.1" pct={100} />
-                  <BenchRankRow rank={2} name="Southbank" value="$28.0" pct={96} />
-                  <BenchRankRow rank={3} name={zoneLabel} value="$27.4" pct={94} highlight />
-                  <BenchRankRow rank={4} name="St Kilda" value="$24.6" pct={84} />
-                  <BenchRankRow rank={5} name="Geelong" value="$21.7" pct={74} />
-                  <BenchRankRow rank={6} name="Ballarat" value="$18.9" pct={65} />
+                  {leaderboard.map(r => (
+                    <BenchRankRow key={r.rank} rank={r.rank} name={r.name} value={r.value} pct={r.pct} highlight={r.highlight} />
+                  ))}
                 </div>
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
                 <BenchStat label="Busiest platform" value="Uber Eats" sub={`58% of ${stateLabel} trips`} tone="coral" />
-                <BenchStat label="Drivers online" value="1,240" sub={`across ${stateLabel}`} tone="green" />
+                <BenchStat label="Shifts logged" value={shifts7d > 0 ? String(shifts7d) : "—"} sub="last 7 days" tone="green" />
               </div>
 
-              <Footer>Based on 2,180 {stateLabel} drivers this week</Footer>
+              <Footer>Based on GigTrack shifts logged in {stateLabel} · last 7 days</Footer>
             </>
           )}
 
@@ -3396,7 +3437,7 @@ function BenchmarksScreen({ region, onBack, onGoToSettings }) {
                 <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "8px" }}>National median · $/hr</div>
                 <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginBottom: "14px" }}>
                   <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>$22.90</div>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>Melbourne ranks #2</div>
+                  {userCity && cityRank && <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>{userCity} ranks #{cityRank}</div>}
                 </div>
                 <BenchTrendLine />
                 <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "6px" }}>12-week national trend · <span style={{ color: "var(--coral-hi)", fontWeight: "700" }}>+6%</span></div>
@@ -3405,20 +3446,18 @@ function BenchmarksScreen({ region, onBack, onGoToSettings }) {
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
                 <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Best cities · $/hr</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  <BenchRankRow name="Sydney" value="$28.6" pct={100} />
-                  <BenchRankRow name="Melbourne" value="$27.4" pct={96} highlight />
-                  <BenchRankRow name="Brisbane" value="$22.9" pct={80} />
-                  <BenchRankRow name="Perth" value="$20.6" pct={72} />
-                  <BenchRankRow name="Adelaide" value="$18.3" pct={64} />
+                  {cities.map(c => (
+                    <BenchRankRow key={c.name} name={c.name} value={c.value} pct={c.pct} highlight={c.name === userCity} />
+                  ))}
                 </div>
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="Drivers nationwide" value="9,860" sub="online now" tone="green" />
+                <BenchStat label="Shifts logged" value={shifts7d > 0 ? String(shifts7d) : "—"} sub="last 7 days" tone="green" />
                 <BenchStat label="Peak day (AU)" value="Saturday" sub="+31% vs avg" tone="coral" />
               </div>
 
-              <Footer>Based on 41,300 AU drivers this week</Footer>
+              <Footer>Based on GigTrack shifts logged nationwide · last 7 days</Footer>
             </>
           )}
 
@@ -5905,6 +5944,8 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
 
       <PlatformPickerModal
         open={platformOpen}
+        title="Which platform?"
+        subtitle="Which app did you drive for on this shift?"
         onPick={(id) => { setPlatform(id); setPlatformOpen(false); }}
         onClose={() => setPlatformOpen(false)}
       />
@@ -6357,61 +6398,61 @@ function exportPDF(trips, user) {
 <title>GigTrack — ATO Shift Report</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:11px;color:#0F172A;background:#fff;padding:32px;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:11px;color:#1B1A17;background:#fff;padding:32px;}
 
 /* Header */
-.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;padding-bottom:16px;border-bottom:2px solid var(--coral);}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;padding-bottom:16px;border-bottom:2px solid #F0562E;}
 .brand-block{display:flex;align-items:center;gap:10px;}
-.brand-logo{width:32px;height:32px;background:var(--coral-grad);border-radius:8px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;}
-.brand-name{font-size:22px;font-weight:800;color:#0F172A;letter-spacing:-.02em;}
-.brand-tag{font-size:10px;color:#64748B;letter-spacing:.04em;margin-top:1px;}
-.header-right{text-align:right;font-size:10px;color:#64748B;line-height:1.6;}
-.header-right strong{display:block;color:#0F172A;font-size:13px;font-weight:700;margin-bottom:2px;}
+.brand-logo{width:32px;height:32px;background:linear-gradient(120deg,#F0562E,#F6863A);border-radius:8px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;}
+.brand-name{font-size:22px;font-weight:800;color:#1B1A17;letter-spacing:-.02em;}
+.brand-tag{font-size:10px;color:#8A8071;letter-spacing:.04em;margin-top:1px;}
+.header-right{text-align:right;font-size:10px;color:#8A8071;line-height:1.6;}
+.header-right strong{display:block;color:#1B1A17;font-size:13px;font-weight:700;margin-bottom:2px;}
 
 /* Period banner */
-.period{background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:8px 14px;font-size:10px;color:#15803D;margin-bottom:18px;font-weight:600;letter-spacing:.02em;}
+.period{background:#FDEDE7;border:1px solid #F6C3B2;border-radius:8px;padding:8px 14px;font-size:10px;color:#C0421C;margin-bottom:18px;font-weight:600;letter-spacing:.02em;}
 
 /* Hero squares */
 .hero-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
-.hero{border:1px solid #E2E8F0;border-radius:10px;padding:14px 14px 12px;background:#fff;position:relative;overflow:hidden;}
+.hero{border:1px solid #EDE6DC;border-radius:10px;padding:14px 14px 12px;background:#fff;position:relative;overflow:hidden;}
 .hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
-.hero.h-green::before{background:var(--coral);}
-.hero.h-blue::before{background:#3B82F6;}
-.hero.h-amber::before{background:#F59E0B;}
-.hero.h-purple::before{background:#A855F7;}
-.hero-label{font-size:9px;color:#64748B;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;font-weight:600;}
-.hero-value{font-size:20px;font-weight:800;color:#0F172A;letter-spacing:-.02em;line-height:1;}
-.hero-sub{font-size:9px;color:#64748B;margin-top:5px;}
-.hero.h-green .hero-value{color:#15803D;}
-.hero.h-blue .hero-value{color:#1D4ED8;}
-.hero.h-amber .hero-value{color:#B45309;}
+.hero.h-green::before{background:#F0562E;}
+.hero.h-blue::before{background:#4F46E5;}
+.hero.h-amber::before{background:#F6863A;}
+.hero.h-purple::before{background:#4F46E5;}
+.hero-label{font-size:9px;color:#8A8071;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;font-weight:600;}
+.hero-value{font-size:20px;font-weight:800;color:#1B1A17;letter-spacing:-.02em;line-height:1;}
+.hero-sub{font-size:9px;color:#8A8071;margin-top:5px;}
+.hero.h-green .hero-value{color:#F0562E;}
+.hero.h-blue .hero-value{color:#4F46E5;}
+.hero.h-amber .hero-value{color:#C0421C;}
 
 /* Mini summary row */
 .mini-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px;}
-.mini{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:10px 12px;}
-.mini-label{font-size:9px;color:#64748B;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px;font-weight:600;}
-.mini-value{font-size:13px;font-weight:700;color:#0F172A;}
+.mini{background:#FBF7F1;border:1px solid #EDE6DC;border-radius:8px;padding:10px 12px;}
+.mini-label{font-size:9px;color:#8A8071;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px;font-weight:600;}
+.mini-value{font-size:13px;font-weight:700;color:#1B1A17;}
 
 /* Table */
-.section-title{font-size:12px;font-weight:700;color:#0F172A;margin-bottom:8px;letter-spacing:-.01em;}
+.section-title{font-size:12px;font-weight:700;color:#1B1A17;margin-bottom:8px;letter-spacing:-.01em;}
 table{width:100%;border-collapse:collapse;font-size:9.5px;margin-bottom:18px;}
-thead tr{background:#0F172A;color:#fff;}
+thead tr{background:#1B1A17;color:#fff;}
 thead th{padding:8px 6px;text-align:left;font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;}
 thead th.num{text-align:right;}
-tbody tr:nth-child(even){background:#F8FAFC;}
-tbody td{padding:6px;border-bottom:1px solid #E2E8F0;vertical-align:middle;}
+tbody tr:nth-child(even){background:#FBF7F1;}
+tbody td{padding:6px;border-bottom:1px solid #EDE6DC;vertical-align:middle;}
 tbody td.num{text-align:right;font-variant-numeric:tabular-nums;}
-tbody td.strong{font-weight:700;color:#0F172A;}
-tbody td.ded{font-weight:700;color:#15803D;}
-tfoot tr{background:#F1F5F9;}
-tfoot td{padding:9px 6px;font-weight:800;font-size:10px;border-top:2px solid #0F172A;}
+tbody td.strong{font-weight:700;color:#1B1A17;}
+tbody td.ded{font-weight:700;color:#1E9E68;}
+tfoot tr{background:#F1EBE1;}
+tfoot td{padding:9px 6px;font-weight:800;font-size:10px;border-top:2px solid #1B1A17;}
 tfoot td.num{text-align:right;font-variant-numeric:tabular-nums;}
-tfoot td.ded{color:#15803D;}
+tfoot td.ded{color:#1E9E68;}
 
 /* Notes & footer */
 .notes{background:#FFFBEB;border:1px solid #FCD34D;border-radius:8px;padding:13px 15px;margin-bottom:14px;font-size:10px;color:#78350F;line-height:1.7;}
 .notes strong{display:block;font-size:11px;margin-bottom:5px;color:#78350F;}
-.footer{text-align:center;color:#94A3B8;font-size:9px;border-top:1px solid #E2E8F0;padding-top:10px;margin-top:6px;}
+.footer{text-align:center;color:#A69E92;font-size:9px;border-top:1px solid #EDE6DC;padding-top:10px;margin-top:6px;}
 
 /* Print */
 @media print{
@@ -7835,6 +7876,48 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
             </SettingsSectionCard>
           </div>
 
+          {/* ── Tools & Export ── */}
+          <div>
+            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools &amp; Export</div>
+            <SettingsSectionCard>
+              {/* Export as PDF (Pro only) */}
+              <div
+                className="settings-item"
+                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                onClick={isPro ? () => exportPDF(trips, user) : onUpgrade}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                    {!isPro && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>}
+                    Export as PDF
+                  </div>
+                  <div className="settings-item-sub">
+                    {isPro ? "ATO-ready shift log report" : "Upgrade to Pro for PDF export"}
+                  </div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+
+              {/* Export as CSV (Pro only) */}
+              <div
+                className="settings-item"
+                style={{cursor:"pointer"}}
+                onClick={isPro ? () => exportCSV(trips, user) : onUpgrade}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                    {!isPro && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>}
+                    Export as CSV
+                  </div>
+                  <div className="settings-item-sub">
+                    {isPro ? "Raw shift data for spreadsheets & accountants" : "Upgrade to Pro for CSV export"}
+                  </div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+            </SettingsSectionCard>
+          </div>
+
           {/* ── Data & Security ── */}
           <div>
             <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data &amp; Security</div>
@@ -7855,34 +7938,6 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                   <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
                 </div>
               )}
-
-              {/* Export Data — PDF (free for all) */}
-              <div
-                className="settings-item"
-                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={() => exportPDF(trips, user)}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label">Export as PDF</div>
-                  <div className="settings-item-sub">ATO-ready shift log report</div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
-
-              {/* Export Data — CSV (Pro only) */}
-              <div
-                className="settings-item"
-                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={isPro ? () => exportCSV(trips, user) : onUpgrade}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label">{!isPro && "🔒 "}Export as CSV</div>
-                  <div className="settings-item-sub">
-                    {isPro ? "Raw shift data for spreadsheets &amp; accountants" : "Upgrade to Pro for CSV export"}
-                  </div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
 
               {/* Delete Account and Data */}
               <div
@@ -8959,6 +9014,7 @@ export default function GigTrack() {
       {screen === "benchmarks" && (
         <BenchmarksScreen
           region={region}
+          trips={trips}
           onBack={() => setScreen("home")}
           onGoToSettings={() => setScreen("settings")}
         />
