@@ -626,6 +626,14 @@ const DB = {
 const cap = (v, max) => Math.min(v, max);
 const fmt$ = (n) => "$" + (n || 0).toFixed(2);
 const fmtPct = (n) => (n || 0).toFixed(1) + "%";
+// A shift imported without a start time defaults to midnight (00:00). Treat an
+// exact-midnight timestamp as "date only" and omit the noisy "12:00 am".
+const isDateOnly = (d) => d.getHours() === 0 && d.getMinutes() === 0;
+const fmtShiftDateTime = (d, dateOpts) => {
+  const datePart = d.toLocaleDateString("en-AU", dateOpts);
+  if (isDateOnly(d)) return datePart;
+  return `${datePart} · ${d.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}`;
+};
 const scoreColor = (s) => s < 80 ? "var(--red)" : s < 100 ? "var(--amber)" : s < 120 ? "#86efac" : "var(--green)";
 const scoreClass = (s) => s < 80 ? "score-red" : s < 100 ? "score-yellow" : s < 120 ? "score-green" : "score-strong";
 
@@ -2117,7 +2125,7 @@ function SetupScreen({ onComplete }) {
         <div className="setup-btns-row">
           <button className="btn btn-outline" style={{flex:1}} onClick={() => { setErr(""); nameStep === 0 ? setMode("choose") : setNameStep(0); }}>Back</button>
           <button className="btn btn-primary" style={{flex:2}} onClick={handleNameNext}>
-            {nameStep === 1 ? "Let's Go 🚀" : "Continue →"}
+            {nameStep === 1 ? "Let's Go" : "Continue →"}
           </button>
         </div>
       </div>
@@ -3220,8 +3228,8 @@ function BenchRankRow({ rank, name, value, pct, highlight = false, barTone = "be
       {rank != null && (
         <div style={{ width: "16px", fontSize: "12px", fontWeight: "800", color: highlight ? "var(--coral)" : "var(--muted2)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{rank}</div>
       )}
-      <div style={{ width: "104px", fontSize: "12px", fontWeight: highlight ? "800" : "600", color: highlight ? "var(--coral)" : "var(--text)", flexShrink: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
-      <div style={{ flex: 1, height: "8px", borderRadius: "100px", background: "var(--hairline)", overflow: "hidden" }}>
+      <div style={{ flex: 1, minWidth: 0, fontSize: "12px", fontWeight: highlight ? "800" : "600", color: highlight ? "var(--coral)" : "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
+      <div style={{ width: "72px", height: "8px", borderRadius: "100px", background: "var(--hairline)", overflow: "hidden", flexShrink: 0 }}>
         <div style={{ height: "100%", width: `${pct}%`, borderRadius: "100px", background: barBg, transition: "width .6s cubic-bezier(.4,0,.2,1)" }} />
       </div>
       <div style={{ width: "44px", textAlign: "right", fontSize: "12px", fontWeight: "700", color: highlight ? "var(--coral)" : "var(--text)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{value}</div>
@@ -3607,12 +3615,18 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
 
               {/* delta row */}
               <div style={{display:"flex",alignItems:"center",gap:"10px",marginTop:"14px"}}>
-                {pctChange !== null && (
+                {weekEarned === 0 ? (
+                  <div style={{fontSize:"11px",color:"var(--hero-muted)",fontWeight:"500"}}>
+                    {trips.length === 0 ? "Log your first shift to get started" : "New week — log a shift to get rolling"}
+                  </div>
+                ) : pctChange !== null ? (
                   <>
                     <div style={{
                       display:"inline-flex",alignItems:"center",gap:"4px",
-                      fontSize:"12px",fontWeight:"700",color:"var(--on-coral)",
-                      background:"var(--coral)",padding:"4px 9px",borderRadius:"100px",
+                      fontSize:"12px",fontWeight:"700",
+                      color: pctChange >= 0 ? "var(--on-coral)" : "var(--hero-ink)",
+                      background: pctChange >= 0 ? "var(--coral)" : "rgba(255,255,255,.14)",
+                      padding:"4px 9px",borderRadius:"100px",
                     }}>
                       {pctChange >= 0 ? "↑" : "↓"} {Math.abs(pctChange).toFixed(0)}%
                     </div>
@@ -3620,10 +3634,9 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
                       {pctChange >= 0 ? "+" : "−"}${Math.abs(weekEarned - lastWeekEarned).toFixed(2)} vs last week
                     </div>
                   </>
-                )}
-                {pctChange === null && trips.length === 0 && (
+                ) : (
                   <div style={{fontSize:"11px",color:"var(--hero-muted)",fontWeight:"500"}}>
-                    Log your first shift to get started
+                    First week — nice work getting started
                   </div>
                 )}
               </div>
@@ -3921,7 +3934,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
                       </div>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:"13px",fontWeight:"600",color:"var(--text)"}}>
-                          {d.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"})} · {timeStr} · {t.dels || 0} deliveries
+                          {isDateOnly(d) ? "" : d.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}) + " · "}{timeStr} · {t.dels || 0} deliveries
                         </div>
                         <div style={{fontSize:"11px",color:"var(--muted2)",marginTop:"2px"}}>
                           {t.totalKm.toFixed(1)} km{t.platform ? ` · ${t.platform === "uber_eats" ? "Uber Eats" : t.platform === "doordash" ? "DoorDash" : "Both"}` : ""}
@@ -6541,12 +6554,14 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
         <div className="topbar-title">Shift Log</div>
         {trips.length > 0 && (
           isPro ? (
-            <button className="export-btn" style={{marginLeft:"auto"}} onClick={() => exportPDF(trips, user)}>
-              🧾 Export
+            <button className="export-btn" style={{marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:"6px"}} onClick={() => exportPDF(trips, user)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+              Export
             </button>
           ) : (
-            <button className="export-btn" style={{marginLeft:"auto",opacity:0.6}} onClick={onUpgrade}>
-              🔒 Export
+            <button className="export-btn" style={{marginLeft:"auto",opacity:0.6,display:"inline-flex",alignItems:"center",gap:"6px"}} onClick={onUpgrade}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              Export
             </button>
           )
         )}
@@ -6611,7 +6626,7 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
                     {/* Top row — date + earnings hero */}
                     <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:"10px"}}>
                       <div style={{fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>
-                        {d.toLocaleDateString("en-AU",{weekday:"short",month:"short",day:"numeric"})} · {d.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"})}
+                        {fmtShiftDateTime(d, {weekday:"short",month:"short",day:"numeric"})}
                       </div>
                       <div style={{textAlign:"right"}}>
                         <div style={{
@@ -7097,12 +7112,16 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
             </div>
 
             {/* Comparison pill */}
-            {pctChange !== null && (
+            {earned === 0 ? (
+              <div style={{fontSize:"12px",fontWeight:"600",color:"var(--muted)"}}>
+                No earnings logged {period === "7days" ? "in the last 7 days" : period === "week" ? "this week yet" : period === "month" ? "this month yet" : "this period"}
+              </div>
+            ) : pctChange !== null && (
               <div style={{
                 display:"inline-flex",alignItems:"center",gap:"4px",
                 fontSize:"12px",fontWeight:"700",
-                color: diff >= 0 ? "var(--green)" : "var(--red)",
-                background: diff >= 0 ? "var(--green-dim)" : "var(--red-dim)",
+                color: diff >= 0 ? "var(--green)" : "var(--muted)",
+                background: diff >= 0 ? "var(--green-dim)" : "var(--elevated)",
                 padding:"4px 9px",borderRadius:"100px",
               }}>
                 {diff >= 0 ? "↑" : "↓"} ${Math.abs(diff).toFixed(2)} vs {period === "7days" ? "prev 7 days" : period === "week" ? "last week" : period === "month" ? "last month" : "last year"}
@@ -7403,7 +7422,7 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
       </div>
       <div className="scroll-area" id="detail-scroll">
         <div className="detail-header">
-          <div className="detail-date">{d.toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric",year:"numeric"})} · {d.toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})}</div>
+          <div className="detail-date">{d.toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric",year:"numeric"})}{isDateOnly(d) ? "" : " · " + d.toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})}</div>
           <div className="detail-app-name">Shift Summary</div>
         </div>
 
@@ -7657,8 +7676,14 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                   <div style={{fontSize:"15px",fontWeight:"700",color:"var(--text)",marginBottom:"2px",letterSpacing:"-.01em"}}>{user?.name || "Driver"}</div>
                   <div style={{fontSize:"11px",fontWeight:"600"}}>
                     {isPro
-                      ? <span style={{color:"var(--green)"}}>🚀 GigTrack Pro</span>
-                      : <span style={{color:"var(--muted)"}}>⚡ Free Plan</span>
+                      ? <span style={{color:"var(--coral)",display:"inline-flex",alignItems:"center",gap:"5px"}}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l2.9 6.3 6.6.7-5 4.4 1.5 6.5L12 17l-5.5 3.4L8 13.9l-5-4.4 6.6-.7z"/></svg>
+                          GigTrack Pro
+                        </span>
+                      : <span style={{color:"var(--muted)",display:"inline-flex",alignItems:"center",gap:"5px"}}>
+                          <span style={{width:"6px",height:"6px",borderRadius:"50%",background:"var(--muted2)",display:"inline-block"}}/>
+                          Free Plan
+                        </span>
                     }
                   </div>
                 </div>
@@ -7698,7 +7723,7 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
                   className="input-field"
                   value={regionVal}
                   onChange={e => setRegionVal(e.target.value)}
-                  style={{colorScheme:"dark",width:"100%",fontSize:"13px"}}
+                  style={{width:"100%",fontSize:"14px",fontFamily:"'Inter',sans-serif",fontWeight:"600"}}
                 >
                   <option value="">— No region selected —</option>
                   {Object.entries(regionsByState).map(([state, groups]) => (
@@ -8734,7 +8759,7 @@ export default function GigTrack() {
         showToast("Shift updated ✅");
       } else {
         updated = [...trips, record];
-        showToast("Shift saved 🎉");
+        showToast("Shift saved");
       }
       setTrips(updated);
       DB.set("gt_trips", updated);
@@ -8868,7 +8893,7 @@ export default function GigTrack() {
       startOdo: updated.startOdo,
     }).catch(() => {});
     setScreen("home");
-    showToast("Welcome to GigTrack Pro 🚀");
+    showToast("Welcome to GigTrack Pro");
   };
 
   if (screen === "loading") return null;
