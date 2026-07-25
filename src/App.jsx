@@ -622,6 +622,26 @@ const DB = {
   remove: (key) => localStorage.removeItem(key),
 };
 
+// ─── APP VERSION & CHANGELOG ───
+// Bump CURRENT_VERSION by +0.01 each release and add a matching CHANGELOG entry.
+// After a PWA update reloads the app, the "What's new" modal shows the entry for
+// CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
+// the next bump.
+const CURRENT_VERSION = "BETA 0.01";
+const CHANGELOG = [
+  {
+    version: "BETA 0.01",
+    date: "26/7/26",
+    items: [
+      { tag: "NEW FEATURE", text: "Compare a Region — scout any QLD zone from the Benchmarks page to see its best times to drive, $/hr and peak days before you move or travel there." },
+      { tag: "NEW", text: "National benchmarks now compare states & territories, with your state highlighted." },
+      { tag: "IMPROVED", text: "Fresh coral 'Daylight' look across Home, Insights and the new Benchmarks screen." },
+      { tag: "IMPROVED", text: "PDF & CSV exports now live under Tools & Export, with an ATO-ready PDF in the new theme." },
+    ],
+  },
+];
+const currentChangelog = () => CHANGELOG.find(c => c.version === CURRENT_VERSION) || CHANGELOG[0];
+
 // ─── Helpers ───
 const cap = (v, max) => Math.min(v, max);
 const fmt$ = (n) => "$" + (n || 0).toFixed(2);
@@ -2669,6 +2689,68 @@ function PlatformPickerModal({ open, onPick, onClose, title = "Going online", su
   );
 }
 
+// ─── WHAT'S NEW MODAL ─── Shown once after an update reveals a new version.
+function WhatsNewModal({ open, onClose }) {
+  if (!open) return null;
+  const log = currentChangelog();
+  const tagColor = (tag) =>
+    tag === "NEW FEATURE" ? "var(--coral)" :
+    tag === "NEW" ? "var(--indigo)" :
+    "var(--pos)";
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
+      display:"flex",alignItems:"center",justifyContent:"center",
+      zIndex:1100,backdropFilter:"blur(4px)",padding:"20px",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background:"var(--surface)",borderRadius:"24px",
+        width:"100%",maxWidth:"420px",overflow:"hidden",
+        boxShadow:"0 24px 48px -16px rgba(0,0,0,.5)",
+      }}>
+        {/* Coral header */}
+        <div style={{
+          background:"var(--coral-grad)",padding:"22px 20px 18px",position:"relative",overflow:"hidden",
+        }}>
+          <div style={{position:"absolute",top:"-30px",right:"-20px",width:"140px",height:"140px",
+            background:"radial-gradient(circle, rgba(255,255,255,.25), transparent 70%)",pointerEvents:"none"}}/>
+          <div style={{position:"relative"}}>
+            <div style={{display:"inline-flex",alignItems:"center",gap:"7px",marginBottom:"10px"}}>
+              <GTLogo size={26} />
+              <span style={{fontSize:"11px",fontWeight:"800",color:"#fff",letterSpacing:".08em",background:"rgba(255,255,255,.2)",padding:"3px 9px",borderRadius:"100px"}}>{log.version}</span>
+            </div>
+            <div style={{fontSize:"22px",fontWeight:"800",color:"#fff",letterSpacing:"-.02em"}}>What's new</div>
+            <div style={{fontSize:"11px",fontWeight:"600",color:"rgba(255,255,255,.85)",marginTop:"2px"}}>Updated {log.date}</div>
+          </div>
+        </div>
+
+        {/* Items */}
+        <div style={{padding:"18px 20px 8px",maxHeight:"46vh",overflowY:"auto"}}>
+          {log.items.map((it, i) => (
+            <div key={i} style={{display:"flex",gap:"11px",marginBottom:"16px",alignItems:"flex-start"}}>
+              <span style={{
+                flexShrink:0,marginTop:"1px",fontSize:"8.5px",fontWeight:"800",letterSpacing:".06em",
+                color:"var(--on-coral)",background:tagColor(it.tag),padding:"3px 7px",borderRadius:"100px",
+                whiteSpace:"nowrap",
+              }}>{it.tag}</span>
+              <span style={{fontSize:"13px",color:"var(--text)",lineHeight:"1.5",fontWeight:"500"}}>{it.text}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        <div style={{padding:"6px 20px 20px"}}>
+          <button onClick={onClose} style={{
+            width:"100%",padding:"14px",border:"none",cursor:"pointer",
+            background:"var(--coral)",color:"var(--on-coral)",
+            borderRadius:"14px",fontSize:"14px",fontWeight:"700",
+          }}>Got it</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── SIGN-IN MODAL ─── Sends a magic link to the user's email.
 function SignInModal({ open, onSendLink, onClose }) {
   const [email, setEmail] = useState("");
@@ -3112,13 +3194,13 @@ function BenchmarkCard({ region, onGoToSettings }) {
 // (percentiles, histograms, leaderboards, city bars, trend) are placeholder.
 
 // Small reusable heatmap (7 day-cols × 4 time-rows) with a coral opacity ramp.
-function BenchHeatmap() {
+function BenchHeatmap({ grid: gridProp, peakLabel } = {}) {
   const rows = ["Brekky", "Lunch", "Arvo", "Dinner", "Late"];
   const cols = ["M", "T", "W", "T", "F", "S", "S"];
   // Intensity grid 0..1 — peaks Fri/Sat dinner. Mock, spec-shaped.
   // Brekky = early-morning coffee/breakfast runs: quieter midweek, stronger
-  // on the weekend brunch trade (Sat/Sun).
-  const grid = [
+  // on the weekend brunch trade (Sat/Sun). Callers can pass a per-region grid.
+  const grid = gridProp || [
     [0.24, 0.22, 0.26, 0.28, 0.34, 0.58, 0.62], // Brekky
     [0.30, 0.28, 0.32, 0.40, 0.55, 0.62, 0.48], // Lunch
     [0.22, 0.20, 0.24, 0.30, 0.42, 0.50, 0.38], // Arvo
@@ -3155,7 +3237,7 @@ function BenchHeatmap() {
 }
 
 // Distribution histogram (bell-ish) with the user's bar highlighted + "YOU".
-function BenchHistogram({ youIndex = 7, axisLo = "$18/hr", axisHi = "$40/hr" }) {
+function BenchHistogram({ youIndex = 7, axisLo = "$18/hr", axisHi = "$40/hr", highlightLabel = "YOU" }) {
   const bars = [0.18, 0.34, 0.52, 0.72, 0.88, 1.0, 0.94, 0.78, 0.6, 0.4];
   return (
     <div>
@@ -3164,8 +3246,8 @@ function BenchHistogram({ youIndex = 7, axisLo = "$18/hr", axisHi = "$40/hr" }) 
           const isYou = i === youIndex;
           return (
             <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", position: "relative" }}>
-              {isYou && (
-                <div style={{ fontSize: "8px", fontWeight: "800", color: "var(--coral-hi)", marginBottom: "3px", letterSpacing: ".08em" }}>YOU</div>
+              {isYou && highlightLabel && (
+                <div style={{ fontSize: "8px", fontWeight: "800", color: "var(--coral-hi)", marginBottom: "3px", letterSpacing: ".08em" }}>{highlightLabel}</div>
               )}
               <div style={{
                 width: "100%", height: `${Math.round(h * 100)}%`, minHeight: "4px",
@@ -3237,11 +3319,70 @@ function BenchRankRow({ rank, name, value, pct, highlight = false, barTone = "be
   );
 }
 
-function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings }) {
+// Deterministic per-region mock benchmark data. Seeded off the region id so a
+// given zone always renders the same believable figures (hourly, median, top
+// 10%, $/delivery, peak day, histogram position, heatmap grid). This is the
+// single seam to replace with real per-region data when the backend provides it.
+function regionBenchData(regionId, label) {
+  let h = 2166136261;
+  const s = String(regionId || label || "zone");
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const rand = (n) => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return Math.abs((h >>> 0) % n); };
+  const median = 20 + rand(900) / 100;                 // $20.00–$28.99/hr
+  const spread = 4 + rand(500) / 100;                  // top-decile gap
+  const top10  = median + spread + rand(300) / 100;
+  const perDel = 10.5 + rand(450) / 100;               // $10.50–$14.99
+  const days   = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const peakDay = days[5 + rand(2)];                    // Sat or Sun lean
+  const youIdx  = 4 + rand(4);                          // where a typical driver sits (histogram)
+  // Heatmap: base template nudged per-region so grids visibly differ.
+  const base = [
+    [0.24, 0.22, 0.26, 0.28, 0.34, 0.58, 0.62],
+    [0.30, 0.28, 0.32, 0.40, 0.55, 0.62, 0.48],
+    [0.22, 0.20, 0.24, 0.30, 0.42, 0.50, 0.38],
+    [0.55, 0.52, 0.58, 0.70, 0.95, 1.00, 0.80],
+    [0.30, 0.28, 0.34, 0.44, 0.66, 0.72, 0.50],
+  ];
+  const grid = base.map((row, ri) => row.map((v, ci) => {
+    const nudge = ((rand(30) - 15) / 100);
+    return Math.max(0.12, Math.min(1, v + nudge * (ri === 3 ? 0.4 : 1)));
+  }));
+  return {
+    hourly: median.toFixed(2),
+    median: median.toFixed(2),
+    top10: top10.toFixed(2),
+    perDel: perDel.toFixed(2),
+    peakDay,
+    youIdx,
+    grid,
+    axisLo: `$${Math.floor(median - 6)}/hr`,
+    axisHi: `$${Math.ceil(top10 + 3)}/hr`,
+    sample: 60 + rand(180),
+  };
+}
+
+function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialScout = false }) {
   const [level, setLevel] = useState("local");
   const regionInfo = REGIONS.find(r => r.id === region);
   const zoneLabel = regionInfo?.label || "your zone";
   const stateLabel = regionInfo?.state || "your state";
+
+  // ── Compare a Region (scouting) ──
+  // When a scout region is chosen, the Local tab shows that region's read-only
+  // breakdown instead of the user's own zone — without changing their setting.
+  const [scoutId, setScoutId] = useState(initialScout && region ? "__pick__" : null);
+  const scouting = scoutId != null && scoutId !== "__pick__";
+  const scoutInfo = scouting ? REGIONS.find(r => r.id === scoutId) : null;
+  // The region whose data the Local tab renders (own zone, or the scouted one).
+  const activeId = scouting ? scoutId : region;
+  const activeLabel = scouting ? (scoutInfo?.label || "region") : zoneLabel;
+  const bd = regionBenchData(activeId, activeLabel);
+
+  // Region options grouped by state for the scout picker.
+  const regionsByStateGrouped = REGIONS.reduce((acc, r) => {
+    (acc[r.state] = acc[r.state] || []).push(r);
+    return acc;
+  }, {});
 
   // Shifts captured in the last 7 days (real data from the local shift log).
   // Used in place of concurrent-driver counts while presence tracking is off.
@@ -3356,47 +3497,131 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings }) {
           {/* ── LOCAL ── */}
           {level === "local" && (
             <>
+              {/* Scout switcher: flip between your zone and another region */}
+              <div style={{ marginBottom: "12px" }}>
+                <div style={{ display: "flex", gap: "6px", background: "var(--chip)", borderRadius: "100px", padding: "3px" }}>
+                  <div onClick={() => setScoutId(null)} role="button" style={{
+                    flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
+                    fontSize: "12px", fontWeight: "700",
+                    color: !scouting ? "var(--on-coral)" : "var(--muted)",
+                    background: !scouting ? "var(--coral)" : "transparent",
+                    boxShadow: !scouting ? "var(--shadow-green)" : "none",
+                  }}>Your zone</div>
+                  <div onClick={() => setScoutId(scouting ? scoutId : "__pick__")} role="button" style={{
+                    flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
+                    fontSize: "12px", fontWeight: "700",
+                    color: scouting ? "var(--on-coral)" : "var(--muted)",
+                    background: scouting ? "var(--coral)" : "transparent",
+                    boxShadow: scouting ? "var(--shadow-green)" : "none",
+                  }}>Compare a region</div>
+                </div>
+
+                {/* Region picker — shown while scouting (or mid-pick) */}
+                {scoutId != null && (
+                  <div style={{ marginTop: "8px" }}>
+                    <select
+                      className="input-field"
+                      value={scouting ? scoutId : ""}
+                      onChange={e => setScoutId(e.target.value || "__pick__")}
+                      style={{ width: "100%", fontSize: "14px", fontFamily: "'Inter',sans-serif", fontWeight: "600" }}
+                    >
+                      <option value="">— Choose a region to compare —</option>
+                      {Object.entries(regionsByStateGrouped).map(([st, regs]) => (
+                        <optgroup key={st} label={st}>
+                          {regs.filter(r => r.id !== region).map(r => (
+                            <option key={r.id} value={r.id}>{r.label}</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {/* Scouting banner */}
+              {scouting && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "var(--coral-dim)", border: "1px solid var(--coral-border)", borderRadius: "12px", padding: "9px 12px", marginBottom: "10px" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                  <span style={{ fontSize: "11px", color: "var(--coral)", fontWeight: "600" }}>
+                    Scouting <strong>{activeLabel}</strong> — what drivers there see. Your zone is unchanged.
+                  </span>
+                </div>
+              )}
+
+              {/* Prompt state: scout mode on but no region chosen yet */}
+              {scoutId === "__pick__" ? (
+                <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "36px 24px", textAlign: "center", boxShadow: "var(--shadow-card)" }}>
+                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "10px" }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>Compare another region</div>
+                  <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>Pick any region above to see its best times to drive, $/hr and peak days — handy if you're moving or travelling.</div>
+                </div>
+              ) : (
+              <>
               <HeroBubble>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--coral-hi)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></svg>
-                  <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".04em" }}>{zoneLabel}</span>
+                  <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".04em" }}>{activeLabel}</span>
                 </div>
-                <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
-                  You earn more than <span style={{ color: "var(--coral-hi)" }}>82% of drivers</span> here
-                </div>
-                <BenchHistogram youIndex={7} axisLo="$18/hr" axisHi="$40/hr" />
+                {scouting ? (
+                  <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
+                    Drivers here earn a median of <span style={{ color: "var(--coral-hi)" }}>${bd.median}/hr</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
+                    You earn more than <span style={{ color: "var(--coral-hi)" }}>82% of drivers</span> here
+                  </div>
+                )}
+                <BenchHistogram youIndex={bd.youIdx} axisLo={bd.axisLo} axisHi={bd.axisHi} highlightLabel={scouting ? "" : "YOU"} />
               </HeroBubble>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="You" value="$27.40" sub="per hour" tone="coral" />
-                <BenchStat label="Zone median" value="$25.30" sub="+$2.10 you" tone="green" />
-                <BenchStat label="Top 10%" value="$34.10" sub="reach goal" tone="indigo" />
+                {scouting ? (
+                  <>
+                    <BenchStat label="Median" value={`$${bd.median}`} sub="per hour" tone="coral" />
+                    <BenchStat label="Top 10%" value={`$${bd.top10}`} sub="best drivers" tone="green" />
+                    <BenchStat label="$/delivery" value={`$${bd.perDel}`} sub="zone avg" tone="indigo" />
+                  </>
+                ) : (
+                  <>
+                    <BenchStat label="You" value="$27.40" sub="per hour" tone="coral" />
+                    <BenchStat label="Zone median" value={`$${bd.median}`} sub="+$2.10 you" tone="green" />
+                    <BenchStat label="Top 10%" value={`$${bd.top10}`} sub="reach goal" tone="indigo" />
+                  </>
+                )}
               </div>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)", border: "1px solid var(--coral-border)" }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "14px" }}>
-                  <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--coral)", letterSpacing: ".06em", textTransform: "uppercase" }}>Best times to drive here</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "600" }}>Fri–Sat dinner</div>
+                  <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--coral)", letterSpacing: ".06em", textTransform: "uppercase" }}>Best times to drive {scouting ? "there" : "here"}</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "600" }}>{bd.peakDay} dinner</div>
                 </div>
-                <BenchHeatmap />
+                <BenchHeatmap grid={bd.grid} />
               </div>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "16px 18px", marginTop: "10px", boxShadow: "var(--shadow-card)", display: "flex", alignItems: "center" }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{live?.total != null ? live.total : 46}</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>online now</div>
+                  <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{scouting ? bd.sample : (live?.total != null ? live.total : 46)}</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>{scouting ? "shifts logged · 7d" : "online now"}</div>
                 </div>
                 <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
                 <div style={{ flex: 2 }}>
-                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "700", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "4px" }}>$/delivery here</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "700", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "4px" }}>$/delivery {scouting ? "there" : "here"}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>You $13.37 · zone $12.10</span>
-                    <span style={{ fontSize: "10px", fontWeight: "700", color: "var(--pos)", background: "var(--pos-dim)", padding: "2px 7px", borderRadius: "100px" }}>+10%</span>
+                    {scouting ? (
+                      <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>Zone avg ${bd.perDel}</span>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>You $13.37 · zone ${bd.perDel}</span>
+                        <span style={{ fontSize: "10px", fontWeight: "700", color: "var(--pos)", background: "var(--pos-dim)", padding: "2px 7px", borderRadius: "100px" }}>+10%</span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
 
-              <Footer>Based on 142 CBD drivers this week</Footer>
+              <Footer>Based on ~{bd.sample} {activeLabel} drivers this week</Footer>
+              </>
+              )}
             </>
           )}
 
@@ -7629,7 +7854,7 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -7882,6 +8107,22 @@ function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPr
           <div>
             <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools &amp; Export</div>
             <SettingsSectionCard>
+              {/* Compare a Region — scout another zone's benchmarks */}
+              <div
+                className="settings-item"
+                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                onClick={onCompareRegion}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                    Compare a Region
+                  </div>
+                  <div className="settings-item-sub">See best times & earnings for any zone before you go</div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+
               {/* Export as PDF (Pro only) */}
               <div
                 className="settings-item"
@@ -8326,6 +8567,24 @@ export default function GigTrack() {
   // immediately if the update landed before React mounted.
   const [updateReady, setUpdateReady] = useState(false);
   useEffect(() => onNeedRefresh(() => setUpdateReady(true)), []);
+  const [benchmarksScout, setBenchmarksScout] = useState(false);
+
+  // "What's new" modal: after an update reload, show the current version's
+  // changelog once. First-ever launch just stamps the version silently (a new
+  // user doesn't need a changelog for a version they never saw the prior one of).
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  useEffect(() => {
+    const seen = DB.get("gt_last_seen_version");
+    if (seen == null) {
+      DB.set("gt_last_seen_version", CURRENT_VERSION); // first launch: no modal
+    } else if (seen !== CURRENT_VERSION) {
+      setWhatsNewOpen(true);
+    }
+  }, []);
+  const dismissWhatsNew = () => {
+    DB.set("gt_last_seen_version", CURRENT_VERSION);
+    setWhatsNewOpen(false);
+  };
   const [liveStatus, setLiveStatus] = useState(null); // {online, platform, zone, since}
   const [platformPickerOpen, setPlatformPickerOpen] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
@@ -9017,7 +9276,8 @@ export default function GigTrack() {
         <BenchmarksScreen
           region={region}
           trips={trips}
-          onBack={() => setScreen("home")}
+          initialScout={benchmarksScout}
+          onBack={() => { setBenchmarksScout(false); setScreen("home"); }}
           onGoToSettings={() => setScreen("settings")}
         />
       )}
@@ -9217,6 +9477,7 @@ export default function GigTrack() {
           user={user}
           trips={trips}
           onBack={() => setScreen("home")}
+          onCompareRegion={() => { setBenchmarksScout(true); setScreen("benchmarks"); }}
           onUpdateUser={saveUser}
           kmPref={kmPref}
           onKmPref={(p) => { setKmPref(p); DB.set("gt_kmpref", p); syncProfile({ kmPref: p }); }}
@@ -9292,6 +9553,7 @@ export default function GigTrack() {
           </button>
         </div>
       )}
+      <WhatsNewModal open={whatsNewOpen} onClose={dismissWhatsNew} />
       <Toast msg={toast} />
       <PlatformPickerModal
         open={platformPickerOpen}
