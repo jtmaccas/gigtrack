@@ -3274,18 +3274,20 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings }) {
     { rank: 6, name: stateData.rows[4][0], value: stateData.rows[4][1], pct: stateData.rows[4][2] },
   ];
 
-  // National best-cities list, and the user's capital (highlighted) derived
-  // from their state so the national view is personalised too.
-  const cities = [
-    { name: "Sydney",    value: "$28.6", pct: 100 },
-    { name: "Melbourne", value: "$27.4", pct: 96 },
-    { name: "Brisbane",  value: "$22.9", pct: 80 },
-    { name: "Perth",     value: "$20.6", pct: 72 },
-    { name: "Adelaide",  value: "$18.3", pct: 64 },
-  ];
-  const STATE_CITY = { NSW:"Sydney", VIC:"Melbourne", QLD:"Brisbane", WA:"Perth", SA:"Adelaide", ACT:"Canberra", TAS:"Hobart", NT:"Darwin" };
-  const userCity = STATE_CITY[stateLabel] || null;
-  const cityRank = userCity ? (cities.findIndex(c => c.name === userCity) + 1 || null) : null;
+  // National comparison by state/territory (ranked $/hr), with the user's own
+  // state highlighted. Medians reuse the per-state figures above for consistency.
+  const states = [
+    { name: "NSW", value: "$24.6", pct: 100 },
+    { name: "VIC", value: "$23.8", pct: 97 },
+    { name: "ACT", value: "$23.1", pct: 94 },
+    { name: "NT",  value: "$21.8", pct: 89 },
+    { name: "QLD", value: "$23.8", pct: 97 },
+    { name: "WA",  value: "$21.4", pct: 87 },
+    { name: "SA",  value: "$20.1", pct: 82 },
+    { name: "TAS", value: "$19.2", pct: 78 },
+  ].sort((a, b) => parseFloat(b.value.slice(1)) - parseFloat(a.value.slice(1)));
+  const userStateRank = stateLabel ? (states.findIndex(s => s.name === stateLabel) + 1 || null) : null;
+  const STATE_NAMES = { NSW:"New South Wales", VIC:"Victoria", QLD:"Queensland", WA:"Western Australia", SA:"South Australia", ACT:"ACT", TAS:"Tasmania", NT:"Northern Territory" };
 
   // Real seams wired where they exist (used lightly; richer shapes are mocked).
   const [live, setLive] = useState(null);
@@ -3437,17 +3439,17 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings }) {
                 <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "8px" }}>National median · $/hr</div>
                 <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginBottom: "14px" }}>
                   <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>$22.90</div>
-                  {userCity && cityRank && <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>{userCity} ranks #{cityRank}</div>}
+                  {stateLabel && userStateRank && <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>{stateLabel} ranks #{userStateRank}</div>}
                 </div>
                 <BenchTrendLine />
                 <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "6px" }}>12-week national trend · <span style={{ color: "var(--coral-hi)", fontWeight: "700" }}>+6%</span></div>
               </HeroBubble>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
-                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Best cities · $/hr</div>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>States &amp; territories · $/hr</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  {cities.map(c => (
-                    <BenchRankRow key={c.name} name={c.name} value={c.value} pct={c.pct} highlight={c.name === userCity} />
+                  {states.map((s, i) => (
+                    <BenchRankRow key={s.name} rank={i + 1} name={STATE_NAMES[s.name] || s.name} value={s.value} pct={s.pct} highlight={s.name === stateLabel} />
                   ))}
                 </div>
               </div>
