@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -2701,6 +2701,100 @@ function PlatformPickerModal({ open, onPick, onClose, title = "Going online", su
             fontSize:"13px",fontWeight:"500",
           }}
         >Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── CHANGE PASSWORD MODAL ─── For signed-in users to set/update a password.
+function ChangePasswordModal({ open, onSave, onClose }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | saving | done | error
+  const [errMsg, setErrMsg] = useState("");
+
+  if (!open) return null;
+
+  const handleSave = async () => {
+    if (pw.length < 6) { setErrMsg("Password must be at least 6 characters"); setStatus("error"); return; }
+    if (pw !== pw2) { setErrMsg("Passwords don't match"); setStatus("error"); return; }
+    setStatus("saving"); setErrMsg("");
+    const result = await onSave(pw);
+    if (result?.ok) { setStatus("done"); setPw(""); setPw2(""); }
+    else { setErrMsg(result?.error?.message || "Couldn't update password. Try again."); setStatus("error"); }
+  };
+
+  const inputStyle = {
+    width:"100%",padding:"13px 14px",background:"var(--elevated)",
+    border:"0.5px solid var(--border)",borderRadius:"11px",color:"var(--text)",
+    fontFamily:"'Inter',sans-serif",fontSize:"15px",outline:"none",marginBottom:"10px",
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
+      display:"flex",alignItems:"flex-end",justifyContent:"center",
+      zIndex:1000,backdropFilter:"blur(4px)",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background:"var(--surface)",borderTopLeftRadius:"20px",borderTopRightRadius:"20px",
+        width:"100%",maxWidth:"480px",padding:"20px 18px 28px",boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
+      }}>
+        <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
+
+        {status === "done" ? (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px",textAlign:"center"}}>Password updated</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"20px",lineHeight:"1.5",textAlign:"center"}}>
+              You can now sign in with your email and this password.
+            </div>
+            <button onClick={onClose} style={{
+              width:"100%",padding:"14px",background:"var(--coral)",color:"var(--on-coral)",
+              border:"none",borderRadius:"12px",cursor:"pointer",
+              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+            }}>Done</button>
+          </>
+        ) : (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Change password</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"16px",lineHeight:"1.5"}}>
+              Set a new password for signing in. If you've only used magic links before, this gives you a password too.
+            </div>
+
+            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>New password</div>
+            <input
+              type="password" autoComplete="new-password" placeholder="At least 6 characters"
+              value={pw}
+              onChange={e => { setPw(e.target.value); if (status === "error") setStatus("idle"); }}
+              disabled={status === "saving"}
+              style={inputStyle}
+            />
+            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>Confirm password</div>
+            <input
+              type="password" autoComplete="new-password" placeholder="Re-enter password"
+              value={pw2}
+              onChange={e => { setPw2(e.target.value); if (status === "error") setStatus("idle"); }}
+              onKeyDown={e => { if (e.key === "Enter") handleSave(); }}
+              disabled={status === "saving"}
+              style={inputStyle}
+            />
+
+            {status === "error" && <div style={{fontSize:"11px",color:"var(--red)",marginBottom:"10px",fontFamily:"'Inter',sans-serif"}}>{errMsg}</div>}
+
+            <button onClick={handleSave} disabled={status === "saving"} style={{
+              width:"100%",padding:"14px",marginTop:"4px",
+              background: status==="saving" ? "var(--muted2)" : "var(--coral)",
+              color:"var(--on-coral)",border:"none",borderRadius:"12px",
+              cursor: status==="saving" ? "default" : "pointer",
+              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+            }}>{status === "saving" ? "Saving…" : "Save password"}</button>
+
+            <button onClick={onClose} style={{
+              width:"100%",marginTop:"10px",padding:"13px",background:"transparent",border:"none",cursor:"pointer",
+              color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
+            }}>Cancel</button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -7948,7 +8042,7 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -8311,6 +8405,24 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                     <div className="settings-item-sub" style={{fontSize:"11px"}}>
                       {authUser.email || "—"} · tap to sign out
                     </div>
+                  </div>
+                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+                </div>
+              )}
+
+              {/* Change password — signed-in users can set/update a password */}
+              {authUser && (
+                <div
+                  className="settings-item"
+                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                  onClick={onChangePassword}
+                >
+                  <div className="settings-item-left">
+                    <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                      Change password
+                    </div>
+                    <div className="settings-item-sub" style={{fontSize:"11px"}}>Set or update your sign-in password</div>
                   </div>
                   <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
                 </div>
@@ -8707,6 +8819,7 @@ export default function GigTrack() {
   // changelog once. First-ever launch just stamps the version silently (a new
   // user doesn't need a changelog for a version they never saw the prior one of).
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   useEffect(() => {
     const seen = DB.get("gt_last_seen_version");
     if (seen == null) {
@@ -9613,6 +9726,7 @@ export default function GigTrack() {
           onBack={() => setScreen("home")}
           onCompareRegion={() => { setBenchmarksScout(true); setScreen("benchmarks"); }}
           onWhatsNew={() => setWhatsNewOpen(true)}
+          onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
           kmPref={kmPref}
           onKmPref={(p) => { setKmPref(p); DB.set("gt_kmpref", p); syncProfile({ kmPref: p }); }}
@@ -9689,6 +9803,11 @@ export default function GigTrack() {
         </div>
       )}
       <WhatsNewModal open={whatsNewOpen} onClose={dismissWhatsNew} />
+      <ChangePasswordModal
+        open={changePasswordOpen}
+        onClose={() => setChangePasswordOpen(false)}
+        onSave={async (pw) => await updatePassword(pw)}
+      />
       <Toast msg={toast} />
       <PlatformPickerModal
         open={platformPickerOpen}

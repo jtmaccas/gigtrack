@@ -101,7 +101,16 @@ export const sendPasswordReset = async (email) => {
   return { ok: true };
 };
 
-// Save the user's profile to Supabase (upsert by user id).
+// Set/update the signed-in user's password (works for magic-link users too —
+// they get a password for the first time). Requires a live session.
+export const updatePassword = async (newPassword) => {
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) {
+    console.error("[GigTrack] updatePassword failed:", error);
+    return { ok: false, error };
+  }
+  return { ok: true };
+};
 // `profile` shape: { name, region, weeklyGoal, kmPref, startOdo, isPro, isGuest, showScoring }
 // NOTE: fuel_eff / fuel_price columns still exist in the DB but are unused —
 // the fuel cost estimator was removed (stale price silently corrupted net earnings).
