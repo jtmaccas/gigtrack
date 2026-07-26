@@ -3602,6 +3602,10 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
   // During beta the scout target is a BUCKET id; post-beta it's a zone id.
   const [scoutId, setScoutId] = useState(initialScout && region ? "__pick__" : null);
   const scouting = scoutId != null && scoutId !== "__pick__";
+  // Whether the "Compare a region" side is selected — true while picking
+  // (__pick__) or after a region is chosen. Drives the toggle highlight so it
+  // doesn't fall back to "Your zone" during the pick step.
+  const compareActive = scoutId != null;
   // The region/bucket whose data the Local tab renders (own zone, or scouted).
   const activeId = scouting ? scoutId : (BETA_ZONE_BUCKETS ? presenceBucket(region) : region);
   const scoutLabel = scouting
@@ -3738,16 +3742,16 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                   <div onClick={() => setScoutId(null)} role="button" style={{
                     flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
                     fontSize: "12px", fontWeight: "700",
-                    color: !scouting ? "var(--on-coral)" : "var(--muted)",
-                    background: !scouting ? "var(--coral)" : "transparent",
-                    boxShadow: !scouting ? "var(--shadow-green)" : "none",
+                    color: !compareActive ? "var(--on-coral)" : "var(--muted)",
+                    background: !compareActive ? "var(--coral)" : "transparent",
+                    boxShadow: !compareActive ? "var(--shadow-green)" : "none",
                   }}>Your zone</div>
                   <div onClick={() => setScoutId(scouting ? scoutId : "__pick__")} role="button" style={{
                     flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
                     fontSize: "12px", fontWeight: "700",
-                    color: scouting ? "var(--on-coral)" : "var(--muted)",
-                    background: scouting ? "var(--coral)" : "transparent",
-                    boxShadow: scouting ? "var(--shadow-green)" : "none",
+                    color: compareActive ? "var(--on-coral)" : "var(--muted)",
+                    background: compareActive ? "var(--coral)" : "transparent",
+                    boxShadow: compareActive ? "var(--shadow-green)" : "none",
                   }}>Compare a region</div>
                 </div>
 
