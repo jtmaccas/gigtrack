@@ -2744,13 +2744,16 @@ function WhatsNewModal({ open, onClose }) {
         {/* Items */}
         <div style={{padding:"18px 20px 8px",maxHeight:"46vh",overflowY:"auto"}}>
           {log.items.map((it, i) => (
-            <div key={i} style={{display:"flex",gap:"11px",marginBottom:"16px",alignItems:"flex-start"}}>
-              <span style={{
-                flexShrink:0,marginTop:"1px",fontSize:"8.5px",fontWeight:"800",letterSpacing:".06em",
-                color:"var(--on-coral)",background:tagColor(it.tag),padding:"3px 7px",borderRadius:"100px",
-                whiteSpace:"nowrap",
-              }}>{it.tag}</span>
-              <span style={{fontSize:"13px",color:"var(--text)",lineHeight:"1.5",fontWeight:"500"}}>{it.text}</span>
+            <div key={i} style={{display:"flex",gap:"10px",marginBottom:"16px",alignItems:"flex-start"}}>
+              <div style={{flexShrink:0,width:"66px",marginTop:"1px",display:"flex"}}>
+                <span style={{
+                  fontSize:"8px",fontWeight:"800",letterSpacing:".03em",
+                  color:"var(--on-coral)",background:tagColor(it.tag),
+                  padding:"3px 6px",borderRadius:"100px",
+                  whiteSpace:"nowrap",textAlign:"center",lineHeight:"1.3",
+                }}>{it.tag}</span>
+              </div>
+              <span style={{flex:1,fontSize:"13px",color:"var(--text)",lineHeight:"1.5",fontWeight:"500"}}>{it.text}</span>
             </div>
           ))}
         </div>
