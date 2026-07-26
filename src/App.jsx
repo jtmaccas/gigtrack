@@ -627,15 +627,23 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "BETA 0.01";
+const CURRENT_VERSION = "BETA 0.02";
 const CHANGELOG = [
+  {
+    version: "BETA 0.02",
+    date: "26/7/26",
+    items: [
+      { tag: "NEW FEATURE", text: "Compare a Region — scout any zone from the Benchmarks page to see its best times to drive, $/hr and peak days before you move or travel there." },
+      { tag: "NEW", text: "Submit your feedback straight from Settings — tell us what's working, report a bug, or suggest an idea." },
+      { tag: "IMPROVED", text: "National benchmarks now compare states & territories, with your state highlighted." },
+      { tag: "IMPROVED", text: "Benchmarks now match your own state, and show shifts logged over the last 7 days." },
+    ],
+  },
   {
     version: "BETA 0.01",
     date: "26/7/26",
     items: [
-      { tag: "NEW FEATURE", text: "Compare a Region — scout any QLD zone from the Benchmarks page to see its best times to drive, $/hr and peak days before you move or travel there." },
-      { tag: "NEW", text: "National benchmarks now compare states & territories, with your state highlighted." },
-      { tag: "IMPROVED", text: "Fresh coral 'Daylight' look across Home, Insights and the new Benchmarks screen." },
+      { tag: "NEW", text: "Fresh coral 'Daylight' look across Home, Insights and the new Benchmarks screen." },
       { tag: "IMPROVED", text: "PDF & CSV exports now live under Tools & Export, with an ATO-ready PDF in the new theme." },
     ],
   },
@@ -1697,7 +1705,7 @@ const PREMIUM_FEATURES = [
   { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. Free users get 10 imports — Pro unlocks 100 per month." },
   { icon:"📍", title:"Local Benchmarks &amp; Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
   { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
-  { icon:"📊", title:"CSV Export for Accountants",     desc:"PDF export is free, but CSV export — perfect for sending raw shift data to your accountant — is Pro only." },
+  { icon:"📊", title:"PDF &amp; CSV Export",     desc:"Export an ATO-ready PDF report of your shifts, or raw CSV data perfect for sending to your accountant. Both are Pro." },
   { icon:"⚡", title:"Custom Scoring Targets",          desc:"Dial in your own hourly rate, $/delivery, and active time targets so your shift score reflects your personal benchmarks." },
 ];
 
@@ -7854,7 +7862,7 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -8155,6 +8163,46 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onUpdateUse
                   <div className="settings-item-sub">
                     {isPro ? "Raw shift data for spreadsheets & accountants" : "Upgrade to Pro for CSV export"}
                   </div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+            </SettingsSectionCard>
+          </div>
+
+          {/* ── Feedback (beta) ── */}
+          <div>
+            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Feedback</div>
+            <SettingsSectionCard>
+              {/* What's new — reopen the current version's changelog anytime */}
+              <div
+                className="settings-item"
+                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                onClick={onWhatsNew}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+                    What's new
+                  </div>
+                  <div className="settings-item-sub">See what changed in {CURRENT_VERSION}</div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+
+              <div
+                className="settings-item"
+                style={{cursor:"pointer"}}
+                onClick={() => {
+                  const base = "https://docs.google.com/forms/d/e/1FAIpQLSfLnW0Tf9zrTPZUV_IVzTo1SkalQwp_0NrD02dXoNfdwd1Edg/viewform";
+                  window.open(`${base}?usp=pp_url`, "_blank", "noopener,noreferrer");
+                }}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                    Submit your feedback
+                  </div>
+                  <div className="settings-item-sub">Tell us what's working, report a bug, or suggest an idea ({CURRENT_VERSION})</div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
               </div>
@@ -9478,6 +9526,7 @@ export default function GigTrack() {
           trips={trips}
           onBack={() => setScreen("home")}
           onCompareRegion={() => { setBenchmarksScout(true); setScreen("benchmarks"); }}
+          onWhatsNew={() => setWhatsNewOpen(true)}
           onUpdateUser={saveUser}
           kmPref={kmPref}
           onKmPref={(p) => { setKmPref(p); DB.set("gt_kmpref", p); syncProfile({ kmPref: p }); }}
