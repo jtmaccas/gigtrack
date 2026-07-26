@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -2760,30 +2760,65 @@ function WhatsNewModal({ open, onClose }) {
 }
 
 // ─── SIGN-IN MODAL ─── Sends a magic link to the user's email.
-function SignInModal({ open, onSendLink, onClose }) {
+function SignInModal({ open, onSendLink, onPasswordSignIn, onPasswordSignUp, onPasswordReset, onClose }) {
+  const [method, setMethod] = useState("password"); // 'password' | 'link'
+  const [mode, setMode] = useState("signin");        // 'signin' | 'signup' (password only)
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [status, setStatus] = useState("idle"); // idle | sending | sent | error
   const [errMsg, setErrMsg] = useState("");
+  const [notice, setNotice] = useState("");
 
   if (!open) return null;
 
-  const handleSend = async () => {
-    const trimmed = email.trim();
-    if (!trimmed || !trimmed.includes("@")) {
-      setErrMsg("Enter a valid email address");
-      setStatus("error");
-      return;
-    }
-    setStatus("sending");
-    setErrMsg("");
-    const result = await onSendLink(trimmed);
+  const validEmail = (e) => e.trim() && e.includes("@");
+
+  const handleSendLink = async () => {
+    if (!validEmail(email)) { setErrMsg("Enter a valid email address"); setStatus("error"); return; }
+    setStatus("sending"); setErrMsg("");
+    const result = await onSendLink(email.trim());
+    if (result?.ok) setStatus("sent");
+    else { setErrMsg(result?.error?.message || "Couldn't send the link. Check your connection and try again."); setStatus("error"); }
+  };
+
+  const handlePassword = async () => {
+    if (!validEmail(email)) { setErrMsg("Enter a valid email address"); setStatus("error"); return; }
+    if (password.length < 6) { setErrMsg("Password must be at least 6 characters"); setStatus("error"); return; }
+    setStatus("sending"); setErrMsg(""); setNotice("");
+    const result = mode === "signup"
+      ? await onPasswordSignUp(email.trim(), password)
+      : await onPasswordSignIn(email.trim(), password);
     if (result?.ok) {
-      setStatus("sent");
+      if (mode === "signup" && result.needsConfirmation) {
+        setStatus("sent"); // confirmation email required
+      } else {
+        setStatus("idle");
+        onClose(); // signed in — session is live, app will react
+      }
     } else {
-      setErrMsg(result?.error?.message || "Couldn't send the link. Check your connection and try again.");
+      const msg = result?.error?.message || "";
+      // Friendlier common-case messages
+      if (/invalid login credentials/i.test(msg)) setErrMsg("Wrong email or password.");
+      else if (/already registered/i.test(msg)) { setErrMsg("That email already has an account — try signing in."); setMode("signin"); }
+      else setErrMsg(msg || "Something went wrong. Try again.");
       setStatus("error");
     }
   };
+
+  const handleReset = async () => {
+    if (!validEmail(email)) { setErrMsg("Enter your email first, then tap reset"); setStatus("error"); return; }
+    setErrMsg(""); setNotice("");
+    const result = await onPasswordReset(email.trim());
+    if (result?.ok) setNotice("Password reset email sent — check your inbox.");
+    else setErrMsg(result?.error?.message || "Couldn't send reset email.");
+  };
+
+  const inputStyle = (isErr) => ({
+    width:"100%",padding:"13px 14px",
+    background:"var(--elevated)",border:`0.5px solid ${isErr?"var(--red-border)":"var(--border)"}`,
+    borderRadius:"11px",color:"var(--text)",
+    fontFamily:"'Inter',sans-serif",fontSize:"15px",outline:"none",
+  });
 
   return (
     <div onClick={onClose} style={{
@@ -2800,75 +2835,114 @@ function SignInModal({ open, onSendLink, onClose }) {
 
         {status === "sent" ? (
           <>
-            <div style={{textAlign:"center",fontSize:"42px",marginBottom:"12px"}}>📬</div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px",textAlign:"center"}}>Check your email</div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"22px",lineHeight:"1.5",textAlign:"center"}}>
-              We sent a sign-in link to <strong style={{color:"var(--text)"}}>{email.trim()}</strong>.<br/>
-              Click the link to finish signing in.
+              {method === "link"
+                ? <>We sent a sign-in link to <strong style={{color:"var(--text)"}}>{email.trim()}</strong>. Open it to finish signing in.</>
+                : <>We sent a confirmation link to <strong style={{color:"var(--text)"}}>{email.trim()}</strong>. Confirm it, then come back and sign in.</>}
             </div>
-            <button
-              onClick={onClose}
-              style={{
-                width:"100%",padding:"14px",background:"var(--green)",color:"var(--on-coral)",
-                border:"none",borderRadius:"12px",cursor:"pointer",
-                fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-              }}
-            >Done</button>
+            <button onClick={onClose} style={{
+              width:"100%",padding:"14px",background:"var(--coral)",color:"var(--on-coral)",
+              border:"none",borderRadius:"12px",cursor:"pointer",
+              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
+            }}>Done</button>
           </>
         ) : (
           <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Sign in to save your data</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",lineHeight:"1.5"}}>
-              Enter your email and we'll send a magic sign-in link — no password needed.
-              All your existing shifts will be linked to your account.
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>
+              {method === "link" ? "Sign in with a link" : mode === "signup" ? "Create your account" : "Sign in to save your data"}
+            </div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"16px",lineHeight:"1.5"}}>
+              {method === "link"
+                ? "We'll email you a magic link — no password needed. (Note: on an installed app the link opens in your browser.)"
+                : mode === "signup"
+                  ? "Pick an email and password. Your shifts will be linked to your account."
+                  : "Enter your email and password. Your shifts will be linked to your account."}
             </div>
 
-            <div style={{marginBottom:"14px"}}>
+            {/* Email */}
+            <div style={{marginBottom:"12px"}}>
               <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>Email address</div>
               <input
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                placeholder="you@example.com"
+                type="email" inputMode="email" autoComplete="email" placeholder="you@example.com"
                 value={email}
                 onChange={e => { setEmail(e.target.value); if (status === "error") setStatus("idle"); }}
-                onKeyDown={e => { if (e.key === "Enter") handleSend(); }}
+                onKeyDown={e => { if (e.key === "Enter") (method==="link"?handleSendLink():handlePassword()); }}
                 disabled={status === "sending"}
-                style={{
-                  width:"100%",padding:"13px 14px",
-                  background:"var(--elevated)",border:`0.5px solid ${status==="error"?"var(--red-border)":"var(--border)"}`,
-                  borderRadius:"11px",color:"var(--text)",
-                  fontFamily:"'Inter',sans-serif",fontSize:"15px",
-                  fontVariantNumeric:"tabular-nums",
-                  outline:"none",
-                }}
+                style={inputStyle(status==="error" && !validEmail(email))}
               />
-              {status === "error" && (
-                <div style={{fontSize:"11px",color:"var(--red)",marginTop:"6px",fontFamily:"'Inter',sans-serif"}}>{errMsg}</div>
-              )}
             </div>
 
+            {/* Password (hidden only in link mode) */}
+            {method === "password" && (
+              <div style={{marginBottom:"12px"}}>
+                <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>Password</div>
+                <input
+                  type="password"
+                  autoComplete={mode==="signup" ? "new-password" : "current-password"}
+                  placeholder={mode==="signup" ? "At least 6 characters" : "Your password"}
+                  value={password}
+                  onChange={e => { setPassword(e.target.value); if (status === "error") setStatus("idle"); }}
+                  onKeyDown={e => { if (e.key === "Enter") handlePassword(); }}
+                  disabled={status === "sending"}
+                  style={inputStyle(false)}
+                />
+              </div>
+            )}
+
+            {status === "error" && <div style={{fontSize:"11px",color:"var(--red)",marginBottom:"10px",fontFamily:"'Inter',sans-serif"}}>{errMsg}</div>}
+            {notice && <div style={{fontSize:"11px",color:"var(--pos)",marginBottom:"10px",fontFamily:"'Inter',sans-serif"}}>{notice}</div>}
+
+            {/* Primary action */}
             <button
-              onClick={handleSend}
+              onClick={method === "link" ? handleSendLink : handlePassword}
               disabled={status === "sending"}
               style={{
                 width:"100%",padding:"14px",
-                background: status==="sending" ? "var(--muted2)" : "var(--green)",
+                background: status==="sending" ? "var(--muted2)" : "var(--coral)",
                 color:"var(--on-coral)",border:"none",borderRadius:"12px",
                 cursor: status==="sending" ? "default" : "pointer",
                 fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
               }}
-            >{status === "sending" ? "Sending…" : "Send magic link →"}</button>
+            >
+              {status === "sending"
+                ? "Please wait…"
+                : method === "link"
+                  ? "Send magic link →"
+                  : mode === "signup" ? "Create account" : "Sign in"}
+            </button>
 
-            <button
-              onClick={onClose}
-              style={{
-                width:"100%",marginTop:"10px",padding:"13px",
-                background:"transparent",border:"none",cursor:"pointer",
-                color:"var(--muted2)",fontFamily:"'Inter',sans-serif",
-                fontSize:"13px",fontWeight:"500",
-              }}
-            >Cancel</button>
+            {/* Secondary links (password mode) */}
+            {method === "password" && (
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"12px"}}>
+                <button onClick={() => { setMode(mode==="signup"?"signin":"signup"); setStatus("idle"); setErrMsg(""); }} style={{
+                  background:"transparent",border:"none",cursor:"pointer",padding:"4px 0",
+                  color:"var(--coral)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",
+                }}>{mode==="signup" ? "Have an account? Sign in" : "New here? Create account"}</button>
+                {mode === "signin" && (
+                  <button onClick={handleReset} style={{
+                    background:"transparent",border:"none",cursor:"pointer",padding:"4px 0",
+                    color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"500",
+                  }}>Forgot password?</button>
+                )}
+              </div>
+            )}
+
+            {/* Switch between password and magic-link */}
+            <div style={{borderTop:"0.5px solid var(--border)",marginTop:"16px",paddingTop:"14px",textAlign:"center"}}>
+              <button onClick={() => { setMethod(method==="link"?"password":"link"); setStatus("idle"); setErrMsg(""); setNotice(""); }} style={{
+                background:"transparent",border:"none",cursor:"pointer",padding:"4px 0",
+                color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",
+              }}>
+                {method === "link" ? "← Use email & password instead" : "Email me a magic link instead"}
+              </button>
+            </div>
+
+            <button onClick={onClose} style={{
+              width:"100%",marginTop:"8px",padding:"13px",
+              background:"transparent",border:"none",cursor:"pointer",
+              color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
+            }}>Cancel</button>
           </>
         )}
       </div>
@@ -9626,6 +9700,9 @@ export default function GigTrack() {
         open={signInOpen}
         onClose={() => setSignInOpen(false)}
         onSendLink={async (email) => await sendMagicLink(email)}
+        onPasswordSignIn={async (email, pw) => await signInWithPassword(email, pw)}
+        onPasswordSignUp={async (email, pw) => await signUpWithPassword(email, pw)}
+        onPasswordReset={async (email) => await sendPasswordReset(email)}
       />
       {showNav && (
         <BottomNav
