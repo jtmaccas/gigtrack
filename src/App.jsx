@@ -663,10 +663,20 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "BETA 0.03";
+const CURRENT_VERSION = "ALPHA 0.04";
 const CHANGELOG = [
   {
-    version: "BETA 0.03",
+    version: "ALPHA 0.04",
+    date: "26/7/26",
+    items: [
+      { tag: "NEW FEATURE", text: "The home-screen app now checks for updates in the background — you'll see the 'Refresh' prompt without having to reload the page yourself." },
+      { tag: "IMPROVED", text: "Local benchmarks now group nearby suburbs into wider areas (e.g. 'Brisbane South'), so comparisons are more useful while we gather data." },
+      { tag: "IMPROVED", text: "You can now set or change your password anytime from Settings." },
+      { tag: "FIXED", text: "The 'Compare a region' toggle now highlights correctly while you're choosing a region." },
+    ],
+  },
+  {
+    version: "ALPHA 0.03",
     date: "26/7/26",
     items: [
       { tag: "NEW FEATURE", text: "Sign in with an email and password — stays inside the app, so no more bouncing out to your browser (great for the home-screen app)." },
@@ -675,7 +685,7 @@ const CHANGELOG = [
     ],
   },
   {
-    version: "BETA 0.02",
+    version: "ALPHA 0.02",
     date: "26/7/26",
     items: [
       { tag: "NEW FEATURE", text: "Compare a Region — scout any zone from the Benchmarks page to see its best times to drive, $/hr and peak days before you move or travel there." },
@@ -685,7 +695,7 @@ const CHANGELOG = [
     ],
   },
   {
-    version: "BETA 0.01",
+    version: "ALPHA 0.01",
     date: "26/7/26",
     items: [
       { tag: "NEW", text: "Fresh coral 'Daylight' look across Home, Insights and the new Benchmarks screen." },
@@ -2843,6 +2853,7 @@ function WhatsNewModal({ open, onClose }) {
   const tagColor = (tag) =>
     tag === "NEW FEATURE" ? "var(--coral)" :
     tag === "NEW" ? "var(--indigo)" :
+    tag === "FIXED" ? "var(--muted2)" :
     "var(--pos)";
   return (
     <div onClick={onClose} style={{
