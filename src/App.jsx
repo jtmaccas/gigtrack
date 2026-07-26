@@ -371,7 +371,43 @@ const REGIONS = [
   { id: "nt-alice-springs",          label: "Alice Springs",                   state: "NT" },
 ];
 
-// ─── Benchmark base data — seeded realistic values per zone ───────────────
+// Beta bucket helpers (depend on REGIONS, so defined after it).
+// During beta the benchmark Local view + Compare picker operate at bucket level
+// (e.g. "Greater Brisbane South") instead of granular suburb, so real data
+// accumulates faster. Reverts automatically when BETA_ZONE_BUCKETS is off.
+//
+// A bucket's display label = the `group` (verbatim) of any region in it.
+const bucketLabelFor = (zoneId) => {
+  if (!zoneId) return null;
+  const bucketId = presenceBucket(zoneId);
+  // Find a region whose own bucket matches this one, and use its group name.
+  const member = REGIONS.find(r => presenceBucket(r.id) === bucketId);
+  return member?.group || REGIONS.find(r => r.id === zoneId)?.label || zoneId;
+};
+// The state a bucket belongs to (from any member region).
+const bucketState = (zoneId) => {
+  const bucketId = presenceBucket(zoneId);
+  const member = REGIONS.find(r => presenceBucket(r.id) === bucketId);
+  return member?.state || REGIONS.find(r => r.id === zoneId)?.state || null;
+};
+// Distinct buckets grouped by state, for the Compare-a-region picker.
+// Each entry: { bucketId, label, state }. One row per bucket (deduped).
+const bucketOptionsByState = () => {
+  const seen = new Map(); // bucketId → {bucketId,label,state}
+  for (const r of REGIONS) {
+    const bucketId = presenceBucket(r.id);
+    if (!seen.has(bucketId)) {
+      seen.set(bucketId, { bucketId, label: r.group || r.label, state: r.state });
+    }
+  }
+  const byState = {};
+  for (const opt of seen.values()) {
+    (byState[opt.state] = byState[opt.state] || []).push(opt);
+  }
+  // Sort labels within each state for a tidy dropdown.
+  for (const st of Object.keys(byState)) byState[st].sort((a, b) => a.label.localeCompare(b.label));
+  return byState;
+};
 // Hourly rates reflect typical Uber Eats / DoorDash earnings in each area.
 // Scores reflect zone density, order frequency, and typical driver efficiency.
 // When Firebase connects, replace getRegionBenchmark() with live Firestore aggregates.
@@ -3552,25 +3588,36 @@ function regionBenchData(regionId, label) {
 function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialScout = false }) {
   const [level, setLevel] = useState("local");
   const regionInfo = REGIONS.find(r => r.id === region);
-  const zoneLabel = regionInfo?.label || "your zone";
-  const stateLabel = regionInfo?.state || "your state";
+  // During beta the Local view operates at bucket level (e.g. "Greater Brisbane
+  // South") so data accrues faster; post-beta (BETA_ZONE_BUCKETS off) it's the
+  // exact zone label. State is resolved the same way either mode.
+  const zoneLabel = BETA_ZONE_BUCKETS
+    ? (bucketLabelFor(region) || "your zone")
+    : (regionInfo?.label || "your zone");
+  const stateLabel = regionInfo?.state || bucketState(region) || "your state";
 
   // ── Compare a Region (scouting) ──
   // When a scout region is chosen, the Local tab shows that region's read-only
   // breakdown instead of the user's own zone — without changing their setting.
+  // During beta the scout target is a BUCKET id; post-beta it's a zone id.
   const [scoutId, setScoutId] = useState(initialScout && region ? "__pick__" : null);
   const scouting = scoutId != null && scoutId !== "__pick__";
-  const scoutInfo = scouting ? REGIONS.find(r => r.id === scoutId) : null;
-  // The region whose data the Local tab renders (own zone, or the scouted one).
-  const activeId = scouting ? scoutId : region;
-  const activeLabel = scouting ? (scoutInfo?.label || "region") : zoneLabel;
+  // The region/bucket whose data the Local tab renders (own zone, or scouted).
+  const activeId = scouting ? scoutId : (BETA_ZONE_BUCKETS ? presenceBucket(region) : region);
+  const scoutLabel = scouting
+    ? (BETA_ZONE_BUCKETS ? (bucketLabelFor(scoutId) || "region") : (REGIONS.find(r => r.id === scoutId)?.label || "region"))
+    : null;
+  const activeLabel = scouting ? scoutLabel : zoneLabel;
+  // Seed benchmark data off the active bucket/zone id so all suburbs in a bucket
+  // share one figure that matches the label shown.
   const bd = regionBenchData(activeId, activeLabel);
 
-  // Region options grouped by state for the scout picker.
-  const regionsByStateGrouped = REGIONS.reduce((acc, r) => {
-    (acc[r.state] = acc[r.state] || []).push(r);
-    return acc;
-  }, {});
+  // Scout picker options: buckets (beta) or granular zones (post-beta),
+  // grouped by state. Excludes the user's own bucket/zone.
+  const ownActive = BETA_ZONE_BUCKETS ? presenceBucket(region) : region;
+  const scoutOptionsByState = BETA_ZONE_BUCKETS
+    ? bucketOptionsByState()
+    : REGIONS.reduce((acc, r) => { (acc[r.state] = acc[r.state] || []).push({ bucketId: r.id, label: r.label, state: r.state }); return acc; }, {});
 
   // Shifts captured in the last 7 days (real data from the local shift log).
   // Used in place of concurrent-driver counts while presence tracking is off.
@@ -3714,10 +3761,10 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                       style={{ width: "100%", fontSize: "14px", fontFamily: "'Inter',sans-serif", fontWeight: "600" }}
                     >
                       <option value="">— Choose a region to compare —</option>
-                      {Object.entries(regionsByStateGrouped).map(([st, regs]) => (
+                      {Object.entries(scoutOptionsByState).map(([st, opts]) => (
                         <optgroup key={st} label={st}>
-                          {regs.filter(r => r.id !== region).map(r => (
-                            <option key={r.id} value={r.id}>{r.label}</option>
+                          {opts.filter(o => o.bucketId !== ownActive).map(o => (
+                            <option key={o.bucketId} value={o.bucketId}>{o.label}</option>
                           ))}
                         </optgroup>
                       ))}
