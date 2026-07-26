@@ -627,8 +627,17 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "BETA 0.02";
+const CURRENT_VERSION = "BETA 0.03";
 const CHANGELOG = [
+  {
+    version: "BETA 0.03",
+    date: "26/7/26",
+    items: [
+      { tag: "NEW FEATURE", text: "Sign in with an email and password — stays inside the app, so no more bouncing out to your browser (great for the home-screen app)." },
+      { tag: "NEW", text: "Prefer passwordless? You can still get a magic link instead from the sign-in screen." },
+      { tag: "IMPROVED", text: "Fixed a display glitch where '&' sometimes showed as '&amp;'." },
+    ],
+  },
   {
     version: "BETA 0.02",
     date: "26/7/26",

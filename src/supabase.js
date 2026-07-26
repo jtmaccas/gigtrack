@@ -57,6 +57,50 @@ export const signOut = async () => {
   if (error) console.warn("[GigTrack] signOut error:", error);
 };
 
+// ── Email + password auth ──
+// Stays fully inside the app (incl. installed PWA) — no browser hand-off like
+// the magic-link flow, which is why it's the preferred path on iOS home-screen
+// installs. Whether signUp requires an email confirmation depends on the
+// "Confirm email" setting in Supabase → Authentication → Providers → Email.
+export const signInWithPassword = async (email, password) => {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: email.trim(),
+    password,
+  });
+  if (error) {
+    console.error("[GigTrack] signInWithPassword failed:", error);
+    return { ok: false, error };
+  }
+  return { ok: true, data };
+};
+
+export const signUpWithPassword = async (email, password) => {
+  const { data, error } = await supabase.auth.signUp({
+    email: email.trim(),
+    password,
+    options: { emailRedirectTo: window.location.origin },
+  });
+  if (error) {
+    console.error("[GigTrack] signUpWithPassword failed:", error);
+    return { ok: false, error };
+  }
+  // If "Confirm email" is ON, data.session is null until the user confirms.
+  // If OFF, a session is returned immediately and the user is signed in.
+  return { ok: true, data, needsConfirmation: !data.session };
+};
+
+// Send a password-reset email (used from a "forgot password" link).
+export const sendPasswordReset = async (email) => {
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo: window.location.origin,
+  });
+  if (error) {
+    console.error("[GigTrack] sendPasswordReset failed:", error);
+    return { ok: false, error };
+  }
+  return { ok: true };
+};
+
 // Save the user's profile to Supabase (upsert by user id).
 // `profile` shape: { name, region, weeklyGoal, kmPref, startOdo, isPro, isGuest, showScoring }
 // NOTE: fuel_eff / fuel_price columns still exist in the DB but are unused —
