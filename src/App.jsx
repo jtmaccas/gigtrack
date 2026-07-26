@@ -1703,9 +1703,9 @@ function RatioBar({ ratio, label }) {
 // ─── PREMIUM FEATURES DEFINITION ─────────────────
 const PREMIUM_FEATURES = [
   { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. Free users get 10 imports — Pro unlocks 100 per month." },
-  { icon:"📍", title:"Local Benchmarks &amp; Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
+  { icon:"📍", title:"Local Benchmarks & Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
   { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
-  { icon:"📊", title:"PDF &amp; CSV Export",     desc:"Export an ATO-ready PDF report of your shifts, or raw CSV data perfect for sending to your accountant. Both are Pro." },
+  { icon:"📊", title:"PDF & CSV Export",     desc:"Export an ATO-ready PDF report of your shifts, or raw CSV data perfect for sending to your accountant. Both are Pro." },
   { icon:"⚡", title:"Custom Scoring Targets",          desc:"Dial in your own hourly rate, $/delivery, and active time targets so your shift score reflects your personal benchmarks." },
 ];
 
@@ -1849,7 +1849,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
         {/* Fine print */}
         <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",lineHeight:"1.7",textAlign:"center"}}>
           Subscription auto-renews. Cancel anytime in settings before trial ends.<br/>
-          By subscribing you agree to our Terms &amp; Privacy Policy.
+          By subscribing you agree to our Terms & Privacy Policy.
         </div>
       </div>
 
@@ -1922,7 +1922,7 @@ function WelcomeScreen({ onSignIn }) {
         fontSize:"11px",color:"var(--muted2)",
         textAlign:"center",maxWidth:"300px",lineHeight:"1.5",
       }}>
-        Designed for Australian Uber Eats &amp; DoorDash drivers.
+        Designed for Australian Uber Eats & DoorDash drivers.
       </div>
     </div>
   );
@@ -3679,7 +3679,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               </HeroBubble>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
-                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>States &amp; territories · $/hr</div>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>States & territories · $/hr</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                   {states.map((s, i) => (
                     <BenchRankRow key={s.name} rank={i + 1} name={STATE_NAMES[s.name] || s.name} value={s.value} pct={s.pct} highlight={s.name === stateLabel} />
@@ -4075,7 +4075,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
                     {benchmarkDaysRemaining === 1 ? "Last day" : `${benchmarkDaysRemaining} days left`} of free benchmarks
                   </div>
                   <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"1px"}}>
-                    Tap to keep live drivers &amp; benchmarks after the trial ends.
+                    Tap to keep live drivers & benchmarks after the trial ends.
                   </div>
                 </div>
                 <span style={{fontSize:"12px",color:"var(--muted2)"}}>›</span>
@@ -4114,7 +4114,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
             >
               <div style={{fontSize:"28px",marginBottom:"8px"}}>🔒</div>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>
-                Local benchmarks &amp; live drivers
+                Local benchmarks & live drivers
               </div>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11.5px",color:"var(--muted)",lineHeight:"1.5",marginBottom:"12px",maxWidth:"260px",margin:"0 auto 12px"}}>
                 See how you stack up against drivers in your region — hourly rate, $ per delivery, plus live driver count.
@@ -4376,7 +4376,7 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAd
     <div className="view active">
       <div className="topbar">
         <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Review &amp; save</div>
+        <div className="topbar-title">Review & save</div>
       </div>
       <div className="scroll-area" style={{padding:"14px 14px 100px"}}>
 
@@ -4645,7 +4645,7 @@ function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, on
           <div>
             <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)",marginBottom:"2px"}}>Two apps combined into one shift</div>
             <div style={{fontSize:"11px",color:"var(--muted)"}}>
-              Earnings, deliveries, active time &amp; distance added. Online time = the longer of the two.
+              Earnings, deliveries, active time & distance added. Online time = the longer of the two.
             </div>
           </div>
         </div>
@@ -4769,7 +4769,7 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
     const steps = [
       { at: 10,  text: "Uploading screenshot…" },
       { at: 30,  text: "Asking AI to read it…" },
-      { at: 60,  text: "Extracting earnings &amp; time…" },
+      { at: 60,  text: "Extracting earnings & time…" },
       { at: 85,  text: "Almost done…" },
     ];
     const animator = setInterval(() => {
@@ -6110,7 +6110,7 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
           </div>
 
           {/* ── TIME & DISTANCE (pre-filled, editable) ── */}
-          <ManualGroupHeader>Time &amp; distance</ManualGroupHeader>
+          <ManualGroupHeader>Time & distance</ManualGroupHeader>
           <div style={{display:"flex",alignItems:"center",gap:"10px",padding:"10px 14px",borderRadius:"10px",border:"0.5px solid var(--border)",background:"var(--surface)"}}>
             <div style={{minWidth:"95px"}}>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Online time</div>
@@ -8113,7 +8113,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Tools & Export ── */}
           <div>
-            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools &amp; Export</div>
+            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools & Export</div>
             <SettingsSectionCard>
               {/* Compare a Region — scout another zone's benchmarks */}
               <div
@@ -8211,7 +8211,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Data & Security ── */}
           <div>
-            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data &amp; Security</div>
+            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data & Security</div>
             <SettingsSectionCard>
               {/* Account — always signed in, just shows email + sign-out */}
               {authUser && (
@@ -8292,7 +8292,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 onClick={() => setShowAdvanced(v => !v)}
               >
                 <div className="settings-item-left">
-                  <div className="settings-item-label">ATO rate, goals &amp; scoring</div>
+                  <div className="settings-item-label">ATO rate, goals & scoring</div>
                   <div className="settings-item-sub">Tap to {showAdvanced ? "collapse" : "expand"}</div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)",transform: showAdvanced ? "rotate(90deg)" : "none",transition:"transform .2s ease",display:"inline-block"}}>›</span>
