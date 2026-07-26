@@ -663,8 +663,15 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.04";
+const CURRENT_VERSION = "ALPHA 0.05";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.05",
+    date: "26/7/26",
+    items: [
+      { tag: "IMPROVED", text: "Benchmarks now look at the last 10 days (up from 7) for a steadier read on your area." },
+    ],
+  },
   {
     version: "ALPHA 0.04",
     date: "26/7/26",
@@ -3348,7 +3355,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
           <div>
             <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>🇦🇺 Australia-wide</div>
             <div className="benchmark-region">All GigTrack drivers</div>
-            <div className="benchmark-week">Last 7 days</div>
+            <div className="benchmark-week">Last 10 days</div>
           </div>
           <div className="benchmark-live-dot" />
         </div>
@@ -3378,7 +3385,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
         <div>
           <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
           <div className="benchmark-region">{regionInfo?.label || region}</div>
-          <div className="benchmark-week">Last 7 days · GigTrack drivers</div>
+          <div className="benchmark-week">Last 10 days · GigTrack drivers</div>
         </div>
         <div className="benchmark-live-dot" />
       </div>
@@ -3415,7 +3422,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
 
       <div className="benchmark-footer">
         Anonymised averages · your zone from {benchmark.shifts} shift{benchmark.shifts === 1 ? "" : "s"}
-        {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 7 days
+        {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 10 days
       </div>
     </div>
   );
@@ -3634,11 +3641,11 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     ? bucketOptionsByState()
     : REGIONS.reduce((acc, r) => { (acc[r.state] = acc[r.state] || []).push({ bucketId: r.id, label: r.label, state: r.state }); return acc; }, {});
 
-  // Shifts captured in the last 7 days (real data from the local shift log).
+  // Shifts captured in the last 10 days (real data from the local shift log).
   // Used in place of concurrent-driver counts while presence tracking is off.
-  const shifts7d = trips.filter(t => {
+  const shifts10d = trips.filter(t => {
     const d = new Date(t.ts).getTime();
-    return d >= Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return d >= Date.now() - 10 * 24 * 60 * 60 * 1000;
   }).length;
 
   // Per-state mock leaderboards so the comparison matches the user's actual
@@ -3718,7 +3725,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
         }}>‹</div>
         <div>
           <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--text)", letterSpacing: "-.02em" }}>Benchmarks</div>
-          <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--muted)" }}>Anonymised · last 7 days</div>
+          <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--muted)" }}>Anonymised · last 10 days</div>
         </div>
       </div>
 
@@ -3851,7 +3858,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "16px 18px", marginTop: "10px", boxShadow: "var(--shadow-card)", display: "flex", alignItems: "center" }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{scouting ? bd.sample : (live?.total != null ? live.total : 46)}</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>{scouting ? "shifts logged · 7d" : "online now"}</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>{scouting ? "shifts logged · 10d" : "online now"}</div>
                 </div>
                 <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
                 <div style={{ flex: 2 }}>
@@ -3900,10 +3907,10 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
                 <BenchStat label="Busiest platform" value="Uber Eats" sub={`58% of ${stateLabel} trips`} tone="coral" />
-                <BenchStat label="Shifts logged" value={shifts7d > 0 ? String(shifts7d) : "—"} sub="last 7 days" tone="green" />
+                <BenchStat label="Shifts logged" value={shifts10d > 0 ? String(shifts10d) : "—"} sub="last 10 days" tone="green" />
               </div>
 
-              <Footer>Based on GigTrack shifts logged in {stateLabel} · last 7 days</Footer>
+              <Footer>Based on GigTrack shifts logged in {stateLabel} · last 10 days</Footer>
             </>
           )}
 
@@ -3930,11 +3937,11 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="Shifts logged" value={shifts7d > 0 ? String(shifts7d) : "—"} sub="last 7 days" tone="green" />
+                <BenchStat label="Shifts logged" value={shifts10d > 0 ? String(shifts10d) : "—"} sub="last 10 days" tone="green" />
                 <BenchStat label="Peak day (AU)" value="Saturday" sub="+31% vs avg" tone="coral" />
               </div>
 
-              <Footer>Based on GigTrack shifts logged nationwide · last 7 days</Footer>
+              <Footer>Based on GigTrack shifts logged nationwide · last 10 days</Footer>
             </>
           )}
 
