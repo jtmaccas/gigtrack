@@ -7963,10 +7963,22 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
         return { label: `${fmtDay(ws)}–${fmtDay(lastDay)}`, val };
       });
     }
-    // FY / Year — last 12 months
+    if (period === "fy") {
+      // Financial year: 12 months from 1 July (fyStart) → June.
+      const { fyStart } = getFYBounds();
+      return Array.from({length: 12}, (_, i) => {
+        const ms = new Date(fyStart.getFullYear(), fyStart.getMonth() + i, 1);
+        const me = new Date(fyStart.getFullYear(), fyStart.getMonth() + i + 1, 1);
+        const val = trips.filter(t => { const d = new Date(t.ts); return d >= ms && d < me; }).reduce((s,t)=>s+t.totalEarned,0);
+        const label = ms.toLocaleDateString("en-AU",{month:"short"}).slice(0,1);
+        return { label, val };
+      });
+    }
+    // "year" — calendar year: Jan → Dec.
+    const yearStart = new Date(now.getFullYear(), 0, 1);
     return Array.from({length: 12}, (_, i) => {
-      const ms = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
-      const me = new Date(now.getFullYear(), now.getMonth() - 10 + i, 1);
+      const ms = new Date(yearStart.getFullYear(), i, 1);
+      const me = new Date(yearStart.getFullYear(), i + 1, 1);
       const val = trips.filter(t => { const d = new Date(t.ts); return d >= ms && d < me; }).reduce((s,t)=>s+t.totalEarned,0);
       const label = ms.toLocaleDateString("en-AU",{month:"short"}).slice(0,1);
       return { label, val };
