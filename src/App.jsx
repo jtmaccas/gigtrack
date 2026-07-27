@@ -1835,7 +1835,7 @@ function RatioBar({ ratio, label }) {
 // ─── SETUP FLOW ───
 // ─── PREMIUM FEATURES DEFINITION ─────────────────
 const PREMIUM_FEATURES = [
-  { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. Free users get 10 imports — Pro unlocks 100 per month." },
+  { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. You get 10 free imports, then top up any time with one-time credit packs — no subscription." },
   { icon:"📍", title:"Local Benchmarks & Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
   { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
   { icon:"📊", title:"PDF & CSV Export",     desc:"Export an ATO-ready PDF report of your shifts, or raw CSV data perfect for sending to your accountant. Both are Pro." },
@@ -4976,21 +4976,6 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAd
   const [activeKm, setActiveKm]           = useState(parsed.active_km   != null ? String(parsed.active_km)   : "");
   const [platform, setPlatform]           = useState(parsed.platform || "");
   const [shiftDate, setShiftDate]         = useState(initialDate);
-  // Normalise a parsed start time to strict "HH:MM" (24h) for the <input type=time>.
-  // Accepts "5:30", "05:30", "5:30 PM", "17:05" etc. Falls back to midnight.
-  const normTime = (raw) => {
-    if (!raw || typeof raw !== "string") return "00:00";
-    const m = raw.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
-    if (!m) return "00:00";
-    let h = parseInt(m[1], 10);
-    const min = m[2];
-    const ap = m[3]?.toUpperCase();
-    if (ap === "PM" && h < 12) h += 12;
-    if (ap === "AM" && h === 12) h = 0;
-    if (h < 0 || h > 23) return "00:00";
-    return `${String(h).padStart(2,"0")}:${min}`;
-  };
-  const [shiftTime, setShiftTime]         = useState(normTime(parsed.start_time)); // local start time; parsed or midnight
   const [notes, setNotes]                 = useState("");
 
   const [zoomed, setZoomed]               = useState(false);
@@ -5007,7 +4992,6 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAd
     active_km:      parsed.active_km      != null,
     platform:       parsed.platform       != null,
     shift_date:     parsed.shift_date     != null,
-    start_time:     parsed.start_time != null && normTime(parsed.start_time) !== "00:00",
   };
 
   const parsedCount = Object.values(wasParsed).filter(Boolean).length;
@@ -5028,7 +5012,6 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAd
     active_km:      num(activeKm),
     platform:       platform || null,
     shift_date:     shiftDate || null,
-    start_time:     shiftTime || null,
   });
 
   // Build the finalValues shape consumed by onParsed/onSaveDirect.
@@ -5044,7 +5027,6 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAd
     if (num(activeKm) != null)    fv.activeKm = num(activeKm);
     if (platform)                 fv.platform = platform;
     if (shiftDate)                fv.shiftDate = shiftDate;
-    if (shiftTime)                fv.shiftTime = shiftTime;
     if (notes.trim())             fv.notes    = notes.trim();
     return fv;
   };
@@ -5192,19 +5174,6 @@ function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAd
         <ScreenshotFieldRow icon={wasParsed.shift_date ? "✓" : "✕"} parsedOk={wasParsed.shift_date}
           label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
 
-        {/* Shift start time — DoorDash often shows it; UE date-only summaries don't. */}
-        <div style={{marginTop:"6px"}}>
-          <ScreenshotFieldRow
-            icon={wasParsed.start_time ? "✓" : (shiftTime && shiftTime !== "00:00" ? "✓" : "○")}
-            parsedOk={wasParsed.start_time || (!!shiftTime && shiftTime !== "00:00")}
-            label="Start time" value={shiftTime} onChange={setShiftTime} type="time" />
-        </div>
-        <div style={{fontSize:"10px",color:"var(--muted2)",margin:"5px 0 0 13px"}}>
-          {wasParsed.start_time
-            ? "Read from your screenshot — adjust if it looks off."
-            : "Not shown on this screenshot — defaults to 12:00 AM. Set it to include this shift in your \"Best Times\"."}
-        </div>
-
         {/* Notes (optional) */}
         <div style={{
           marginTop:"6px",padding:"10px 13px",
@@ -5285,7 +5254,6 @@ function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, on
   const [distanceKm, setDistanceKm]   = useState(str(m.distance_km));
   const [activeKm, setActiveKm]       = useState(str(m.active_km));
   const [shiftDate, setShiftDate]     = useState(m.shift_date || "");
-  const [shiftTime, setShiftTime]     = useState(m.start_time || "00:00");
   const [notes, setNotes]             = useState("");
   const [proceedDespiteDates, setProceedDespiteDates] = useState(false);
 
@@ -5301,7 +5269,6 @@ function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, on
     if (num(activeKm) != null)    fv.activeKm = num(activeKm);
     fv.platform = "both";
     if (shiftDate)                fv.shiftDate = shiftDate;
-    if (shiftTime)                fv.shiftTime = shiftTime;
     if (notes.trim())             fv.notes    = notes.trim();
     onSave(fv);
   };
@@ -5363,10 +5330,9 @@ function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, on
 
         <div style={{marginTop:"6px",display:"flex",flexDirection:"column",gap:"6px"}}>
           <ScreenshotFieldRow icon="🔗" parsedOk label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
-          <ScreenshotFieldRow icon="🔗" parsedOk label="Start time" value={shiftTime} onChange={setShiftTime} type="time" />
         </div>
         <div style={{fontSize:"10px",color:"var(--muted2)",margin:"5px 0 0 13px"}}>
-          Platform set to “Both”. Start = the earlier of the two screenshots.
+          Platform set to “Both”. Date = the earlier of the two screenshots.
         </div>
 
         {/* Source thumbnails */}
@@ -10199,8 +10165,7 @@ export default function GigTrack() {
             let ts;
             if (finalValues.shiftDate) {
               const [y, mo, d] = finalValues.shiftDate.split("-").map(Number);
-              const [hh, mm] = (finalValues.shiftTime || "00:00").split(":").map(Number);
-              ts = new Date(y, (mo || 1) - 1, d || 1, hh || 0, mm || 0, 0).toISOString();
+              ts = new Date(y, (mo || 1) - 1, d || 1, 0, 0, 0).toISOString();
             } else {
               ts = new Date().toISOString();
             }
