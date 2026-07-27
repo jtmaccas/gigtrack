@@ -4099,10 +4099,23 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     return { label, pct };
   })();
 
-  // Merged view model for the Local tab: prefer real aggregates; fall back to
-  // the seeded mock for fields the RPC doesn't provide yet (histogram shape,
-  // heatmap grid, peak day — those are Tier 2/3). Numbers shown to the user are
-  // real whenever hasReal is true.
+  // The user's own real median $/hr in this bucket, and their real position on
+  // the distribution (from the Tier-2 percentile RPC). Both null when we don't
+  // have enough of the user's own data or the zone gate isn't met — in that case
+  // the UI shows honest placeholders rather than invented numbers.
+  const youReal = myBucketHourly;
+  // Map percentile (0–100) to a histogram bar index (0–9). null when no real
+  // percentile → no "YOU" marker is drawn.
+  const youIdxReal = (!scouting && pct && pct.percentile != null)
+    ? Math.max(0, Math.min(9, Math.round((pct.percentile / 100) * 9)))
+    : null;
+
+  // Merged view model for the Local tab: prefer real aggregates. Zone-level
+  // numbers (median, per-del, top-10%) fall back to the seeded sample ONLY in
+  // the honest "SAMPLE DATA" state (badge + footer make this explicit). The
+  // user's own "You" value and histogram position are real-or-absent — never
+  // faked — since a fabricated number about the user themselves is the worst
+  // kind of mock-as-real.
   const view = {
     median: hasReal && real.medianHourly != null ? real.medianHourly.toFixed(2)
           : hasReal && real.avgHourly != null ? real.avgHourly.toFixed(2)
@@ -4110,8 +4123,8 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     perDel: hasReal && real.perDel != null ? real.perDel.toFixed(2) : bd.perDel,
     top10:  hasReal && real.topHourly != null ? real.topHourly.toFixed(2) : bd.top10,
     shifts: hasReal ? real.shifts : null,
-    // Still mock (Tier 2/3):
-    youIdx: bd.youIdx, grid: bd.grid, peakDay: bd.peakDay,
+    youReal:    youReal != null ? youReal.toFixed(2) : null,
+    youIdx:     youIdxReal,   // real percentile position, or null (no marker)
     axisLo: bd.axisLo, axisHi: bd.axisHi,
     isReal: hasReal,
   };
@@ -4275,10 +4288,10 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                       ? <>You earn more than <span style={{ color: "var(--coral-hi)" }}>{pct.percentile}% of drivers</span> here</>
                       : view.isReal
                         ? <>Your area's median is <span style={{ color: "var(--coral-hi)" }}>${view.median}/hr</span></>
-                        : <>You earn more than <span style={{ color: "var(--coral-hi)" }}>82% of drivers</span> here</>}
+                        : <>See how you stack up <span style={{ color: "var(--coral-hi)" }}>once there's data</span> here</>}
                   </div>
                 )}
-                <BenchHistogram youIndex={view.youIdx} axisLo={view.axisLo} axisHi={view.axisHi} highlightLabel={scouting ? "" : "YOU"} />
+                <BenchHistogram youIndex={view.youIdx} axisLo={view.axisLo} axisHi={view.axisHi} highlightLabel={(!scouting && view.youIdx != null) ? "YOU" : ""} />
               </HeroBubble>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
@@ -4290,8 +4303,8 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                   </>
                 ) : (
                   <>
-                    <BenchStat label="You" value="$27.40" sub="per hour" tone="coral" />
-                    <BenchStat label="Zone median" value={`$${view.median}`} sub={view.isReal ? "your area" : "+$2.10 you"} tone="green" />
+                    <BenchStat label="You" value={view.youReal != null ? `$${view.youReal}` : "—"} sub={view.youReal != null ? "your median" : "log shifts here"} tone="coral" />
+                    <BenchStat label="Zone median" value={`$${view.median}`} sub={view.isReal ? "your area" : "sample"} tone="green" />
                     <BenchStat label="Top 10%" value={`$${view.top10}`} sub="reach goal" tone="indigo" />
                   </>
                 )}
