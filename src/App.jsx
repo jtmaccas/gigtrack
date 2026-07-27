@@ -2021,10 +2021,55 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
 
 // ─── WELCOME SCREEN ─── Forced sign-in gateway. Both new and returning users come through here.
 function WelcomeScreen({ onSignIn }) {
+  // Value proof points shown above the sign-in CTA. Icon tiles all use
+  // --coral-dim so they read as one family (not a rainbow). Copy stays short.
+  const proofPoints = [
+    {
+      title: "Track every shift",
+      sub: "Timer or manual — earnings, km, scoring",
+      // rising earnings line + arrow (echoes the brand mark)
+      path: <><path d="M3 17l6-6 4 4 8-8" /><path d="M17 7h4v4" /></>,
+    },
+    {
+      title: "Maximise your tax deductions",
+      sub: "Automatic ATO cents-per-km, every trip",
+      // check-in-circle
+      path: <><path d="M9 12l2 2 4-4" /><path d="M12 3a9 9 0 100 18 9 9 0 000-18z" /></>,
+    },
+    {
+      title: "See how your area compares",
+      sub: "Real benchmarks from drivers near you",
+      // bar chart
+      path: <path d="M3 20v-6M9 20V8M15 20v-9M21 20V4" />,
+    },
+  ];
+
   return (
     <div className="setup-wrap">
       <GTBrand size={40} fontSize={24} />
-      <div className="setup-sub" style={{marginBottom:"32px"}}>Your gig earnings, your ATO deductions — all in one place.</div>
+      <div className="setup-sub" style={{marginBottom:"30px"}}>Your gig earnings, your ATO deductions — all in one place.</div>
+
+      {/* Value proof points */}
+      <div style={{width:"100%",maxWidth:"360px",display:"flex",flexDirection:"column",gap:"14px",marginBottom:"30px"}}>
+        {proofPoints.map(p => (
+          <div key={p.title} style={{display:"flex",alignItems:"center",gap:"14px"}}>
+            <div style={{
+              width:"38px",height:"38px",borderRadius:"11px",flexShrink:0,
+              background:"var(--coral-dim)",
+              display:"flex",alignItems:"center",justifyContent:"center",
+            }}>
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+                stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {p.path}
+              </svg>
+            </div>
+            <div>
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13.5px",fontWeight:"700",color:"var(--text)"}}>{p.title}</div>
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11.5px",color:"var(--muted)",lineHeight:"1.4"}}>{p.sub}</div>
+            </div>
+          </div>
+        ))}
+      </div>
 
       <div style={{width:"100%",maxWidth:"360px",display:"flex",flexDirection:"column",gap:"10px"}}>
 
