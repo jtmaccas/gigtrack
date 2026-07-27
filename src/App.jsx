@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchZoneDayOfWeek, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -3849,6 +3849,32 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     return () => { cancelled = true; };
   }, [activeId]);
 
+  // ── National: real overview + per-state leaderboard ──
+  const [natl, setNatl] = useState(undefined);
+  const [natlStates, setNatlStates] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setNatl(undefined); setNatlStates(undefined);
+    fetchNationalOverview(BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setNatl(r); });
+    fetchNationalStates(BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(rows => { if (!cancelled) setNatlStates(rows); });
+    return () => { cancelled = true; };
+  }, []);
+  // Real national state leaderboard (uppercased keys → labels) and the user's rank.
+  const STATE_KEY_NAMES = { nsw:"New South Wales", vic:"Victoria", qld:"Queensland", wa:"Western Australia", sa:"South Australia", act:"ACT", tas:"Tasmania", nt:"Northern Territory" };
+  const hasNatlStates = Array.isArray(natlStates) && natlStates.length > 0;
+  const natlBoard = hasNatlStates
+    ? natlStates.map((s, i) => ({
+        rank: i + 1,
+        key: s.stateKey,
+        name: STATE_KEY_NAMES[s.stateKey] || s.stateKey.toUpperCase(),
+        value: `$${s.median != null ? s.median.toFixed(1) : "—"}`,
+        pct: natlStates[0].median ? Math.round((s.median / natlStates[0].median) * 100) : 100,
+      }))
+    : [];
+  const ownStateKey = (stateLabel || "").toLowerCase();
+  const natlUserRank = hasNatlStates ? (natlBoard.findIndex(s => s.key === ownStateKey) + 1 || null) : null;
+  const DOW_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
   // Real leaderboard rows (from stateBoard) when we have them; else the mock.
   const ownBucketKey = BETA_ZONE_BUCKETS ? presenceBucket(region) : region;
   const hasRealBoard = Array.isArray(stateBoard) && stateBoard.length > 0;
@@ -4145,29 +4171,44 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
             <>
               <HeroBubble>
                 <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "8px" }}>National median · $/hr</div>
-                <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginBottom: "14px" }}>
-                  <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>$22.90</div>
-                  {stateLabel && userStateRank && <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>{stateLabel} ranks #{userStateRank}</div>}
-                </div>
-                <BenchTrendLine />
-                <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "6px" }}>12-week national trend · <span style={{ color: "var(--coral-hi)", fontWeight: "700" }}>+6%</span></div>
+                {natl && natl.median != null ? (
+                  <>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginBottom: "6px" }}>
+                      <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>${natl.median.toFixed(2)}</div>
+                      {natlUserRank && <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>{stateLabel} ranks #{natlUserRank}</div>}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "6px" }}>Based on {natl.shifts} shift{natl.shifts === 1 ? "" : "s"} logged nationwide · last {BENCHMARK_WINDOW_DAYS} days</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-muted)", letterSpacing: "-.03em", lineHeight: "1" }}>—</div>
+                    <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "10px", lineHeight: "1.5" }}>Not enough shifts logged nationwide yet. Real figures appear as drivers log shifts.</div>
+                  </>
+                )}
               </HeroBubble>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
-                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>States & territories · $/hr</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  {states.map((s, i) => (
-                    <BenchRankRow key={s.name} rank={i + 1} name={STATE_NAMES[s.name] || s.name} value={s.value} pct={s.pct} highlight={s.name === stateLabel} />
-                  ))}
-                </div>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>States &amp; territories · $/hr</div>
+                {hasNatlStates ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {natlBoard.map(s => (
+                      <BenchRankRow key={s.key} rank={s.rank} name={s.name} value={s.value} pct={s.pct} highlight={s.key === ownStateKey} />
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ padding: "20px 8px", textAlign: "center" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>No national data yet</div>
+                    <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>State rankings appear once shifts are logged around the country.</div>
+                  </div>
+                )}
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="Shifts logged" value={shiftsWindow > 0 ? String(shiftsWindow) : "—"} sub="last 30 days" tone="green" />
-                <BenchStat label="Peak day (AU)" value="Saturday" sub="+31% vs avg" tone="coral" />
+                <BenchStat label="Shifts logged" value={natl && natl.shifts > 0 ? String(natl.shifts) : "—"} sub={`nationwide · ${BENCHMARK_WINDOW_DAYS}d`} tone="green" />
+                <BenchStat label="Peak day (AU)" value={natl && natl.peakDow != null ? DOW_NAMES[natl.peakDow] : "—"} sub={natl && natl.peakDow != null ? "highest median $/hr" : "no data yet"} tone="coral" />
               </div>
 
-              <Footer>Based on GigTrack shifts logged nationwide · last 30 days</Footer>
+              <Footer>{natl && natl.median != null ? `Real GigTrack shifts logged nationwide · last ${BENCHMARK_WINDOW_DAYS} days` : `Nationwide figures appear as drivers log shifts`}</Footer>
             </>
           )}
 

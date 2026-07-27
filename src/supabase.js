@@ -372,6 +372,35 @@ export const fetchZoneDayOfWeek = async (regionIds, days = 30, minShifts = 2) =>
   }
 };
 
+// ── National: overall median, shift count, peak day ──
+export const fetchNationalOverview = async (days = 30, minShifts = 2) => {
+  try {
+    const { data, error } = await supabase.rpc("get_national_overview", { p_days: days, p_min_shifts: minShifts });
+    if (error) { console.warn("[GigTrack] fetchNationalOverview error:", error.message); return null; }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return null;
+    return {
+      median: row.median_hourly != null ? Number(row.median_hourly) : null,
+      shifts: row.shift_count ?? 0,
+      peakDow: row.peak_dow ?? null, // 0=Sun..6=Sat
+    };
+  } catch (e) { console.warn("[GigTrack] fetchNationalOverview threw:", e); return null; }
+};
+
+// ── National: per-state/territory leaderboard ──
+export const fetchNationalStates = async (days = 30, minShifts = 2) => {
+  try {
+    const { data, error } = await supabase.rpc("get_national_states", { p_days: days, p_min_shifts: minShifts });
+    if (error) { console.warn("[GigTrack] fetchNationalStates error:", error.message); return []; }
+    if (!Array.isArray(data)) return [];
+    return data.map(r => ({
+      stateKey: r.state_key,
+      median: r.median_hourly != null ? Number(r.median_hourly) : null,
+      shifts: r.shift_count ?? 0,
+    }));
+  } catch (e) { console.warn("[GigTrack] fetchNationalStates threw:", e); return []; }
+};
+
 export const fetchZoneBenchmark = async (region) => {
   if (!region) return null;
   try {
