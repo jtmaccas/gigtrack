@@ -6001,6 +6001,10 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     const record = {
       id: editTrip?.id || Date.now(),
       ts: shiftDate ? new Date(shiftDate).toISOString() : new Date().toISOString(),
+      // Preserve the shift's original region on edit (handleSaved keeps
+      // rawRecord.region for edits; without this it would blank to null and
+      // drop the shift out of zone benchmarks).
+      region: editTrip?.region ?? null,
       activeMins: derivedActiveMin || null,
       activeKm: activeKmInput !== "" ? n(activeKmInput) : null,
       platform: platform || null,
