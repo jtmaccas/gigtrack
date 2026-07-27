@@ -3866,6 +3866,21 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     ? (stateBoard.findIndex(r => r.bucketKey === ownBucketKey) + 1 || null)
     : null;
 
+  // Real busiest platform from the user's own shifts in the window. The RPC
+  // doesn't return a cross-user platform split yet, so this reflects the
+  // driver's own mix — honest, and "—" when there's nothing logged.
+  const platformSplit = (() => {
+    const cutoff = Date.now() - BENCHMARK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    const recent = trips.filter(t => new Date(t.ts).getTime() >= cutoff && t.platform);
+    if (!recent.length) return null;
+    const counts = { uber_eats: 0, doordash: 0, both: 0 };
+    for (const t of recent) counts[t.platform] = (counts[t.platform] || 0) + 1;
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    const label = top[0] === "uber_eats" ? "Uber Eats" : top[0] === "doordash" ? "DoorDash" : "Both";
+    const pct = Math.round((top[1] / recent.length) * 100);
+    return { label, pct };
+  })();
+
   // Merged view model for the Local tab: prefer real aggregates; fall back to
   // the seeded mock for fields the RPC doesn't provide yet (histogram shape,
   // heatmap grid, peak day — those are Tier 2/3). Numbers shown to the user are
@@ -4079,26 +4094,45 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
             <>
               <HeroBubble>
                 <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "10px" }}>Your zone rank · {stateLabel}</div>
-                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
-                  <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>#3 <span style={{ fontSize: "20px", fontWeight: "600", color: "var(--hero-muted)" }}>/ 24</span></div>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>↑ 2 this week</div>
-                </div>
-                <div style={{ fontSize: "12px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "12px", lineHeight: "1.5" }}>
-                  {zoneLabel} is a top-earning {stateLabel} zone. State median is <span style={{ color: "var(--hero-ink)", fontWeight: "700" }}>{stateData.median}</span>.
-                </div>
+                {hasRealBoard && realStateRank ? (
+                  <>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+                      <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>#{realStateRank} <span style={{ fontSize: "20px", fontWeight: "600", color: "var(--hero-muted)" }}>/ {stateBoard.length}</span></div>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "12px", lineHeight: "1.5" }}>
+                      {zoneLabel} ranks #{realStateRank} of {stateBoard.length} {stateLabel} {stateBoard.length === 1 ? "zone" : "zones"} with data. Zone median is <span style={{ color: "var(--hero-ink)", fontWeight: "700" }}>${stateBoard[realStateRank - 1].median != null ? stateBoard[realStateRank - 1].median.toFixed(2) : "—"}/hr</span>.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+                      <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-muted)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>—</div>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "12px", lineHeight: "1.5" }}>
+                      Not enough {stateLabel} data yet to rank zones. Rankings appear as drivers log shifts across the state.
+                    </div>
+                  </>
+                )}
               </HeroBubble>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
-                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Top {stateLabel} zones · $/hr {hasRealBoard ? "" : "· sample"}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  {displayBoard.map(r => (
-                    <BenchRankRow key={r.rank} rank={r.rank} name={r.name} value={r.value} pct={r.pct} highlight={r.highlight} />
-                  ))}
-                </div>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Top {stateLabel} zones · $/hr</div>
+                {hasRealBoard ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {displayBoard.map(r => (
+                      <BenchRankRow key={r.rank} rank={r.rank} name={r.name} value={r.value} pct={r.pct} highlight={r.highlight} />
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ padding: "20px 8px", textAlign: "center" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>No {stateLabel} rankings yet</div>
+                    <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>Zone rankings appear once enough shifts are logged across {stateLabel}.</div>
+                  </div>
+                )}
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="Busiest platform" value="Uber Eats" sub={`58% of ${stateLabel} trips`} tone="coral" />
+                <BenchStat label="Busiest platform" value={platformSplit ? platformSplit.label : "—"} sub={platformSplit ? `${platformSplit.pct}% of your trips` : "no shifts logged yet"} tone="coral" />
                 <BenchStat label="Shifts logged" value={shiftsWindow > 0 ? String(shiftsWindow) : "—"} sub="last 30 days" tone="green" />
               </div>
 
