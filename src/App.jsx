@@ -9425,6 +9425,8 @@ export default function GigTrack() {
                 startOdo: profile.start_odo,
                 isGuest: !!profile.is_guest,
                 isPro: !!profile.is_pro,
+                isBeta: !!profile.is_beta,
+                plan: profile.plan || (profile.is_pro ? "pro" : "free"),
               };
               DB.set("gt_user", u);
               setUser(u);
@@ -9506,6 +9508,20 @@ export default function GigTrack() {
         setScreenshotImportsUsed(p.screenshot_imports_used || 0);
         setScreenshotCredits(p.screenshot_credits || FREE_SCREENSHOT_CREDITS);
         setAccountCreatedAt(p.created_at || null);
+        // Reconcile plan/beta from the cloud source of truth — the cached
+        // gt_user (localStorage) may be stale (e.g. saved as free before beta),
+        // which was causing the plan to reset to Free on reload.
+        setUser(prev => {
+          if (!prev) return prev;
+          const refreshed = {
+            ...prev,
+            isPro: !!p.is_pro,
+            isBeta: !!p.is_beta,
+            plan: p.plan || (p.is_pro ? "pro" : "free"),
+          };
+          DB.set("gt_user", refreshed);
+          return refreshed;
+        });
       }
     })();
   }, [authUser]);
