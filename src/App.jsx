@@ -112,6 +112,10 @@ const BETA_ZONE_BUCKETS = true;
 // numbers replace the sample data. Lowered to 2 for alpha so data shows while
 // testing; raise to ~5 before real beta so early numbers aren't noise.
 const BENCHMARK_MIN_SHIFTS = 2;
+// Rolling window (days) for all benchmark aggregations. 30 gives a steadier read
+// with more shifts per zone; tighten later (e.g. 14) once data volume is high
+// and recency matters more.
+const BENCHMARK_WINDOW_DAYS = 30;
 
 // Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
 // Rules: default = first 3 id segments. Some cities over-split at 3 segments
@@ -3379,7 +3383,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
           <div>
             <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>🇦🇺 Australia-wide</div>
             <div className="benchmark-region">All GigTrack drivers</div>
-            <div className="benchmark-week">Last 10 days</div>
+            <div className="benchmark-week">Last 30 days</div>
           </div>
           <div className="benchmark-live-dot" />
         </div>
@@ -3409,7 +3413,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
         <div>
           <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
           <div className="benchmark-region">{regionInfo?.label || region}</div>
-          <div className="benchmark-week">Last 10 days · GigTrack drivers</div>
+          <div className="benchmark-week">Last 30 days · GigTrack drivers</div>
         </div>
         <div className="benchmark-live-dot" />
       </div>
@@ -3446,7 +3450,7 @@ function BenchmarkCard({ region, onGoToSettings }) {
 
       <div className="benchmark-footer">
         Anonymised averages · your zone from {benchmark.shifts} shift{benchmark.shifts === 1 ? "" : "s"}
-        {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 10 days
+        {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 30 days
       </div>
     </div>
   );
@@ -3714,11 +3718,11 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     ? bucketOptionsByState()
     : REGIONS.reduce((acc, r) => { (acc[r.state] = acc[r.state] || []).push({ bucketId: r.id, label: r.label, state: r.state }); return acc; }, {});
 
-  // Shifts captured in the last 10 days (real data from the local shift log).
+  // Shifts captured in the last 30 days (real data from the local shift log).
   // Used in place of concurrent-driver counts while presence tracking is off.
-  const shifts10d = trips.filter(t => {
+  const shiftsWindow = trips.filter(t => {
     const d = new Date(t.ts).getTime();
-    return d >= Date.now() - 10 * 24 * 60 * 60 * 1000;
+    return d >= Date.now() - BENCHMARK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
   }).length;
 
   // Per-state mock leaderboards so the comparison matches the user's actual
@@ -3779,7 +3783,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     setReal(undefined);
     const ids = regionsInBucket(activeId);
     if (ids.length) {
-      fetchBucketBenchmark(ids, 10, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setReal(r); });
+      fetchBucketBenchmark(ids, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setReal(r); });
     } else {
       setReal(null);
     }
@@ -3791,7 +3795,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
   // Feeds the real percentile call and the "You" stat.
   const bucketRegionIds = regionsInBucket(activeId);
   const myBucketHourly = (() => {
-    const cutoff = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - BENCHMARK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
     const rates = trips
       .filter(t => bucketRegionIds.includes(t.region) && new Date(t.ts).getTime() >= cutoff && t.hourly != null && t.totalHrs > 0)
       .map(t => Number(t.hourly))
@@ -3809,7 +3813,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     let cancelled = false;
     setPct(undefined);
     if (!scouting && bucketRegionIds.length && myBucketHourly != null) {
-      fetchZonePercentile(bucketRegionIds, myBucketHourly, 10, BENCHMARK_MIN_SHIFTS)
+      fetchZonePercentile(bucketRegionIds, myBucketHourly, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS)
         .then(r => { if (!cancelled) setPct(r); });
     } else {
       setPct(null);
@@ -3823,7 +3827,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     let cancelled = false;
     setStateBoard(undefined);
     if (stateLabel && stateLabel !== "your state") {
-      fetchStateLeaderboard(stateLabel, 10, BENCHMARK_MIN_SHIFTS, 8)
+      fetchStateLeaderboard(stateLabel, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS, 8)
         .then(rows => { if (!cancelled) setStateBoard(rows); });
     } else {
       setStateBoard([]);
@@ -3838,7 +3842,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     setDow(undefined);
     const ids = regionsInBucket(activeId);
     if (ids.length) {
-      fetchZoneDayOfWeek(ids, 10, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setDow(r); });
+      fetchZoneDayOfWeek(ids, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setDow(r); });
     } else {
       setDow(null);
     }
@@ -3907,7 +3911,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
         }}>‹</div>
         <div>
           <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--text)", letterSpacing: "-.02em" }}>Benchmarks</div>
-          <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--muted)" }}>Anonymised · last 10 days</div>
+          <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--muted)" }}>Anonymised · last 30 days</div>
         </div>
       </div>
 
@@ -4053,7 +4057,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "16px 18px", marginTop: "10px", boxShadow: "var(--shadow-card)", display: "flex", alignItems: "center" }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{view.isReal ? view.shifts : "—"}</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>shifts logged · 10d</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>shifts logged · 30d</div>
                 </div>
                 <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
                 <div style={{ flex: 2 }}>
@@ -4064,7 +4068,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                 </div>
               </div>
 
-              <Footer>{view.isReal ? `Based on ${view.shifts} real shifts logged in ${activeLabel} · last 10 days` : `Sample data for ${activeLabel} — real numbers appear once enough shifts are logged`}</Footer>
+              <Footer>{view.isReal ? `Based on ${view.shifts} real shifts logged in ${activeLabel} · last 30 days` : `Sample data for ${activeLabel} — real numbers appear once enough shifts are logged`}</Footer>
               </>
               )}
             </>
@@ -4095,10 +4099,10 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
                 <BenchStat label="Busiest platform" value="Uber Eats" sub={`58% of ${stateLabel} trips`} tone="coral" />
-                <BenchStat label="Shifts logged" value={shifts10d > 0 ? String(shifts10d) : "—"} sub="last 10 days" tone="green" />
+                <BenchStat label="Shifts logged" value={shiftsWindow > 0 ? String(shiftsWindow) : "—"} sub="last 30 days" tone="green" />
               </div>
 
-              <Footer>{hasRealBoard ? `Real GigTrack shifts logged in ${stateLabel} · last 10 days` : `Sample data — real ${stateLabel} rankings appear as shifts are logged`}</Footer>
+              <Footer>{hasRealBoard ? `Real GigTrack shifts logged in ${stateLabel} · last 30 days` : `Sample data — real ${stateLabel} rankings appear as shifts are logged`}</Footer>
             </>
           )}
 
@@ -4125,11 +4129,11 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="Shifts logged" value={shifts10d > 0 ? String(shifts10d) : "—"} sub="last 10 days" tone="green" />
+                <BenchStat label="Shifts logged" value={shiftsWindow > 0 ? String(shiftsWindow) : "—"} sub="last 30 days" tone="green" />
                 <BenchStat label="Peak day (AU)" value="Saturday" sub="+31% vs avg" tone="coral" />
               </div>
 
-              <Footer>Based on GigTrack shifts logged nationwide · last 10 days</Footer>
+              <Footer>Based on GigTrack shifts logged nationwide · last 30 days</Footer>
             </>
           )}
 

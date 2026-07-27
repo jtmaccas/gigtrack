@@ -270,7 +270,7 @@ export const fetchZonePresence = async (zone) => {
 // rolling window. The app computes which region ids belong to the bucket and
 // passes them in, so bucket logic lives in one place. Returns null when the
 // server-side gate isn't met (not enough shifts) → UI shows an honest empty state.
-export const fetchBucketBenchmark = async (regionIds, days = 10, minShifts = 5) => {
+export const fetchBucketBenchmark = async (regionIds, days = 30, minShifts = 5) => {
   if (!regionIds || regionIds.length === 0) return null;
   try {
     const { data, error } = await supabase.rpc("get_zone_benchmark_v2", {
@@ -301,7 +301,7 @@ export const fetchBucketBenchmark = async (regionIds, days = 10, minShifts = 5) 
 // ── Tier 2: real percentile ("you earn more than X% of drivers here") ──
 // Given the user's own hourly rate and the region ids in their bucket, returns
 // what % of shifts in that bucket earned less. null when the gate isn't met.
-export const fetchZonePercentile = async (regionIds, hourly, days = 10, minShifts = 2) => {
+export const fetchZonePercentile = async (regionIds, hourly, days = 30, minShifts = 2) => {
   if (!regionIds || regionIds.length === 0 || hourly == null) return null;
   try {
     const { data, error } = await supabase.rpc("get_zone_percentile_v2", {
@@ -323,7 +323,7 @@ export const fetchZonePercentile = async (regionIds, hourly, days = 10, minShift
 // ── Tier 2: real per-state bucket leaderboard ──
 // Pass a state code ('QLD'); SQL derives buckets and ranks them by median $/hr.
 // Returns [] when no buckets clear the gate.
-export const fetchStateLeaderboard = async (state, days = 10, minShifts = 2, limit = 8) => {
+export const fetchStateLeaderboard = async (state, days = 30, minShifts = 2, limit = 8) => {
   if (!state) return [];
   try {
     const { data, error } = await supabase.rpc("get_state_leaderboard_v2", {
@@ -348,7 +348,7 @@ export const fetchStateLeaderboard = async (state, days = 10, minShifts = 2, lim
 // ── Tier 3: real "best days to drive" (median $/hr per weekday) ──
 // Returns a Mon..Sun array of { median, shifts } (index 0 = Monday), or null
 // when the gate isn't met. Uses shift DATE only — no start time needed.
-export const fetchZoneDayOfWeek = async (regionIds, days = 10, minShifts = 2) => {
+export const fetchZoneDayOfWeek = async (regionIds, days = 30, minShifts = 2) => {
   if (!regionIds || regionIds.length === 0) return null;
   try {
     const { data, error } = await supabase.rpc("get_zone_day_of_week", {
