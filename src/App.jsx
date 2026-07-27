@@ -3609,14 +3609,25 @@ function BenchHeatmap({ grid: gridProp, peakLabel } = {}) {
 // $/hr. `data` is a Mon-first array of { median, shifts } (real), or null (mock).
 function BenchDayStrip({ data }) {
   const days = ["M", "T", "W", "T", "F", "S", "S"];
-  const dayFull = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const dayFull = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   // Mock fallback: a believable weekend-lean shape.
   const mock = [0.42, 0.40, 0.46, 0.55, 0.78, 1.0, 0.88].map(v => ({ rel: v, median: null, shifts: 0 }));
   const isReal = Array.isArray(data) && data.some(d => d.median != null);
   let bars;
   if (isReal) {
-    const max = Math.max(...data.map(d => d.median || 0)) || 1;
-    bars = data.map(d => ({ rel: d.median != null ? Math.max(0.12, d.median / max) : 0, median: d.median, shifts: d.shifts }));
+    // Scale across the min→max RANGE (not zero→max) so the difference between the
+    // best and worst day is visually obvious. When $/hr values are close together
+    // (e.g. $19–$33), a zero-based scale makes every bar look ~the same height;
+    // stretching the range to [0.30, 1.0] exaggerates the real spread.
+    const vals = data.filter(d => d.median != null).map(d => d.median);
+    const max = Math.max(...vals);
+    const min = Math.min(...vals);
+    const span = max - min || 1;
+    bars = data.map(d => ({
+      rel: d.median != null ? 0.30 + 0.70 * ((d.median - min) / span) : 0,
+      median: d.median,
+      shifts: d.shifts,
+    }));
   } else {
     bars = mock;
   }
@@ -3626,7 +3637,7 @@ function BenchDayStrip({ data }) {
     <div>
       <div style={{ display: "flex", alignItems: "flex-end", gap: "5px", height: "80px" }}>
         {bars.map((b, i) => {
-          const isBest = i === bestIdx && b.rel > 0.12;
+          const isBest = i === bestIdx && b.rel > 0;
           return (
             <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
               {isReal && b.median != null && (
@@ -3648,7 +3659,7 @@ function BenchDayStrip({ data }) {
         ))}
       </div>
       <div style={{ textAlign: "center", fontSize: "9.5px", color: "var(--hero-muted)", fontWeight: "600", marginTop: "8px" }}>
-        {isReal ? `${dayFull[bestIdx]} pays best here` : "Sample — logs a few shifts to see your real best days"}
+        {isReal ? `${dayFull[bestIdx]} pays best here` : "Sample — log a few shifts to see your real best days"}
       </div>
     </div>
   );
