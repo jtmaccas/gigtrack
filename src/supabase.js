@@ -265,6 +265,86 @@ export const fetchZonePresence = async (zone) => {
 // DB function (security definer, aggregates only). Returns null when the zone has
 // fewer than 3 distinct drivers (privacy gate) or on error — caller shows the
 // "building" state. Shape: { hourly, perDel, score, shifts } as strings/number.
+// ── Tier 1: real bucket benchmark ──
+// Aggregates real shifts across a set of granular region ids (a "bucket") over a
+// rolling window. The app computes which region ids belong to the bucket and
+// passes them in, so bucket logic lives in one place. Returns null when the
+// server-side gate isn't met (not enough shifts) → UI shows an honest empty state.
+export const fetchBucketBenchmark = async (regionIds, days = 10, minShifts = 5) => {
+  if (!regionIds || regionIds.length === 0) return null;
+  try {
+    const { data, error } = await supabase.rpc("get_zone_benchmark_v2", {
+      p_regions: regionIds,
+      p_days: days,
+      p_min_shifts: minShifts,
+    });
+    if (error) {
+      console.warn("[GigTrack] fetchBucketBenchmark error:", error.message);
+      return null;
+    }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return null; // gate not met → not enough data
+    return {
+      avgHourly:    row.avg_hourly    != null ? Number(row.avg_hourly)    : null,
+      medianHourly: row.median_hourly != null ? Number(row.median_hourly) : null,
+      perDel:       row.avg_per_del   != null ? Number(row.avg_per_del)   : null,
+      score:        row.avg_score     != null ? Number(row.avg_score)     : null,
+      topHourly:    row.top_hourly    != null ? Number(row.top_hourly)    : null,
+      shifts:       row.shift_count ?? 0,
+    };
+  } catch (e) {
+    console.warn("[GigTrack] fetchBucketBenchmark threw:", e);
+    return null;
+  }
+};
+
+// ── Tier 2: real percentile ("you earn more than X% of drivers here") ──
+// Given the user's own hourly rate and the region ids in their bucket, returns
+// what % of shifts in that bucket earned less. null when the gate isn't met.
+export const fetchZonePercentile = async (regionIds, hourly, days = 10, minShifts = 2) => {
+  if (!regionIds || regionIds.length === 0 || hourly == null) return null;
+  try {
+    const { data, error } = await supabase.rpc("get_zone_percentile_v2", {
+      p_regions: regionIds,
+      p_hourly: hourly,
+      p_days: days,
+      p_min_shifts: minShifts,
+    });
+    if (error) { console.warn("[GigTrack] fetchZonePercentile error:", error.message); return null; }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return null;
+    return { percentile: row.percentile ?? null, shifts: row.shift_count ?? 0 };
+  } catch (e) {
+    console.warn("[GigTrack] fetchZonePercentile threw:", e);
+    return null;
+  }
+};
+
+// ── Tier 2: real per-state bucket leaderboard ──
+// Pass a state code ('QLD'); SQL derives buckets and ranks them by median $/hr.
+// Returns [] when no buckets clear the gate.
+export const fetchStateLeaderboard = async (state, days = 10, minShifts = 2, limit = 8) => {
+  if (!state) return [];
+  try {
+    const { data, error } = await supabase.rpc("get_state_leaderboard_v2", {
+      p_state: state,
+      p_days: days,
+      p_min_shifts: minShifts,
+      p_limit: limit,
+    });
+    if (error) { console.warn("[GigTrack] fetchStateLeaderboard error:", error.message); return []; }
+    if (!Array.isArray(data)) return [];
+    return data.map(row => ({
+      bucketKey: row.bucket_key,
+      median: row.median_hourly != null ? Number(row.median_hourly) : null,
+      shifts: row.shift_count ?? 0,
+    }));
+  } catch (e) {
+    console.warn("[GigTrack] fetchStateLeaderboard threw:", e);
+    return [];
+  }
+};
+
 export const fetchZoneBenchmark = async (region) => {
   if (!region) return null;
   try {

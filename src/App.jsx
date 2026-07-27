@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -108,6 +108,10 @@ const LIVE_SESSION_MAX_IDLE_MS = 3 * 60 * 60 * 1000;
 // (shifts + benchmarks still use the precise zone). Flip BETA_ZONE_BUCKETS off
 // post-beta to count by exact zone again. Fully reversible, no data migration.
 const BETA_ZONE_BUCKETS = true;
+// Minimum shifts a bucket needs (within the 10-day window) before real benchmark
+// numbers replace the sample data. Lowered to 2 for alpha so data shows while
+// testing; raise to ~5 before real beta so early numbers aren't noise.
+const BENCHMARK_MIN_SHIFTS = 2;
 
 // Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
 // Rules: default = first 3 id segments. Some cities over-split at 3 segments
@@ -390,6 +394,17 @@ const bucketState = (zoneId) => {
   const member = REGIONS.find(r => presenceBucket(r.id) === bucketId);
   return member?.state || REGIONS.find(r => r.id === zoneId)?.state || null;
 };
+// All granular region ids that belong to the same bucket as a given zone/bucket
+// id. Passed to the benchmark RPC so the SQL stays simple.
+const regionsInBucket = (idOrBucket) => {
+  if (!idOrBucket) return [];
+  // idOrBucket may be a granular region id or an already-computed bucket id.
+  const targetBucket = presenceBucket(idOrBucket) === idOrBucket && !REGIONS.find(r => r.id === idOrBucket)
+    ? idOrBucket                       // looks like a bucket id already
+    : presenceBucket(idOrBucket);      // granular id → its bucket
+  return REGIONS.filter(r => presenceBucket(r.id) === targetBucket).map(r => r.id);
+};
+
 // Distinct buckets grouped by state, for the Compare-a-region picker.
 // Each entry: { bucketId, label, state }. One row per bucket (deduped).
 const bucketOptionsByState = () => {
@@ -3697,6 +3712,101 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     return () => { cancelled = true; };
   }, [region]);
 
+  // ── Tier 1: real benchmark for the active zone/bucket (or scouted one) ──
+  // real === undefined → still loading; null → gate not met (not enough data);
+  // object → real aggregates. Local view prefers real over the seeded mock.
+  const [real, setReal] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setReal(undefined);
+    const ids = regionsInBucket(activeId);
+    if (ids.length) {
+      fetchBucketBenchmark(ids, 10, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setReal(r); });
+    } else {
+      setReal(null);
+    }
+    return () => { cancelled = true; };
+  }, [activeId]);
+  const hasReal = real && real.shifts > 0;
+
+  // The user's own median $/hr in the active bucket (from their local shifts).
+  // Feeds the real percentile call and the "You" stat.
+  const bucketRegionIds = regionsInBucket(activeId);
+  const myBucketHourly = (() => {
+    const cutoff = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    const rates = trips
+      .filter(t => bucketRegionIds.includes(t.region) && new Date(t.ts).getTime() >= cutoff && t.hourly != null && t.totalHrs > 0)
+      .map(t => Number(t.hourly))
+      .sort((a, b) => a - b);
+    if (!rates.length) return null;
+    const mid = Math.floor(rates.length / 2);
+    return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+  })();
+
+  // ── Tier 2a: real percentile for the user in their own zone ──
+  // Only meaningful for the user's own zone (not scouting) and when we know
+  // their hourly. null → gate not met → fall back to honest copy.
+  const [pct, setPct] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setPct(undefined);
+    if (!scouting && bucketRegionIds.length && myBucketHourly != null) {
+      fetchZonePercentile(bucketRegionIds, myBucketHourly, 10, BENCHMARK_MIN_SHIFTS)
+        .then(r => { if (!cancelled) setPct(r); });
+    } else {
+      setPct(null);
+    }
+    return () => { cancelled = true; };
+  }, [activeId, scouting, myBucketHourly]);
+
+  // ── Tier 2b: real per-state leaderboard ──
+  const [stateBoard, setStateBoard] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setStateBoard(undefined);
+    if (stateLabel && stateLabel !== "your state") {
+      fetchStateLeaderboard(stateLabel, 10, BENCHMARK_MIN_SHIFTS, 8)
+        .then(rows => { if (!cancelled) setStateBoard(rows); });
+    } else {
+      setStateBoard([]);
+    }
+    return () => { cancelled = true; };
+  }, [stateLabel]);
+
+  // Real leaderboard rows (from stateBoard) when we have them; else the mock.
+  const ownBucketKey = BETA_ZONE_BUCKETS ? presenceBucket(region) : region;
+  const hasRealBoard = Array.isArray(stateBoard) && stateBoard.length > 0;
+  const displayBoard = hasRealBoard
+    ? stateBoard.map((row, i) => ({
+        rank: i + 1,
+        name: bucketLabelFor(row.bucketKey) || row.bucketKey,
+        value: `$${row.median != null ? row.median.toFixed(1) : "—"}`,
+        pct: stateBoard[0].median ? Math.round((row.median / stateBoard[0].median) * 100) : 100,
+        highlight: row.bucketKey === ownBucketKey,
+      }))
+    : leaderboard;
+  // Rank of the user's own bucket in the real board (for the hero line).
+  const realStateRank = hasRealBoard
+    ? (stateBoard.findIndex(r => r.bucketKey === ownBucketKey) + 1 || null)
+    : null;
+
+  // Merged view model for the Local tab: prefer real aggregates; fall back to
+  // the seeded mock for fields the RPC doesn't provide yet (histogram shape,
+  // heatmap grid, peak day — those are Tier 2/3). Numbers shown to the user are
+  // real whenever hasReal is true.
+  const view = {
+    median: hasReal && real.medianHourly != null ? real.medianHourly.toFixed(2)
+          : hasReal && real.avgHourly != null ? real.avgHourly.toFixed(2)
+          : bd.median,
+    perDel: hasReal && real.perDel != null ? real.perDel.toFixed(2) : bd.perDel,
+    top10:  hasReal && real.topHourly != null ? real.topHourly.toFixed(2) : bd.top10,
+    shifts: hasReal ? real.shifts : null,
+    // Still mock (Tier 2/3):
+    youIdx: bd.youIdx, grid: bd.grid, peakDay: bd.peakDay,
+    axisLo: bd.axisLo, axisHi: bd.axisHi,
+    isReal: hasReal,
+  };
+
   const levels = [
     { id: "local", label: "Local" },
     { id: "state", label: "State" },
@@ -3815,34 +3925,47 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               ) : (
               <>
               <HeroBubble>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--coral-hi)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></svg>
-                  <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".04em" }}>{activeLabel}</span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--coral-hi)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></svg>
+                    <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".04em" }}>{activeLabel}</span>
+                  </div>
+                  {/* Honest data-source badge */}
+                  <span style={{
+                    fontSize: "8.5px", fontWeight: "800", letterSpacing: ".05em",
+                    padding: "3px 8px", borderRadius: "100px",
+                    color: view.isReal ? "var(--hero-ink)" : "var(--hero-muted)",
+                    background: view.isReal ? "rgba(30,158,104,.22)" : "rgba(255,255,255,.1)",
+                  }}>{real === undefined ? "LOADING…" : view.isReal ? `LIVE · ${view.shifts} SHIFTS` : "SAMPLE DATA"}</span>
                 </div>
                 {scouting ? (
                   <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
-                    Drivers here earn a median of <span style={{ color: "var(--coral-hi)" }}>${bd.median}/hr</span>
+                    Drivers here earn a median of <span style={{ color: "var(--coral-hi)" }}>${view.median}/hr</span>
                   </div>
                 ) : (
                   <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
-                    You earn more than <span style={{ color: "var(--coral-hi)" }}>82% of drivers</span> here
+                    {pct && pct.percentile != null
+                      ? <>You earn more than <span style={{ color: "var(--coral-hi)" }}>{pct.percentile}% of drivers</span> here</>
+                      : view.isReal
+                        ? <>Your area's median is <span style={{ color: "var(--coral-hi)" }}>${view.median}/hr</span></>
+                        : <>You earn more than <span style={{ color: "var(--coral-hi)" }}>82% of drivers</span> here</>}
                   </div>
                 )}
-                <BenchHistogram youIndex={bd.youIdx} axisLo={bd.axisLo} axisHi={bd.axisHi} highlightLabel={scouting ? "" : "YOU"} />
+                <BenchHistogram youIndex={view.youIdx} axisLo={view.axisLo} axisHi={view.axisHi} highlightLabel={scouting ? "" : "YOU"} />
               </HeroBubble>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
                 {scouting ? (
                   <>
-                    <BenchStat label="Median" value={`$${bd.median}`} sub="per hour" tone="coral" />
-                    <BenchStat label="Top 10%" value={`$${bd.top10}`} sub="best drivers" tone="green" />
-                    <BenchStat label="$/delivery" value={`$${bd.perDel}`} sub="zone avg" tone="indigo" />
+                    <BenchStat label="Median" value={`$${view.median}`} sub="per hour" tone="coral" />
+                    <BenchStat label="Top 10%" value={`$${view.top10}`} sub="best drivers" tone="green" />
+                    <BenchStat label="$/delivery" value={`$${view.perDel}`} sub="zone avg" tone="indigo" />
                   </>
                 ) : (
                   <>
                     <BenchStat label="You" value="$27.40" sub="per hour" tone="coral" />
-                    <BenchStat label="Zone median" value={`$${bd.median}`} sub="+$2.10 you" tone="green" />
-                    <BenchStat label="Top 10%" value={`$${bd.top10}`} sub="reach goal" tone="indigo" />
+                    <BenchStat label="Zone median" value={`$${view.median}`} sub={view.isReal ? "your area" : "+$2.10 you"} tone="green" />
+                    <BenchStat label="Top 10%" value={`$${view.top10}`} sub="reach goal" tone="indigo" />
                   </>
                 )}
               </div>
@@ -3850,33 +3973,26 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)", border: "1px solid var(--coral-border)" }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "14px" }}>
                   <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--coral)", letterSpacing: ".06em", textTransform: "uppercase" }}>Best times to drive {scouting ? "there" : "here"}</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "600" }}>{bd.peakDay} dinner</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "600" }}>{view.peakDay} dinner · est.</div>
                 </div>
-                <BenchHeatmap grid={bd.grid} />
+                <BenchHeatmap grid={view.grid} />
               </div>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "16px 18px", marginTop: "10px", boxShadow: "var(--shadow-card)", display: "flex", alignItems: "center" }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{scouting ? bd.sample : (live?.total != null ? live.total : 46)}</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>{scouting ? "shifts logged · 10d" : "online now"}</div>
+                  <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{view.isReal ? view.shifts : "—"}</div>
+                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>shifts logged · 10d</div>
                 </div>
                 <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
                 <div style={{ flex: 2 }}>
                   <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "700", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "4px" }}>$/delivery {scouting ? "there" : "here"}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    {scouting ? (
-                      <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>Zone avg ${bd.perDel}</span>
-                    ) : (
-                      <>
-                        <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>You $13.37 · zone ${bd.perDel}</span>
-                        <span style={{ fontSize: "10px", fontWeight: "700", color: "var(--pos)", background: "var(--pos-dim)", padding: "2px 7px", borderRadius: "100px" }}>+10%</span>
-                      </>
-                    )}
+                    <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>Zone avg ${view.perDel}</span>
                   </div>
                 </div>
               </div>
 
-              <Footer>Based on ~{bd.sample} {activeLabel} drivers this week</Footer>
+              <Footer>{view.isReal ? `Based on ${view.shifts} real shifts logged in ${activeLabel} · last 10 days` : `Sample data for ${activeLabel} — real numbers appear once enough shifts are logged`}</Footer>
               </>
               )}
             </>
@@ -3897,9 +4013,9 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               </HeroBubble>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
-                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Top {stateLabel} zones · $/hr</div>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Top {stateLabel} zones · $/hr {hasRealBoard ? "" : "· sample"}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  {leaderboard.map(r => (
+                  {displayBoard.map(r => (
                     <BenchRankRow key={r.rank} rank={r.rank} name={r.name} value={r.value} pct={r.pct} highlight={r.highlight} />
                   ))}
                 </div>
@@ -3910,7 +4026,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                 <BenchStat label="Shifts logged" value={shifts10d > 0 ? String(shifts10d) : "—"} sub="last 10 days" tone="green" />
               </div>
 
-              <Footer>Based on GigTrack shifts logged in {stateLabel} · last 10 days</Footer>
+              <Footer>{hasRealBoard ? `Real GigTrack shifts logged in ${stateLabel} · last 10 days` : `Sample data — real ${stateLabel} rankings appear as shifts are logged`}</Footer>
             </>
           )}
 
