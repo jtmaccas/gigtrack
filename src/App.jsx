@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchZoneDayOfWeek, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -678,8 +678,17 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.05";
+const CURRENT_VERSION = "ALPHA 0.06";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.06",
+    date: "27/7/26",
+    items: [
+      { tag: "NEW FEATURE", text: "Benchmarks now run on real data — your area's median $/hr, how you rank against other drivers, and the top zones in your state all come from actual shifts logged." },
+      { tag: "NEW", text: "'Best days to drive' shows which days of the week pay best in your area, from real shift data." },
+      { tag: "IMPROVED", text: "Shifts are now tracked by date across the whole app — simpler entry, and no more stray '12:00 am' on your shifts." },
+    ],
+  },
   {
     version: "ALPHA 0.05",
     date: "26/7/26",
@@ -3493,6 +3502,55 @@ function BenchHeatmap({ grid: gridProp, peakLabel } = {}) {
   );
 }
 
+// Day-of-week "best days to drive" strip — 7 bars (Mon..Sun) sized by median
+// $/hr. `data` is a Mon-first array of { median, shifts } (real), or null (mock).
+function BenchDayStrip({ data }) {
+  const days = ["M", "T", "W", "T", "F", "S", "S"];
+  const dayFull = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  // Mock fallback: a believable weekend-lean shape.
+  const mock = [0.42, 0.40, 0.46, 0.55, 0.78, 1.0, 0.88].map(v => ({ rel: v, median: null, shifts: 0 }));
+  const isReal = Array.isArray(data) && data.some(d => d.median != null);
+  let bars;
+  if (isReal) {
+    const max = Math.max(...data.map(d => d.median || 0)) || 1;
+    bars = data.map(d => ({ rel: d.median != null ? Math.max(0.12, d.median / max) : 0, median: d.median, shifts: d.shifts }));
+  } else {
+    bars = mock;
+  }
+  // Best day = highest median (real) or highest rel (mock).
+  const bestIdx = bars.reduce((best, b, i) => (b.rel > bars[best].rel ? i : best), 0);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: "5px", height: "80px" }}>
+        {bars.map((b, i) => {
+          const isBest = i === bestIdx && b.rel > 0.12;
+          return (
+            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+              {isReal && b.median != null && (
+                <div style={{ fontSize: "8px", fontWeight: "700", color: isBest ? "var(--coral-hi)" : "var(--hero-muted)", marginBottom: "3px" }}>${Math.round(b.median)}</div>
+              )}
+              <div style={{
+                width: "100%", height: `${Math.round(b.rel * 100)}%`, minHeight: "6px",
+                borderRadius: "5px 5px 0 0",
+                background: isBest ? "var(--coral)" : "rgba(255,255,255,.14)",
+                transition: "height .5s cubic-bezier(.4,0,.2,1)",
+              }} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: "5px", marginTop: "6px" }}>
+        {days.map((d, i) => (
+          <div key={i} style={{ flex: 1, textAlign: "center", fontSize: "9px", color: i === bestIdx ? "var(--coral-hi)" : "var(--hero-muted)", fontWeight: i === bestIdx ? "800" : "600" }}>{d}</div>
+        ))}
+      </div>
+      <div style={{ textAlign: "center", fontSize: "9.5px", color: "var(--hero-muted)", fontWeight: "600", marginTop: "8px" }}>
+        {isReal ? `${dayFull[bestIdx]} pays best here` : "Sample — logs a few shifts to see your real best days"}
+      </div>
+    </div>
+  );
+}
+
 // Distribution histogram (bell-ish) with the user's bar highlighted + "YOU".
 function BenchHistogram({ youIndex = 7, axisLo = "$18/hr", axisHi = "$40/hr", highlightLabel = "YOU" }) {
   const bars = [0.18, 0.34, 0.52, 0.72, 0.88, 1.0, 0.94, 0.78, 0.6, 0.4];
@@ -3773,6 +3831,20 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     return () => { cancelled = true; };
   }, [stateLabel]);
 
+  // ── Tier 3: real "best days" day-of-week strip for the active bucket ──
+  const [dow, setDow] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setDow(undefined);
+    const ids = regionsInBucket(activeId);
+    if (ids.length) {
+      fetchZoneDayOfWeek(ids, 10, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setDow(r); });
+    } else {
+      setDow(null);
+    }
+    return () => { cancelled = true; };
+  }, [activeId]);
+
   // Real leaderboard rows (from stateBoard) when we have them; else the mock.
   const ownBucketKey = BETA_ZONE_BUCKETS ? presenceBucket(region) : region;
   const hasRealBoard = Array.isArray(stateBoard) && stateBoard.length > 0;
@@ -3970,12 +4042,12 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                 )}
               </div>
 
-              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)", border: "1px solid var(--coral-border)" }}>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "14px" }}>
-                  <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--coral)", letterSpacing: ".06em", textTransform: "uppercase" }}>Best times to drive {scouting ? "there" : "here"}</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "600" }}>{view.peakDay} dinner · est.</div>
+              <div style={{ position: "relative", overflow: "hidden", background: "var(--hero-bg)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "0 14px 28px -14px rgba(27,26,23,.45)" }}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "16px" }}>
+                  <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--coral-hi)", letterSpacing: ".06em", textTransform: "uppercase" }}>Best days to drive {scouting ? "there" : "here"}</div>
+                  {dow === undefined && <div style={{ fontSize: "9px", color: "var(--hero-muted)", fontWeight: "600" }}>loading…</div>}
                 </div>
-                <BenchHeatmap grid={view.grid} />
+                <BenchDayStrip data={dow} />
               </div>
 
               <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "16px 18px", marginTop: "10px", boxShadow: "var(--shadow-card)", display: "flex", alignItems: "center" }}>
@@ -5781,6 +5853,13 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     const pad = n => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
+  // Date-only value for <input type="date"> ("YYYY-MM-DD"). Time isn't a factor
+  // anywhere in the app, so the shift form captures date only.
+  const toDateInput = (iso) => {
+    const d = iso ? new Date(iso) : new Date();
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  };
 
   const toTimeStr = (ms) => {
     const d = new Date(ms);
@@ -5788,10 +5867,10 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
-  // Determine initial shift date — timer prefill or edit
+  // Determine initial shift date — timer prefill or edit (date only)
   const initShiftDate = timerPrefill
-    ? toDatetimeLocal(timerPrefill.startedAt)
-    : toDatetimeLocal(editTrip?.ts);
+    ? toDateInput(timerPrefill.startedAt)
+    : toDateInput(editTrip?.ts);
 
   // Initial online time from timer prefill
   const initOnlineHrs  = timerPrefill ? String(Math.floor((timerPrefill.totalMin||0) / 60)) : (editTrip ? String(Math.floor((editTrip.totalMin||0)/60)) : "");
@@ -9490,8 +9569,20 @@ export default function GigTrack() {
     // Stamp the zone the shift was done in (current region) so it stays put even
     // if the driver later changes zones — but only for NEW shifts; editing an old
     // one must not relocate it. Preserve an existing region on edit.
+    //
+    // Time-of-day is not a factor anywhere in the app — all benchmarks and
+    // insights work at DATE level. So normalise every shift's ts to local
+    // midnight here, at the single save choke point, regardless of entry path
+    // (manual, screenshot, timer). This keeps the data model consistent and
+    // means no screen ever shows a phantom "12:00 am".
+    const dateOnlyTs = (tsIso) => {
+      const d = tsIso ? new Date(tsIso) : new Date();
+      d.setHours(0, 0, 0, 0); // local midnight
+      return d.toISOString();
+    };
     const record = {
       ...rawRecord,
+      ts: dateOnlyTs(rawRecord.ts),
       _owner: authUser?.id || null,
       region: isEdit ? (rawRecord.region ?? null) : (region ?? null),
     };

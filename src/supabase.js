@@ -345,6 +345,33 @@ export const fetchStateLeaderboard = async (state, days = 10, minShifts = 2, lim
   }
 };
 
+// ── Tier 3: real "best days to drive" (median $/hr per weekday) ──
+// Returns a Mon..Sun array of { median, shifts } (index 0 = Monday), or null
+// when the gate isn't met. Uses shift DATE only — no start time needed.
+export const fetchZoneDayOfWeek = async (regionIds, days = 10, minShifts = 2) => {
+  if (!regionIds || regionIds.length === 0) return null;
+  try {
+    const { data, error } = await supabase.rpc("get_zone_day_of_week", {
+      p_regions: regionIds,
+      p_days: days,
+      p_min_shifts: minShifts,
+    });
+    if (error) { console.warn("[GigTrack] fetchZoneDayOfWeek error:", error.message); return null; }
+    if (!Array.isArray(data) || data.length === 0) return null;
+    // SQL returns dow 0=Sun..6=Sat. Map to Mon-first array (0=Mon..6=Sun).
+    const monFirst = Array.from({ length: 7 }, () => ({ median: null, shifts: 0 }));
+    const toMon = (dow) => (dow + 6) % 7; // Sun(0)->6, Mon(1)->0, ... Sat(6)->5
+    for (const row of data) {
+      const i = toMon(row.dow);
+      monFirst[i] = { median: row.median_hourly != null ? Number(row.median_hourly) : null, shifts: row.shift_count ?? 0 };
+    }
+    return monFirst;
+  } catch (e) {
+    console.warn("[GigTrack] fetchZoneDayOfWeek threw:", e);
+    return null;
+  }
+};
+
 export const fetchZoneBenchmark = async (region) => {
   if (!region) return null;
   try {
