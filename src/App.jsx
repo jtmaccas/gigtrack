@@ -7952,13 +7952,15 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
       });
     }
     if (period === "month") {
-      // Last 4 weeks
+      // Last 4 weeks, labelled with their actual date range (e.g. "Jun 29–Jul 5").
+      const fmtDay = (d) => d.toLocaleDateString("en-AU", { month: "short", day: "numeric" });
       return Array.from({length: 4}, (_, i) => {
         const ws = new Date(now); ws.setDate(ws.getDate() - (3-i)*7 - now.getDay() + 1);
         ws.setHours(0,0,0,0);
         const we = new Date(ws); we.setDate(we.getDate() + 7);
+        const lastDay = new Date(we); lastDay.setDate(lastDay.getDate() - 1); // inclusive end
         const val = trips.filter(t => { const d = new Date(t.ts); return d >= ws && d < we; }).reduce((s,t)=>s+t.totalEarned,0);
-        return { label: `W${i+1}`, val };
+        return { label: `${fmtDay(ws)}–${fmtDay(lastDay)}`, val };
       });
     }
     // FY / Year — last 12 months
@@ -8117,13 +8119,17 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
                           flexShrink: 0,
                         }} />
                         <div style={{
-                          fontSize: "9px",
+                          fontSize: period === "month" ? "8px" : "9px",
                           color: isToday ? "var(--coral)" : "var(--muted2)",
                           fontWeight: isToday ? "700" : "600",
-                          height: `${LABEL_H}px`,
+                          minHeight: `${LABEL_H}px`,
                           display: "flex",
                           alignItems: "center",
+                          justifyContent: "center",
+                          textAlign: "center",
+                          lineHeight: "1.25",
                           flexShrink: 0,
+                          paddingTop: "2px",
                         }}>
                           {bar.label}
                         </div>
@@ -8298,11 +8304,6 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
               </div>
             )}
           </div>
-
-          {/* Best times to drive — featured heatmap (highest-value view) */}
-          <InsightCard title="Best times to drive" subtitle="by shift start" featured>
-            <HourOfDayChart trips={filtered} />
-          </InsightCard>
 
           {/* Day of week */}
           <InsightCard title="Best Days" subtitle={currentLabel}>
