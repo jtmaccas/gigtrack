@@ -128,8 +128,8 @@ const BETA_MODE = true;
 const FREE_SCREENSHOT_CREDITS = 10;
 // One-time top-up packs (credits added to the running balance).
 const SCREENSHOT_PACKS = [
-  { id: "pack100", credits: 100, price: 3.99, label: "100 screenshots" },
-  { id: "pack200", credits: 200, price: 5.99, label: "200 screenshots" },
+  { id: "pack50", credits: 50, price: 3.99, label: "50 screenshots" },
+  { id: "pack100", credits: 100, price: 5.99, label: "100 screenshots" },
 ];
 
 // Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
