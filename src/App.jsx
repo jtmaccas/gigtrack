@@ -697,8 +697,18 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.06";
+const CURRENT_VERSION = "ALPHA 0.07";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.07",
+    date: "27/7/26",
+    items: [
+      { tag: "NEW FEATURE", text: "Everything's free during the beta — all features are unlocked. The only paid extra is screenshot import credits (10 free, top up with one-time packs) since that's the one feature that costs us to run." },
+      { tag: "NEW", text: "Compare a Region now shows your zone's earnings next to the zone you're scouting, so you can see the difference at a glance." },
+      { tag: "IMPROVED", text: "The National tab now runs on real data too — median $/hr, state rankings and the busiest day all come from actual shifts." },
+      { tag: "IMPROVED", text: "Benchmarks now use a 30-day window and only ever show real numbers or an honest 'not enough data yet' — no more placeholder figures." },
+    ],
+  },
   {
     version: "ALPHA 0.06",
     date: "27/7/26",
