@@ -3718,12 +3718,8 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     ? bucketOptionsByState()
     : REGIONS.reduce((acc, r) => { (acc[r.state] = acc[r.state] || []).push({ bucketId: r.id, label: r.label, state: r.state }); return acc; }, {});
 
-  // Shifts captured in the last 30 days (real data from the local shift log).
-  // Used in place of concurrent-driver counts while presence tracking is off.
-  const shiftsWindow = trips.filter(t => {
-    const d = new Date(t.ts).getTime();
-    return d >= Date.now() - BENCHMARK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-  }).length;
+  // (State/National "shifts logged" now come from real RPC counts, not the
+  // user's own local trips — see stateShiftTotal and natl.shifts.)
 
   // Per-state mock leaderboards so the comparison matches the user's actual
   // state (QLD user sees QLD zones, NSW sees NSW, etc.) until the backend
@@ -3891,6 +3887,11 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
   const realStateRank = hasRealBoard
     ? (stateBoard.findIndex(r => r.bucketKey === ownBucketKey) + 1 || null)
     : null;
+  // State-wide shift total across all buckets with data (real, not the user's
+  // personal count) for the "shifts logged" stat on the State tab.
+  const stateShiftTotal = hasRealBoard
+    ? stateBoard.reduce((sum, r) => sum + (r.shifts || 0), 0)
+    : 0;
 
   // Real busiest platform from the user's own shifts in the window. The RPC
   // doesn't return a cross-user platform split yet, so this reflects the
@@ -4159,7 +4160,7 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
                 <BenchStat label="Busiest platform" value={platformSplit ? platformSplit.label : "—"} sub={platformSplit ? `${platformSplit.pct}% of your trips` : "no shifts logged yet"} tone="coral" />
-                <BenchStat label="Shifts logged" value={shiftsWindow > 0 ? String(shiftsWindow) : "—"} sub="last 30 days" tone="green" />
+                <BenchStat label="Shifts logged" value={stateShiftTotal > 0 ? String(stateShiftTotal) : "—"} sub={`across ${stateLabel} · 30d`} tone="green" />
               </div>
 
               <Footer>{hasRealBoard ? `Real GigTrack shifts logged in ${stateLabel} · last 30 days` : `Sample data — real ${stateLabel} rankings appear as shifts are logged`}</Footer>
