@@ -3787,6 +3787,33 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
   }, [activeId]);
   const hasReal = real && real.shifts > 0;
 
+  // Home-zone real benchmark — fetched off the USER'S OWN bucket regardless of
+  // scouting, so the scout view can compare "your zone vs here". Only used when
+  // both sides are real (guarded below).
+  const [homeReal, setHomeReal] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setHomeReal(undefined);
+    const homeIds = regionsInBucket(region);
+    if (homeIds.length) {
+      fetchBucketBenchmark(homeIds, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setHomeReal(r); });
+    } else {
+      setHomeReal(null);
+    }
+    return () => { cancelled = true; };
+  }, [region]);
+  // The scout comparison is only shown when BOTH the home zone and the scouted
+  // zone have real data — never compare a real number against a sample one.
+  const homeMedian = homeReal && homeReal.shifts > 0
+    ? (homeReal.medianHourly != null ? homeReal.medianHourly : homeReal.avgHourly)
+    : null;
+  const scoutMedian = scouting && hasReal
+    ? (real.medianHourly != null ? real.medianHourly : real.avgHourly)
+    : null;
+  const showScoutCompare = scouting && homeMedian != null && scoutMedian != null;
+  const scoutDelta = showScoutCompare ? (scoutMedian - homeMedian) : null;
+  const homeZoneLabel = BETA_ZONE_BUCKETS ? (bucketLabelFor(region) || "your zone") : (regionInfo?.label || "your zone");
+
   // The user's own median $/hr in the active bucket (from their local shifts).
   // Feeds the real percentile call and the "You" stat.
   const bucketRegionIds = regionsInBucket(activeId);
@@ -4030,6 +4057,24 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                   <span style={{ fontSize: "11px", color: "var(--coral)", fontWeight: "600" }}>
                     Scouting <strong>{activeLabel}</strong> — what drivers there see. Your zone is unchanged.
                   </span>
+                </div>
+              )}
+
+              {/* Your zone vs here — only when BOTH sides have real data */}
+              {showScoutCompare && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "12px", padding: "11px 14px", marginBottom: "10px", boxShadow: "var(--shadow-card)" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{homeZoneLabel}</div>
+                    <div style={{ fontSize: "15px", fontWeight: "800", color: "var(--text)" }}>${homeMedian.toFixed(2)}<span style={{ fontSize: "10px", fontWeight: "600", color: "var(--muted)" }}>/hr</span></div>
+                  </div>
+                  <div style={{ flexShrink: 0, textAlign: "center", padding: "0 6px" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "800", color: scoutDelta >= 0 ? "var(--pos)" : "var(--muted)" }}>{scoutDelta >= 0 ? "+" : "−"}${Math.abs(scoutDelta).toFixed(2)}</div>
+                    <div style={{ fontSize: "8px", fontWeight: "600", color: "var(--muted2)", letterSpacing: ".04em" }}>{scoutDelta >= 0 ? "MORE HERE" : "LESS HERE"}</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0, textAlign: "right" }}>
+                    <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--coral)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{activeLabel}</div>
+                    <div style={{ fontSize: "15px", fontWeight: "800", color: "var(--coral)" }}>${scoutMedian.toFixed(2)}<span style={{ fontSize: "10px", fontWeight: "600", color: "var(--muted)" }}>/hr</span></div>
+                  </div>
                 </div>
               )}
 
