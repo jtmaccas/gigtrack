@@ -7969,7 +7969,7 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
         const we = new Date(ws); we.setDate(we.getDate() + 7);
         const lastDay = new Date(we); lastDay.setDate(lastDay.getDate() - 1); // inclusive end
         const val = trips.filter(t => { const d = new Date(t.ts); return d >= ws && d < we; }).reduce((s,t)=>s+t.totalEarned,0);
-        return { label: `${fmtDay(ws)}–${fmtDay(lastDay)}`, val };
+        return { label: `${fmtDay(ws)}–${fmtDay(lastDay)}`, val, isCurrent: now >= ws && now < we };
       });
     }
     if (period === "fy") {
@@ -7980,7 +7980,7 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
         const me = new Date(fyStart.getFullYear(), fyStart.getMonth() + i + 1, 1);
         const val = trips.filter(t => { const d = new Date(t.ts); return d >= ms && d < me; }).reduce((s,t)=>s+t.totalEarned,0);
         const label = ms.toLocaleDateString("en-AU",{month:"short"}).slice(0,1);
-        return { label, val };
+        return { label, val, isCurrent: now >= ms && now < me };
       });
     }
     // "year" — calendar year: Jan → Dec.
@@ -7990,7 +7990,7 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
       const me = new Date(yearStart.getFullYear(), i + 1, 1);
       const val = trips.filter(t => { const d = new Date(t.ts); return d >= ms && d < me; }).reduce((s,t)=>s+t.totalEarned,0);
       const label = ms.toLocaleDateString("en-AU",{month:"short"}).slice(0,1);
-      return { label, val };
+      return { label, val, isCurrent: now >= ms && now < me };
     });
   };
 
@@ -8114,7 +8114,7 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
               return (
                 <div style={{display:"flex",alignItems:"flex-end",gap:"2px",height:`${CHART_H + LABEL_H}px`,paddingTop:"14px"}}>
                   {chartData.map((bar, i) => {
-                    const isToday = bar.isToday ?? (period === "week" && i === (new Date().getDay() + 6) % 7);
+                    const isToday = bar.isCurrent ?? bar.isToday ?? (period === "week" && i === (new Date().getDay() + 6) % 7);
                     const barH = maxVal > 0 && bar.val > 0
                       ? Math.max(6, Math.round((bar.val / maxVal) * CHART_H))
                       : 3;
