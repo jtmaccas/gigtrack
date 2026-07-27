@@ -5788,204 +5788,8 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
   return null;
 }
 
-// ─── VOICE ENTRY ─── Parses natural speech into shift values.
-// Uses Web Speech API (Chrome desktop + Android). iOS Safari doesn't support
-// this reliably in PWAs yet — we'll move to Whisper backend on real launch.
-function VoiceEntryScreen({ onBack, onParsed }) {
-  const [status, setStatus] = useState("idle"); // idle | listening | done | error
-  const [transcript, setTranscript] = useState("");
-  const [parsed, setParsed] = useState(null);
-  const recogRef = useRef(null);
-
-  const parseTranscript = (text) => {
-    const t = " " + text.toLowerCase().replace(/[,]/g, " ") + " ";
-    const num = (re) => { const m = t.match(re); return m ? parseFloat(m[1]) : null; };
-
-    // Dollar amounts — "55 dollars", "$55", "55 bucks"
-    const earned = num(/\$?\s*(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?|\$)/) ?? num(/\$\s*(\d+(?:\.\d+)?)/);
-    const tips   = num(/(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?)?\s*(?:in\s+)?tips?\b/);
-    const bonus  = num(/(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?)?\s*(?:in\s+)?(?:bonus(?:es)?|promo(?:s|tion)?)/);
-
-    // Km — "28 km", "28 kilometers"
-    const km     = num(/(\d+(?:\.\d+)?)\s*(?:km|kms|kilometres?|kilometers?)\b/);
-
-    // Deliveries — "6 deliveries", "6 orders", "6 drops"
-    const dels   = num(/(\d+)\s*(?:deliveries|delivery|orders?|drops?|trips?)\b/);
-
-    // Time — "two hours", "1 hour 30 min", "90 minutes", "1h 30m"
-    let mins = null;
-    const hM = t.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b/);
-    const mM = t.match(/(\d+)\s*(?:minutes?|mins?|m)\b/);
-    if (hM) mins = (mins || 0) + Math.round(parseFloat(hM[1]) * 60);
-    if (mM) mins = (mins || 0) + parseInt(mM[1]);
-    // Word numbers — "two hours", "half an hour"
-    const words = { one:60, two:120, three:180, four:240, five:300, six:360, half:30 };
-    Object.entries(words).forEach(([w,m]) => {
-      if (new RegExp(`\\b${w}\\s+(?:hours?|hrs?)\\b`).test(t)) mins = (mins || 0) + m;
-      if (w === "half" && /\bhalf\s+(?:an?\s+)?hour\b/.test(t)) mins = (mins || 0) + 30;
-    });
-
-    // Platform
-    let platform = null;
-    if (/\b(doordash|door\s*dash|dd)\b/.test(t)) platform = "doordash";
-    if (/\b(uber\s*eats?|uber|ue)\b/.test(t)) platform = platform === "doordash" ? "both" : "uber_eats";
-    if (/\bboth\b/.test(t)) platform = "both";
-
-    return { earned, tips, bonus, km, dels, mins, platform };
-  };
-
-  const start = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setStatus("error"); return; }
-    const recog = new SR();
-    recog.lang = "en-AU";
-    recog.interimResults = true;
-    recog.continuous = false;
-    recog.onresult = (e) => {
-      const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
-      setTranscript(text);
-    };
-    recog.onend = () => {
-      setStatus("done");
-      setParsed(parseTranscript(recog._lastTranscript || transcript));
-    };
-    recog.onerror = () => setStatus("error");
-    // Capture final transcript robustly
-    const origOnResult = recog.onresult;
-    recog.onresult = (e) => {
-      origOnResult(e);
-      recog._lastTranscript = Array.from(e.results).map(r => r[0].transcript).join(" ");
-    };
-    recogRef.current = recog;
-    setTranscript("");
-    setParsed(null);
-    setStatus("listening");
-    recog.start();
-  };
-
-  const stop = () => recogRef.current?.stop();
-
-  // Auto-start on mount
-  useEffect(() => { const t = setTimeout(start, 200); return () => { clearTimeout(t); recogRef.current?.abort?.(); }; }, []);
-
-  const handleConfirm = () => {
-    if (!parsed) return;
-    onParsed(parsed);
-  };
-
-  return (
-    <div className="view active">
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Voice entry</div>
-      </div>
-      <div className="scroll-area" style={{padding:"16px"}}>
-
-        {/* Mic card */}
-        <div style={{
-          padding:"28px 16px",textAlign:"center",
-          background:"linear-gradient(180deg, rgba(59,130,246,.1), var(--surface))",
-          border:`1px solid ${status==="listening"?"var(--blue-border)":"var(--border)"}`,
-          borderRadius:"16px",marginBottom:"14px",
-        }}>
-          <div
-            onClick={status === "listening" ? stop : start}
-            style={{
-              width:"72px",height:"72px",borderRadius:"50%",
-              background:"var(--blue-dim)",color:"var(--blue)",
-              display:"inline-flex",alignItems:"center",justifyContent:"center",
-              fontSize:"30px",marginBottom:"12px",cursor:"pointer",
-              animation: status === "listening" ? "pulse 1.5s ease-in-out infinite" : "none",
-              boxShadow: status === "listening" ? "0 0 0 8px rgba(59,130,246,.15)" : "none",
-              transition:"box-shadow .3s ease",
-            }}
-          >🎤</div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>
-            {status === "idle"      && "Tap mic to start"}
-            {status === "listening" && "Listening…"}
-            {status === "done"      && "Got it"}
-            {status === "error"     && "Couldn't access mic"}
-          </div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>
-            {status === "listening" && "Speak naturally. Tap to stop."}
-            {status === "done"      && "Tap to record again"}
-            {status === "idle"      && 'Say: "55 dollars, 6 deliveries, 28 km on DoorDash"'}
-            {status === "error"     && "Check microphone permissions and try again"}
-          </div>
-        </div>
-
-        {/* Transcript */}
-        {transcript && (
-          <div style={{marginBottom:"14px"}}>
-            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"8px"}}>You said</div>
-            <div style={{
-              background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"12px",
-              padding:"13px 14px",fontSize:"13px",color:"var(--text)",lineHeight:"1.6",fontStyle:"italic",
-            }}>"{transcript}"</div>
-          </div>
-        )}
-
-        {/* Parsed values */}
-        {parsed && (
-          <>
-            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"8px"}}>Parsed</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"14px"}}>
-              {[
-                ["Earnings",   parsed.earned != null ? `$${parsed.earned.toFixed(2)}` : "—"],
-                ["Deliveries", parsed.dels != null ? String(parsed.dels) : "—"],
-                ["Total km",   parsed.km   != null ? `${parsed.km} km` : "—"],
-                ["Duration",   parsed.mins != null ? `${Math.floor(parsed.mins/60)}h ${parsed.mins%60}m` : "—"],
-                ["Tips",       parsed.tips != null ? `$${parsed.tips.toFixed(2)}` : "—"],
-                ["Bonuses",    parsed.bonus != null ? `$${parsed.bonus.toFixed(2)}` : "—"],
-              ].map(([label, val]) => {
-                const found = val !== "—";
-                return (
-                  <div key={label} style={{
-                    background:"var(--surface)",
-                    border: `0.5px solid ${found ? "var(--green-border)" : "var(--border)"}`,
-                    borderRadius:"11px",padding:"12px",
-                  }}>
-                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",color: found ? "var(--text)" : "var(--muted2)",fontVariantNumeric:"tabular-nums",letterSpacing:"-.01em",lineHeight:"1"}}>{val}</div>
-                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"5px",fontWeight:"500"}}>{label}</div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {parsed.platform && (
-              <div style={{
-                background:"var(--green-dim)",border:"0.5px solid var(--green-border)",borderRadius:"10px",
-                padding:"10px 13px",fontSize:"11px",color:"var(--green)",fontWeight:"600",marginBottom:"14px",
-              }}>
-                Platform: {parsed.platform === "uber_eats" ? "Uber Eats" : parsed.platform === "doordash" ? "DoorDash" : "Both"}
-              </div>
-            )}
-
-            <button
-              onClick={handleConfirm}
-              style={{
-                width:"100%",padding:"15px",background:"var(--green)",color:"var(--on-coral)",
-                border:"none",borderRadius:"13px",
-                fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",cursor:"pointer",
-              }}
-            >Use these values →</button>
-            <div style={{textAlign:"center",fontSize:"10px",color:"var(--muted2)",marginTop:"8px",lineHeight:"1.5"}}>
-              You'll be able to edit anything on the next screen before saving.
-            </div>
-          </>
-        )}
-
-      </div>
-    </div>
-  );
-}
-
 // ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
-function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScreenshotImport, isPro = false, onUpgrade, screenshotsRemaining }) {
-  // Detect Web Speech API support
-  const voiceSupported = typeof window !== "undefined" &&
-    ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
-
+function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, isPro = false, onUpgrade, screenshotsRemaining }) {
   return (
     <div className="view active">
       <div className="topbar">
@@ -6009,21 +5813,7 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScree
             <div className="log-entry-arrow">›</div>
           </div>
 
-          {/* 2 — Voice Entry (only if supported) */}
-          {voiceSupported && (
-            <div className="log-entry-card" onClick={onVoiceEntry}>
-              <div className="log-entry-icon" style={{background:"rgba(59,130,246,.14)",color:"var(--blue)"}}>
-                <span style={{fontSize:"22px"}}>🎤</span>
-              </div>
-              <div className="log-entry-text">
-                <div className="log-entry-title">Voice entry</div>
-                <div className="log-entry-desc">Speak naturally — "55 dollars, 6 deliveries on DoorDash". We'll fill it in.</div>
-              </div>
-              <div className="log-entry-arrow">›</div>
-            </div>
-          )}
-
-          {/* 3 — Screenshot Import */}
+          {/* 2 — Screenshot Import */}
           <div className="log-entry-card" onClick={onScreenshotImport}>
             <div className="log-entry-icon" style={{background:"rgba(168,85,247,.14)",color:"var(--purple)"}}>
               <span style={{fontSize:"22px"}}>📷</span>
@@ -6047,7 +5837,7 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScree
             <div className="log-entry-arrow">›</div>
           </div>
 
-          {/* 4 — Manual entry */}
+          {/* 3 — Manual entry */}
           <div className="log-entry-card" onClick={onNewTrip}>
             <div className="log-entry-icon log-icon-green">
               <span style={{fontSize:"22px"}}>✏️</span>
@@ -6218,31 +6008,31 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   // a re-render would find them already deleted and lose the carried-over data
   // (earnings/tips/dels vanished when coming from the Confirm screen's "add details").
   const [orderPrefill] = useState(() => DB.get("gt_order_prefill"));
-  const [voicePrefill] = useState(() => DB.get("gt_voice_prefill"));
+  const [entryPrefill] = useState(() => DB.get("gt_entry_prefill"));
   useEffect(() => {
     if (orderPrefill) DB.remove("gt_order_prefill");
-    if (voicePrefill) DB.remove("gt_voice_prefill");
+    if (entryPrefill) DB.remove("gt_entry_prefill");
   }, []);
 
   const [totalEarned, setTotalEarned] = useState(
-    voicePrefill?.earned != null ? String(voicePrefill.earned)
+    entryPrefill?.earned != null ? String(entryPrefill.earned)
     : orderPrefill ? String(orderPrefill.totalEarned)
     : (editTrip ? String(editTrip.totalEarned) : "")
   );
-  const [tip, setTip]     = useState(voicePrefill?.tips != null ? String(voicePrefill.tips) : (editTrip ? String(editTrip.tip) : ""));
-  const [bonus, setBonus] = useState(voicePrefill?.bonus != null ? String(voicePrefill.bonus) : (editTrip ? String(editTrip.bonus) : ""));
+  const [tip, setTip]     = useState(entryPrefill?.tips != null ? String(entryPrefill.tips) : (editTrip ? String(editTrip.tip) : ""));
+  const [bonus, setBonus] = useState(entryPrefill?.bonus != null ? String(entryPrefill.bonus) : (editTrip ? String(editTrip.bonus) : ""));
 
   // Online Time — total time on shift (h + m, matching Uber Eats / DoorDash "Online" field)
   const [onlineHrs, setOnlineHrs]   = useState(
-    voicePrefill?.mins != null ? String(Math.floor(voicePrefill.mins / 60)) : initOnlineHrs
+    entryPrefill?.mins != null ? String(Math.floor(entryPrefill.mins / 60)) : initOnlineHrs
   );
   const [onlineMins, setOnlineMins] = useState(
-    voicePrefill?.mins != null ? String(voicePrefill.mins % 60) : initOnlineMins
+    entryPrefill?.mins != null ? String(entryPrefill.mins % 60) : initOnlineMins
   );
 
   const [kmMode, setKmMode]       = useState("total"); // "total" | "odometer"
   const [totalKmInput, setTotalKmInput] = useState(
-    voicePrefill?.km != null ? String(voicePrefill.km)
+    entryPrefill?.km != null ? String(entryPrefill.km)
     : (initKmFromGps || (editTrip ? String(editTrip.totalKm) : ""))
   );
   const [odoStart, setOdoStart]   = useState("");
@@ -6259,14 +6049,14 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     orderPrefill ? String((orderPrefill.totalMin||0) % 60) : (editTrip ? String((editTrip.activeMins||0)%60) : "")
   );
   const [dels, setDels] = useState(
-    voicePrefill?.dels != null ? String(voicePrefill.dels)
+    entryPrefill?.dels != null ? String(entryPrefill.dels)
     : orderPrefill ? String(orderPrefill.dels)
     : (editTrip ? String(editTrip.dels) : "")
   );
   const [expenses, setExpenses] = useState(editTrip ? String(editTrip.expenses) : "0");
   const [notes, setNotes] = useState(editTrip?.notes ? editTrip.notes : "");
   const [platform, setPlatform] = useState(() => {
-    const explicit = voicePrefill?.platform || orderPrefill?.platform || editTrip?.platform;
+    const explicit = entryPrefill?.platform || orderPrefill?.platform || editTrip?.platform;
     if (explicit) return explicit;
     // Fall back to the user's saved Default Platform setting (if not "none").
     const dflt = DB.get("gt_default_platform");
@@ -6843,9 +6633,9 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
   };
 
   const handoff = () => {
-    // Carry the current edits forward into the full form via voice-prefill slot,
+    // Carry the current edits forward into the full form via the entry-prefill
     // so nothing the user already typed is lost on the way to NewTripScreen.
-    DB.set("gt_voice_prefill", {
+    DB.set("gt_entry_prefill", {
       earned: totalEarned.trim() ? n(totalEarned) : undefined,
       tips:   tip.trim() ? n(tip) : undefined,
       dels:   dels.trim() ? n(dels) : undefined,
@@ -9544,7 +9334,7 @@ export default function GigTrack() {
             DB.remove("gt_weeklygoal");
             DB.remove("gt_activeshift");
             DB.remove("gt_live_status");
-            DB.remove("gt_voice_prefill");
+            DB.remove("gt_entry_prefill");
             DB.remove("gt_deleted_seeds");
             setUser(null);
             setTrips([]);
@@ -9896,7 +9686,7 @@ export default function GigTrack() {
     ["gt_user","gt_trips","gt_kmpref","gt_atorate","gt_targets","gt_weeklygoal",
      "gt_fuel_efficiency","gt_fuel_price","gt_region","gt_show_scoring","gt_activeshift",
      "gt_active_orders","gt_order_prefill","gt_live_status","gt_last_user_id",
-     "gt_voice_prefill"].forEach(k => DB.remove(k));
+     "gt_entry_prefill"].forEach(k => DB.remove(k));
 
     // Sign out — the auth user is gone server-side, so clear the local session too.
     try { await signOut(); } catch { /* already gone; ignore */ }
@@ -10103,7 +9893,7 @@ export default function GigTrack() {
   const unlocked = isPro || isBeta; // premium features open (NOT screenshots)
 
   // ── Free-tier gates ──
-  // Shifts are UNLIMITED on free (manual, timer and voice all cost nothing to run —
+  // Shifts are UNLIMITED on free (manual and timer both cost nothing to run —
   // they're just DB rows). Only screenshot import is metered, because it's the one
   // entry method with a real per-use cost (Claude API, ~1.3c per import).
   const FREE_SCREENSHOT_LIMIT = 10;
@@ -10243,9 +10033,6 @@ export default function GigTrack() {
           onNewTrip={() => {
             setTimerPrefill(null); setEditId(null); setScreen("newtrip");
           }}
-          onVoiceEntry={() => {
-            setScreen("voiceentry");
-          }}
           onScreenshotImport={() => {
             // Shifts are unlimited — only screenshot IMPORT is metered, because
             // it's the only entry method with a real per-use cost (Claude API).
@@ -10331,26 +10118,6 @@ export default function GigTrack() {
                 if (newCount != null) setScreenshotImportsUsed(newCount);
               });
             });
-          }}
-        />
-      )}
-      {screen === "voiceentry" && (
-        <VoiceEntryScreen
-          onBack={() => setScreen("logshift")}
-          onParsed={(parsed) => {
-            // Stash parsed values in localStorage so NewTripScreen picks them up
-            const prefill = {};
-            if (parsed.earned   != null) prefill.earned   = parsed.earned;
-            if (parsed.tips     != null) prefill.tips     = parsed.tips;
-            if (parsed.bonus    != null) prefill.bonus    = parsed.bonus;
-            if (parsed.km       != null) prefill.km       = parsed.km;
-            if (parsed.dels     != null) prefill.dels     = parsed.dels;
-            if (parsed.mins     != null) prefill.mins     = parsed.mins;
-            if (parsed.platform != null) prefill.platform = parsed.platform;
-            DB.set("gt_voice_prefill", prefill);
-            setTimerPrefill(null);
-            setEditId(null);
-            setScreen("newtrip");
           }}
         />
       )}
