@@ -697,8 +697,17 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.07";
+const CURRENT_VERSION = "ALPHA 0.08";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.08",
+    date: "27/7/26",
+    items: [
+      { tag: "IMPROVED", text: "Exports are cleaner — CSV and PDF no longer include a time column (shifts are tracked by date now), and the PDF drops the confusing tax-savings estimate. The ATO rate shown always matches the current year." },
+      { tag: "FIXED", text: "Your Beta Plan no longer flips to Free after saving settings or reloading the app." },
+      { tag: "FIXED", text: "Editing a shift no longer removes it from your zone benchmarks." },
+    ],
+  },
   {
     version: "ALPHA 0.07",
     date: "27/7/26",
@@ -7155,14 +7164,21 @@ function exportCSV(trips, user) {
   }
   const sorted = [...trips].sort((a, b) => new Date(a.ts) - new Date(b.ts));
 
+  // Real ATO rate(s) actually applied across these shifts (per financial year,
+  // by each shift's date) — mirrors the PDF, so the header is never stale.
+  const rateLabel = [...new Set(sorted.map(t => atoRateForDate(t.ts)))]
+    .sort((a, b) => a - b)
+    .map(r => `$${r.toFixed(2)}`)
+    .join(" / ");
+
   // CSV header — only the columns the user wants
   const header = [
-    "Date", "Time", "Platform",
+    "Date", "Platform",
     "Total Earned", "Base Earnings", "Tips", "Bonuses",
     "Deliveries",
     "Online Hours", "Active Hours",
     "Total Km", "Active Km",
-    "ATO Deduction ($0.88/km)",
+    `ATO Deduction (${rateLabel}/km)`,
     "Expenses",
     "Notes",
     "Source",
@@ -7181,9 +7197,8 @@ function exportCSV(trips, user) {
   const rows = sorted.map(t => {
     const d = new Date(t.ts);
     const dateStr = d.toLocaleDateString("en-AU", { year: "numeric", month: "2-digit", day: "2-digit" });
-    const timeStr = d.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", hour12: false });
     return [
-      esc(dateStr), esc(timeStr), esc(t.platform || ""),
+      esc(dateStr), esc(t.platform || ""),
       esc((t.totalEarned ?? 0).toFixed(2)),
       esc((t.base ?? 0).toFixed(2)),
       esc((t.tip ?? 0).toFixed(2)),
@@ -7258,10 +7273,8 @@ function exportPDF(trips, user) {
     ATO_RATES[fy] != null ? ATO_RATES[fy] : atoRateForDate(`${fy}-07-01`)
   ))].sort((a, b) => a - b);
   const reportRateLabel = reportRates.map(r => `$${r.toFixed(2)}`).join(" / ");
-  const estTaxSaved = totalDed * 0.325; // estimate at common 32.5% marginal rate
 
   const fmtD = iso => new Date(iso).toLocaleDateString("en-AU", { day:"2-digit", month:"short", year:"numeric" });
-  const fmtT = iso => new Date(iso).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" });
   const fmtMoney = v => `$${(v || 0).toFixed(2)}`;
 
   // Table rows
@@ -7275,7 +7288,6 @@ function exportPDF(trips, user) {
     return `<tr>
       <td class="num">${i+1}</td>
       <td>${fmtD(t.ts)}</td>
-      <td>${fmtT(t.ts)}</td>
       <td>${platName}</td>
       <td class="num">${dur}</td>
       <td class="num">${(t.totalKm || 0).toFixed(1)}</td>
@@ -7311,7 +7323,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;fo
 .period{background:#FDEDE7;border:1px solid #F6C3B2;border-radius:8px;padding:8px 14px;font-size:10px;color:#C0421C;margin-bottom:18px;font-weight:600;letter-spacing:.02em;}
 
 /* Hero squares */
-.hero-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+.hero-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;}
 .hero{border:1px solid #EDE6DC;border-radius:10px;padding:14px 14px 12px;background:#fff;position:relative;overflow:hidden;}
 .hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
 .hero.h-green::before{background:#F0562E;}
@@ -7397,11 +7409,6 @@ tfoot td.ded{color:#1E9E68;}
     <div class="hero-value">${totalTotalKm.toFixed(1)} km</div>
     <div class="hero-sub">${totalActiveKm.toFixed(1)} km on active delivery</div>
   </div>
-  <div class="hero h-purple">
-    <div class="hero-label">Est. tax saved</div>
-    <div class="hero-value">${fmtMoney(estTaxSaved)}</div>
-    <div class="hero-sub">at 32.5% marginal rate</div>
-  </div>
 </div>
 
 <!-- MINI BREAKDOWN -->
@@ -7419,7 +7426,6 @@ tfoot td.ded{color:#1E9E68;}
     <tr>
       <th class="num">#</th>
       <th>Date</th>
-      <th>Start</th>
       <th>Platform</th>
       <th class="num">Duration</th>
       <th class="num">Total km</th>
@@ -7434,7 +7440,7 @@ tfoot td.ded{color:#1E9E68;}
   <tbody>${rows}</tbody>
   <tfoot>
     <tr>
-      <td colspan="4">TOTAL (${sorted.length} shifts)</td>
+      <td colspan="3">TOTAL (${sorted.length} shifts)</td>
       <td class="num">${totalHrs.toFixed(1)}h</td>
       <td class="num">${totalTotalKm.toFixed(1)}</td>
       <td class="num">${totalDels}</td>
@@ -7449,7 +7455,7 @@ tfoot td.ded{color:#1E9E68;}
 
 <div class="notes">
   <strong>ATO disclaimer & method</strong>
-  This report uses the ATO cents per kilometre method. Rates are applied per financial year based on each shift's date (${reportRateLabel}/km), capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. Estimated tax saving applies a 32.5% marginal rate as a guide only — your actual rate depends on your total taxable income. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.
+  This report uses the ATO cents per kilometre method. Rates are applied per financial year based on each shift's date (${reportRateLabel}/km), capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.
 </div>
 
 <div class="footer">
@@ -8565,7 +8571,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
   const save = () => {
     const r = parseFloat(rate);
     if (!isNaN(r) && r > 0) onAtoRate(r);
-    onUpdateUser({ name: name.trim() || user.name, startOdo: parseFloat(odo) || user.startOdo, isPro: user.isPro, isGuest: user.isGuest });
+    onUpdateUser({ name: name.trim() || user.name, startOdo: parseFloat(odo) || user.startOdo, isPro: user.isPro, isGuest: user.isGuest, isBeta: user.isBeta, plan: user.plan });
     const newTargets = {
       hourly:     parseFloat(tHourly)     || DEFAULT_TARGETS.hourly,
       perDel:     parseFloat(tPerDel)     || DEFAULT_TARGETS.perDel,
@@ -9698,8 +9704,14 @@ export default function GigTrack() {
   }, [liveStatus?.online, liveStatus?.zone, liveStatus?.platform, region]);
 
   const saveUser = (u) => {
-    DB.set("gt_user", u);
-    setUser(u);
+    // Merge into the existing user rather than replace, so a partial update
+    // (e.g. save-settings passing only name/odo) can't drop fields like
+    // plan/isBeta/email and silently reset the account to Free.
+    setUser(prev => {
+      const merged = { ...(prev || {}), ...u };
+      DB.set("gt_user", merged);
+      return merged;
+    });
   };
 
   // Push current profile settings to the cloud. Pass overrides for the field
