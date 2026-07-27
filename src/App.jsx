@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, saveScreenshotCredits, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -116,6 +116,21 @@ const BENCHMARK_MIN_SHIFTS = 2;
 // with more shifts per zone; tighten later (e.g. 14) once data volume is high
 // and recency matters more.
 const BENCHMARK_WINDOW_DAYS = 30;
+
+// ── BETA PLAN ──
+// While BETA_MODE is on: every new signup is placed on the "beta" plan (no
+// free/paid choice, no paywalls shown), and ALL premium features are unlocked
+// EXCEPT screenshot import — the one feature with a real per-use cost (Claude
+// vision API). Screenshots run on a credit balance: FREE_SCREENSHOT_CREDITS to
+// start, topped up by one-time purchases. Flip BETA_MODE off at go-live to
+// restore the normal free/pro paywalls.
+const BETA_MODE = true;
+const FREE_SCREENSHOT_CREDITS = 10;
+// One-time top-up packs (credits added to the running balance).
+const SCREENSHOT_PACKS = [
+  { id: "pack100", credits: 100, price: 3.99, label: "100 screenshots" },
+  { id: "pack200", credits: 200, price: 5.99, label: "200 screenshots" },
+];
 
 // Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
 // Rules: default = first 3 id segments. Some cities over-split at 3 segments
@@ -2021,9 +2036,10 @@ function WelcomeScreen({ onSignIn }) {
 // ─── SETUP FLOW ───
 function SetupScreen({ onComplete }) {
   // mode: "choose" | "paywall" | "name"
-  // plan: "free" | "pro"
-  const [mode, setMode]   = useState("choose");
-  const [plan, setPlan]   = useState(null);
+  // plan: "free" | "pro" | "beta"
+  // In beta, skip the plan chooser/paywall entirely — go straight to name/region.
+  const [mode, setMode]   = useState(BETA_MODE ? "name" : "choose");
+  const [plan, setPlan]   = useState(BETA_MODE ? "beta" : null);
   const [name, setName]   = useState("");
   const [selectedRegion, setSelectedRegion] = useState("");
   const [err, setErr]     = useState("");
@@ -2066,14 +2082,17 @@ function SetupScreen({ onComplete }) {
   );
 
   const finish = (chosenPlan) => {
+    const betaPlan = BETA_MODE;
     onComplete({
       name: name.trim(),
       email: null,
       startOdo: 0,
       kmPref: "active",
       region: selectedRegion || null,
-      isGuest: chosenPlan !== "pro",
-      isPro: chosenPlan === "pro",
+      plan: betaPlan ? "beta" : chosenPlan,
+      isBeta: betaPlan,
+      isGuest: betaPlan ? false : chosenPlan !== "pro",
+      isPro: betaPlan ? false : chosenPlan === "pro",
     });
   };
 
@@ -2782,6 +2801,67 @@ function PlatformPickerModal({ open, onPick, onClose, title = "Going online", su
             fontSize:"13px",fontWeight:"500",
           }}
         >Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── BETA CREDITS MODAL ─── Buy one-time screenshot credit packs (beta).
+function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
+  const [busy, setBusy] = useState(null); // pack id being "purchased"
+  if (!open) return null;
+  const handleBuy = async (pack) => {
+    setBusy(pack.id);
+    await onBuy(pack);          // fake purchase → adds credits
+    setBusy(null);
+    onClose();
+  };
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
+      display:"flex",alignItems:"flex-end",justifyContent:"center",
+      zIndex:1000,backdropFilter:"blur(4px)",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background:"var(--surface)",borderTopLeftRadius:"20px",borderTopRightRadius:"20px",
+        width:"100%",maxWidth:"480px",padding:"20px 18px 28px",boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
+      }}>
+        <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Screenshot credits</div>
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",lineHeight:"1.5"}}>
+          You have <strong style={{color: remaining === 0 ? "var(--red)" : "var(--pos)"}}>{remaining}</strong> screenshot import{remaining === 1 ? "" : "s"} left. Top up with a one-time pack — no subscription, credits never expire.
+        </div>
+
+        {SCREENSHOT_PACKS.map(pack => (
+          <button
+            key={pack.id}
+            onClick={() => handleBuy(pack)}
+            disabled={busy != null}
+            style={{
+              width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",
+              padding:"16px",marginBottom:"10px",cursor:busy != null ? "default" : "pointer",
+              background:"var(--elevated)",border:"1px solid var(--coral-border)",borderRadius:"14px",
+            }}
+          >
+            <div style={{textAlign:"left"}}>
+              <div style={{fontSize:"15px",fontWeight:"800",color:"var(--text)"}}>{pack.credits} screenshots</div>
+              <div style={{fontSize:"11px",color:"var(--muted)",fontWeight:"500",marginTop:"2px"}}>{(pack.price / pack.credits * 100).toFixed(1)}c each · one-time</div>
+            </div>
+            <div style={{
+              fontSize:"15px",fontWeight:"800",color:"var(--on-coral)",
+              background:"var(--coral)",padding:"8px 16px",borderRadius:"100px",
+            }}>{busy === pack.id ? "…" : `$${pack.price.toFixed(2)}`}</div>
+          </button>
+        ))}
+
+        <button onClick={onClose} style={{
+          width:"100%",marginTop:"8px",padding:"13px",background:"transparent",border:"none",cursor:"pointer",
+          color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
+        }}>Maybe later</button>
+
+        <div style={{fontSize:"10px",color:"var(--muted2)",textAlign:"center",marginTop:"6px",lineHeight:"1.5"}}>
+          Everything else is free during beta. Screenshots use AI to read your summaries, which has a small cost — that's all we charge for.
+        </div>
       </div>
     </div>
   );
@@ -5822,14 +5902,14 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, onScree
             <div className="log-entry-text">
               <div className="log-entry-title">
                 Import from screenshot
-                {!isPro && screenshotsRemaining != null && (
+                {screenshotsRemaining != null && (
                   <span style={{
                     marginLeft:"8px",fontSize:"10px",fontWeight:"700",
                     background: screenshotsRemaining === 0 ? "var(--red-dim)" : "var(--green-dim)",
                     color: screenshotsRemaining === 0 ? "var(--red)" : "var(--green)",
                     padding:"2px 7px",borderRadius:"5px",letterSpacing:".04em",
                   }}>
-                    {screenshotsRemaining === 0 ? "LIMIT REACHED" : `${screenshotsRemaining} LEFT`}
+                    {screenshotsRemaining === 0 ? "0 LEFT" : `${screenshotsRemaining} LEFT`}
                   </span>
                 )}
               </div>
@@ -8435,7 +8515,7 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -8524,7 +8604,12 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:"15px",fontWeight:"700",color:"var(--text)",marginBottom:"2px",letterSpacing:"-.01em"}}>{user?.name || "Driver"}</div>
                   <div style={{fontSize:"11px",fontWeight:"600"}}>
-                    {isPro
+                    {isBeta
+                      ? <span style={{color:"var(--coral)",display:"inline-flex",alignItems:"center",gap:"5px"}}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l2.9 6.3 6.6.7-5 4.4 1.5 6.5L12 17l-5.5 3.4L8 13.9l-5-4.4 6.6-.7z"/></svg>
+                          Beta Plan
+                        </span>
+                      : isPro
                       ? <span style={{color:"var(--coral)",display:"inline-flex",alignItems:"center",gap:"5px"}}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l2.9 6.3 6.6.7-5 4.4 1.5 6.5L12 17l-5.5 3.4L8 13.9l-5-4.4 6.6-.7z"/></svg>
                           GigTrack Pro
@@ -8688,6 +8773,24 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
           <div>
             <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools & Export</div>
             <SettingsSectionCard>
+              {/* Screenshot credits — buy top-up packs (beta) */}
+              {isBeta && (
+                <div
+                  className="settings-item"
+                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                  onClick={onBuyCredits}
+                >
+                  <div className="settings-item-left">
+                    <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg>
+                      Screenshot credits
+                    </div>
+                    <div className="settings-item-sub">{screenshotsRemaining != null ? `${screenshotsRemaining} left · tap to top up` : "Buy one-time import packs"}</div>
+                  </div>
+                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+                </div>
+              )}
+
               {/* Compare a Region — scout another zone's benchmarks */}
               <div
                 className="settings-item"
@@ -9184,6 +9287,7 @@ export default function GigTrack() {
   const [authUser, setAuthUser] = useState(null); // Supabase auth user (cloud identity)
   const [trips, setTrips]       = useState([]);
   const [screenshotImportsUsed, setScreenshotImportsUsed] = useState(0); // Cloud-tracked cumulative counter
+  const [screenshotCredits, setScreenshotCredits] = useState(FREE_SCREENSHOT_CREDITS); // total credits (free + purchased); cap on imports
   const [accountCreatedAt, setAccountCreatedAt] = useState(null); // ISO date from profile.created_at, used for the 30-day benchmark grace
   const [kmPref, setKmPref]     = useState("active");
   // null = no user override → each shift uses its own FY rate via atoRateForDate().
@@ -9213,6 +9317,7 @@ export default function GigTrack() {
   // user doesn't need a changelog for a version they never saw the prior one of).
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [betaCreditsOpen, setBetaCreditsOpen] = useState(false);
   useEffect(() => {
     const seen = DB.get("gt_last_seen_version");
     if (seen == null) {
@@ -9331,6 +9436,7 @@ export default function GigTrack() {
               }
               // Hydrate screenshot import counter from cloud
               setScreenshotImportsUsed(profile.screenshot_imports_used || 0);
+              setScreenshotCredits(profile.screenshot_credits || FREE_SCREENSHOT_CREDITS);
               setAccountCreatedAt(profile.created_at || null);
               showToast(`Welcome back, ${profile.name}!`);
               setScreen("home");
@@ -9388,6 +9494,7 @@ export default function GigTrack() {
       const p = await fetchProfile();
       if (p) {
         setScreenshotImportsUsed(p.screenshot_imports_used || 0);
+        setScreenshotCredits(p.screenshot_credits || FREE_SCREENSHOT_CREDITS);
         setAccountCreatedAt(p.created_at || null);
       }
     })();
@@ -9638,7 +9745,7 @@ export default function GigTrack() {
   };
 
   const handleSetupComplete = (data) => {
-    const u = { name: data.name, email: data.email, startOdo: data.startOdo, isGuest: data.isGuest !== false, isPro: !!data.isPro };
+    const u = { name: data.name, email: data.email, startOdo: data.startOdo, isGuest: data.isGuest !== false, isPro: !!data.isPro, isBeta: !!data.isBeta, plan: data.plan || (data.isPro ? "pro" : "free") };
     saveUser(u);
     setKmPref(data.kmPref);
     DB.set("gt_kmpref", data.kmPref);
@@ -9651,6 +9758,8 @@ export default function GigTrack() {
       kmPref: data.kmPref,
       weeklyGoal: weeklyGoal,
       isPro: u.isPro,
+      isBeta: u.isBeta,
+      plan: u.plan,
       isGuest: u.isGuest,
       startOdo: u.startOdo,
     }).catch(() => {});
@@ -9813,6 +9922,10 @@ export default function GigTrack() {
   const editTrip    = trips.find(t => t.id === editId);
 
   const isPro = !!user?.isPro;
+  // Beta plan: while BETA_MODE is on, beta users get everything unlocked (except
+  // screenshots). "unlocked" is the flag every former isPro gate should use.
+  const isBeta = BETA_MODE && (user?.plan === "beta" || !!user?.isBeta);
+  const unlocked = isPro || isBeta; // premium features open (NOT screenshots)
 
   // ── Free-tier gates ──
   // Shifts are UNLIMITED on free (manual, timer and voice all cost nothing to run —
@@ -9820,10 +9933,21 @@ export default function GigTrack() {
   // entry method with a real per-use cost (Claude API, ~1.3c per import).
   const FREE_SCREENSHOT_LIMIT = 10;
 
-  // Returns true if the user can import another screenshot (under limit OR pro)
-  // Uses cloud-tracked counter — never decreases when shifts are deleted
-  const canImportScreenshot = () => isPro || screenshotImportsUsed < FREE_SCREENSHOT_LIMIT;
-  const screenshotsRemaining = () => Math.max(0, FREE_SCREENSHOT_LIMIT - screenshotImportsUsed);
+  // Screenshot import is metered by a CREDIT BALANCE (screenshotCredits), which
+  // starts at FREE_SCREENSHOT_CREDITS and grows with one-time purchases. This is
+  // the one feature NOT unlocked by beta/pro, because each import has a real cost.
+  // Pre-beta Pro users (BETA_MODE off) still get unlimited.
+  const canImportScreenshot = () => (!BETA_MODE && isPro) || screenshotImportsUsed < screenshotCredits;
+  const screenshotsRemaining = () => Math.max(0, screenshotCredits - screenshotImportsUsed);
+  // Add a purchased pack to the running balance (fake purchase for now).
+  const addScreenshotCredits = (n) => {
+    setScreenshotCredits(prev => {
+      const next = prev + n;
+      DB.set("gt_screenshot_credits", next);
+      if (authUser) saveScreenshotCredits(next); // fire-and-forget cloud sync
+      return next;
+    });
+  };
 
   // ── 30-day grace for benchmarks/live drivers ──
   // Free users can see benchmarks for 30 days from signup, then it's gated.
@@ -9898,7 +10022,7 @@ export default function GigTrack() {
           activeShift={activeShift}
           weeklyGoal={weeklyGoal}
           region={region}
-          isPro={isPro}
+          isPro={unlocked}
           benchmarksUnlocked={benchmarksUnlocked}
           benchmarkDaysRemaining={benchmarkDaysRemaining}
           liveStatus={liveStatus}
@@ -9935,7 +10059,7 @@ export default function GigTrack() {
       )}
       {screen === "logshift" && (
         <LogShiftScreen
-          isPro={isPro}
+          isPro={unlocked}
           screenshotsRemaining={screenshotsRemaining()}
           onBack={() => setScreen("home")}
           onStartTimer={() => {
@@ -9948,15 +10072,19 @@ export default function GigTrack() {
             setScreen("voiceentry");
           }}
           onScreenshotImport={() => {
-            // Shifts are unlimited on free — only screenshot IMPORT is metered,
-            // because it's the only entry method with a real per-use cost (Claude API).
+            // Shifts are unlimited — only screenshot IMPORT is metered, because
+            // it's the only entry method with a real per-use cost (Claude API).
             if (!canImportScreenshot()) {
-              gateToPaywall(`You've used your ${FREE_SCREENSHOT_LIMIT} free screenshot imports. Upgrade to Pro for 100 per month.`);
+              if (BETA_MODE) {
+                setBetaCreditsOpen(true); // out of credits → buy a top-up pack
+              } else {
+                gateToPaywall(`You've used all your screenshot imports. Upgrade to Pro for more.`);
+              }
               return;
             }
             setScreen("screenshotimport");
           }}
-          onUpgrade={() => setScreen("paywall")}
+          onUpgrade={() => BETA_MODE ? setBetaCreditsOpen(true) : setScreen("paywall")}
         />
       )}
       {screen === "screenshotimport" && (
@@ -10089,7 +10217,7 @@ export default function GigTrack() {
           atoRate={atoRate}
           timerPrefill={timerPrefill}
           targets={targets}
-          isPro={isPro}
+          isPro={unlocked}
           onGoToSettings={() => setScreen("settings")}
           onUpgrade={() => setScreen("paywall")}
           showScoring={showScoring}
@@ -10098,7 +10226,7 @@ export default function GigTrack() {
       {screen === "log" && (
         <TripLogScreen
           trips={trips} kmPref={kmPref} user={user}
-          isPro={isPro}
+          isPro={unlocked}
           onBack={() => setScreen("home")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
           onUpgrade={() => setScreen("paywall")}
@@ -10131,6 +10259,9 @@ export default function GigTrack() {
           onBack={() => setScreen("home")}
           onCompareRegion={() => { setBenchmarksScout(true); setScreen("benchmarks"); }}
           onWhatsNew={() => setWhatsNewOpen(true)}
+          isBeta={isBeta}
+          onBuyCredits={() => setBetaCreditsOpen(true)}
+          screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
           kmPref={kmPref}
@@ -10155,7 +10286,7 @@ export default function GigTrack() {
             }
           }}
           onDeleteAccount={handleDeleteAccount}
-          isPro={isPro}
+          isPro={unlocked}
           onUpgrade={() => setScreen("paywall")}
           theme={theme}
           onTheme={setTheme}
@@ -10212,6 +10343,18 @@ export default function GigTrack() {
         open={changePasswordOpen}
         onClose={() => setChangePasswordOpen(false)}
         onSave={async (pw) => await updatePassword(pw)}
+      />
+      <BetaCreditsModal
+        open={betaCreditsOpen}
+        remaining={screenshotsRemaining()}
+        onClose={() => setBetaCreditsOpen(false)}
+        onBuy={async (pack) => {
+          // Fake purchase for now — no real payment. Real Stripe/RevenueCat
+          // wiring goes here later (checkout → webhook → grant credits).
+          await new Promise(r => setTimeout(r, 600)); // simulate checkout
+          addScreenshotCredits(pack.credits);
+          showToast(`Added ${pack.credits} screenshot credits`);
+        }}
       />
       <Toast msg={toast} />
       <PlatformPickerModal

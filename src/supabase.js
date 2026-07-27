@@ -114,6 +114,21 @@ export const updatePassword = async (newPassword) => {
 // `profile` shape: { name, region, weeklyGoal, kmPref, startOdo, isPro, isGuest, showScoring }
 // NOTE: fuel_eff / fuel_price columns still exist in the DB but are unused —
 // the fuel cost estimator was removed (stale price silently corrupted net earnings).
+// Lightweight credit-only update — avoids the full-profile upsert clobbering
+// other fields when we just want to bump the screenshot balance.
+export const saveScreenshotCredits = async (credits) => {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return { ok: false, error: "no_auth" };
+    const { error } = await supabase
+      .from("profiles")
+      .update({ screenshot_credits: credits })
+      .eq("id", user.id);
+    if (error) { console.warn("[GigTrack] saveScreenshotCredits error:", error.message); return { ok: false, error }; }
+    return { ok: true };
+  } catch (e) { console.warn("[GigTrack] saveScreenshotCredits threw:", e); return { ok: false, error: e }; }
+};
+
 export const saveProfile = async (profile) => {
   console.log("[GigTrack] saveProfile called", profile);
   try {
@@ -134,6 +149,11 @@ export const saveProfile = async (profile) => {
       start_odo:    profile.startOdo ?? null,
       show_scoring: profile.showScoring ?? true,
     };
+    // Beta plan + screenshot credits — only include when provided so a partial
+    // save (e.g. just credits) doesn't overwrite other fields with defaults.
+    if (profile.plan !== undefined)             row.plan = profile.plan;
+    if (profile.isBeta !== undefined)           row.is_beta = !!profile.isBeta;
+    if (profile.screenshotCredits !== undefined) row.screenshot_credits = profile.screenshotCredits;
     const { error } = await supabase
       .from("profiles")
       .upsert(row, { onConflict: "id" });
