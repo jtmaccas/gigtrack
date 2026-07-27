@@ -5374,6 +5374,7 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsed, setParsed] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
+  const [errorKind, setErrorKind] = useState("generic"); // network | timeout | unreadable | generic
   const [progressPct, setProgressPct] = useState(0);
   const [progressStep, setProgressStep] = useState("");
   const fileInputRef = useRef(null);
@@ -5398,12 +5399,26 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       setErrorMsg("Please choose an image file");
+      setErrorKind("unreadable");
       setStage("error");
       return;
     }
     setPickedFile(file);
     setPreviewUrl(URL.createObjectURL(file));
     startParse(file);
+  };
+
+  // Classify a failure into a kind that drives the error screen's copy and
+  // whether "Try again" re-runs the SAME image (network/timeout — image was
+  // fine) or sends the user back to pick a clearer one (unreadable).
+  const classifyError = (raw) => {
+    const msg = (raw || "").toString().toLowerCase();
+    if (msg.includes("timed out") || msg.includes("timeout")) return "timeout";
+    if (!navigator.onLine || msg.includes("failed to fetch") || msg.includes("network") ||
+        msg.includes("networkerror") || msg.includes("load failed")) return "network";
+    if (msg.includes("couldn't read") || msg.includes("could not read") ||
+        msg.includes("no text") || msg.includes("unreadable") || msg.includes("parse")) return "unreadable";
+    return "generic";
   };
 
   const startParse = async (file) => {
@@ -5416,7 +5431,7 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
     const steps = [
       { at: 10,  text: "Uploading screenshot…" },
       { at: 30,  text: "Asking AI to read it…" },
-      { at: 60,  text: "Extracting earnings & time…" },
+      { at: 60,  text: "Extracting earnings…" },
       { at: 85,  text: "Almost done…" },
     ];
     const animator = setInterval(() => {
@@ -5426,14 +5441,36 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
       if (step) setProgressStep(step.text);
     }, 120);
 
-    try {
-      const { parseShiftScreenshot } = await import("./screenshotImport.js");
-      const result = await parseShiftScreenshot(file);
+    // Timeout guard: never let the progress ring hang forever if the Edge
+    // Function or vision call stalls. Races the parse against a 30s limit.
+    const PARSE_TIMEOUT_MS = 30000;
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("timed out")), PARSE_TIMEOUT_MS);
+    });
+
+    const failTo = (kind, msg) => {
       clearInterval(animator);
+      clearTimeout(timeoutId);
+      setErrorKind(kind);
+      setErrorMsg(msg || "");
+      setStage("error");
+    };
+
+    try {
+      // Fail fast if the device is offline — don't spin for 30s.
+      if (!navigator.onLine) {
+        failTo("network", "You appear to be offline.");
+        return;
+      }
+
+      const { parseShiftScreenshot } = await import("./screenshotImport.js");
+      const result = await Promise.race([parseShiftScreenshot(file), timeout]);
+      clearInterval(animator);
+      clearTimeout(timeoutId);
 
       if (!result.ok) {
-        setErrorMsg(result.error || "Failed to parse");
-        setStage("error");
+        failTo(classifyError(result.error), result.error || "");
         return;
       }
 
@@ -5446,9 +5483,7 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
       }, 350);
 
     } catch (e) {
-      clearInterval(animator);
-      setErrorMsg(e.message || "Unknown error");
-      setStage("error");
+      failTo(classifyError(e?.message), e?.message || "");
     }
   };
 
@@ -5633,29 +5668,73 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
 
   // ── ERROR STAGE ──
   if (stage === "error") {
+    // Per-kind copy. network/timeout keep the picked image (re-run same file);
+    // unreadable/generic send the user back to choose a clearer screenshot.
+    const canRetrySame = (errorKind === "network" || errorKind === "timeout") && pickedFile != null;
+    const errorCopy = {
+      network: {
+        icon: "📡",
+        title: "Connection problem",
+        body: "We couldn't reach the server. Check your internet connection and try again — your screenshot is still here.",
+      },
+      timeout: {
+        icon: "⏳",
+        title: "Taking too long",
+        body: "The server took too long to respond. This is usually temporary — give it another go.",
+      },
+      unreadable: {
+        icon: "😕",
+        title: "Couldn't read that image",
+        body: "We couldn't pull the numbers from this screenshot. Try a clearer, full screenshot of your shift summary.",
+      },
+      generic: {
+        icon: "😕",
+        title: "Something went wrong",
+        body: "We couldn't read this screenshot. Try again with a clearer image.",
+      },
+    };
+    const c = errorCopy[errorKind] || errorCopy.generic;
+    const retry = () => {
+      if (canRetrySame) {
+        setErrorMsg(""); setErrorKind("generic");
+        startParse(pickedFile); // re-run the same image; no credit is spent on parse
+      } else {
+        setStage("pick"); setErrorMsg(""); setErrorKind("generic");
+      }
+    };
     return (
       <div className="view active">
         <div className="topbar">
           <button className="topbar-back" onClick={onBack}>←</button>
-          <div className="topbar-title">Couldn't parse</div>
+          <div className="topbar-title">{c.title}</div>
         </div>
         <div className="scroll-area" style={{padding:"32px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
-          <div style={{fontSize:"42px",marginBottom:"14px"}}>😕</div>
+          <div style={{fontSize:"42px",marginBottom:"14px"}}>{c.icon}</div>
           <div style={{fontFamily:"'Inter',sans-serif",fontSize:"16px",fontWeight:"700",color:"var(--text)",marginBottom:"6px",textAlign:"center"}}>
-            Something went wrong
+            {c.title}
           </div>
           <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"24px",textAlign:"center",maxWidth:"320px",lineHeight:"1.55"}}>
-            {errorMsg || "We couldn't read this screenshot. Try again with a clearer image."}
+            {c.body}
           </div>
           <button
-            onClick={() => { setStage("pick"); setErrorMsg(""); }}
+            onClick={retry}
             style={{
               width:"100%",maxWidth:"320px",padding:"14px",
               background:"var(--green)",color:"var(--on-coral)",
               border:"none",borderRadius:"13px",cursor:"pointer",
               fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
             }}
-          >Try again</button>
+          >{canRetrySame ? "Try again" : "Choose another screenshot"}</button>
+          {canRetrySame && (
+            <button
+              onClick={() => { setStage("pick"); setErrorMsg(""); setErrorKind("generic"); }}
+              style={{
+                width:"100%",maxWidth:"320px",marginTop:"10px",padding:"13px",
+                background:"transparent",border:"none",cursor:"pointer",
+                color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
+              }}
+            >Choose a different image</button>
+          )}
         </div>
       </div>
     );
