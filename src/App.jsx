@@ -6175,9 +6175,13 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   );
   const [expenses, setExpenses] = useState(editTrip ? String(editTrip.expenses) : "0");
   const [notes, setNotes] = useState(editTrip?.notes ? editTrip.notes : "");
-  const [platform, setPlatform] = useState(
-    voicePrefill?.platform || orderPrefill?.platform || editTrip?.platform || null
-  );
+  const [platform, setPlatform] = useState(() => {
+    const explicit = voicePrefill?.platform || orderPrefill?.platform || editTrip?.platform;
+    if (explicit) return explicit;
+    // Fall back to the user's saved Default Platform setting (if not "none").
+    const dflt = DB.get("gt_default_platform");
+    return dflt && dflt !== "none" ? dflt : null;
+  });
   const [errors, setErrors] = useState({});
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [valMsg, setValMsg] = useState("");
@@ -6225,6 +6229,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     if (kmMode === "total" && (!totalKmInput.trim() || isNaN(parseFloat(totalKmInput)))) e.km = true;
     if (kmMode === "odometer" && (!odoStart.trim() || !odoEnd.trim() || derivedTotalKm <= 0)) e.km = true;
     if (!dels.trim() || isNaN(parseFloat(dels))) e.dels = true;
+    if (!platform) e.platform = true;
     setErrors(e);
     if (Object.keys(e).length) {
       const labels = [];
@@ -6232,6 +6237,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
       if (e.onlineTime) labels.push("Online Time");
       if (e.km) labels.push("Distance");
       if (e.dels) labels.push("Deliveries");
+      if (e.platform) labels.push("Platform");
       setValMsg("Required: " + labels.join(", "));
       return false;
     }
@@ -6540,7 +6546,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
                   display:"flex",alignItems:"center",justifyContent:"center",
                   fontSize:"12px",fontWeight:"700",
                 }}>{platform ? "✓" : ""}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Platform</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color: errors.platform ? "var(--red)" : "var(--muted)",fontWeight:"500"}}>Platform{errors.platform ? " · required" : ""}</div>
               </div>
               <div style={{display:"flex",gap:"6px"}}>
                 {[
@@ -6696,7 +6702,10 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
   const [onlineHrs, setOnlineHrs]     = useState(initHrs);
   const [onlineMins, setOnlineMins]   = useState(initMins);
   const [totalKmInput, setTotalKmInput] = useState(initKm);
-  const [platform, setPlatform]       = useState(null);
+  const [platform, setPlatform]       = useState(() => {
+    const dflt = DB.get("gt_default_platform");
+    return dflt && dflt !== "none" ? dflt : null;
+  });
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [platformOpen, setPlatformOpen]   = useState(false);
 
@@ -6721,6 +6730,7 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
   const save = () => {
     setSaveAttempted(true);
     if (!totalEarned.trim() || isNaN(parseFloat(totalEarned))) return;
+    if (!platform) return; // platform is required
     const inputs = {
       base: derivedBase, tip: n(tip), bonus: 0,
       tDel: derivedTotalMin, tWait: 0,
@@ -6836,10 +6846,14 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
             onClick={() => setPlatformOpen(true)}
             style={{
               width:"100%", textAlign:"left", padding:"12px 14px", borderRadius:"10px",
-              border:"0.5px solid var(--border)", background:"var(--surface)",
+              border:`0.5px solid ${saveAttempted && !platform ? "var(--red)" : "var(--border)"}`,
+              background:"var(--surface)",
               color: platform ? "var(--text)" : "var(--muted2)", fontSize:"14px", cursor:"pointer",
             }}
           >{platformLabel}</button>
+          {saveAttempted && !platform && (
+            <div style={{fontSize:"11px",color:"var(--red)",fontWeight:"600",marginTop:"5px",paddingLeft:"2px"}}>Please select a platform</div>
+          )}
 
           {/* ── LIVE PREVIEW ── */}
           {totalEarned.trim() && !isNaN(parseFloat(totalEarned)) && (
