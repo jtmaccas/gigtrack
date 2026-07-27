@@ -697,8 +697,17 @@ const DB = {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.08";
+const CURRENT_VERSION = "ALPHA 0.09";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.09",
+    date: "27/7/26",
+    items: [
+      { tag: "IMPROVED", text: "Insights now shows real date ranges (e.g. 'Jul 6–12') instead of 'Week 1', and the 'This FY' view correctly starts from July." },
+      { tag: "IMPROVED", text: "The 'best days to drive' chart is easier to read — the gap between your best and quietest days now stands out clearly." },
+      { tag: "IMPROVED", text: "Benchmarks filter out unusual shifts (very short trips, one-off outliers) so the community numbers stay accurate." },
+    ],
+  },
   {
     version: "ALPHA 0.08",
     date: "27/7/26",
