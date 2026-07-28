@@ -365,6 +365,30 @@ export const fetchStateLeaderboard = async (state, days = 30, minShifts = 2, lim
   }
 };
 
+// ── Tier 5: real state-wide busiest platform (across all drivers) ──
+// Returns { label, pct, shifts } for the most-driven platform in the state over
+// the window, or null when the gate isn't met (app shows an honest empty state).
+export const fetchStatePlatformSplit = async (state, days = 30, minShifts = 2) => {
+  if (!state) return null;
+  try {
+    const { data, error } = await supabase.rpc("get_state_platform_split_v2", {
+      p_state: state,
+      p_days: days,
+      p_min_shifts: minShifts,
+    });
+    if (error) { console.warn("[GigTrack] fetchStatePlatformSplit error:", error.message); return null; }
+    if (!Array.isArray(data) || data.length === 0) return null;
+    const top = data[0]; // SQL orders by shift_count desc
+    const label = top.platform === "uber_eats" ? "Uber Eats"
+                : top.platform === "doordash"  ? "DoorDash"
+                : "Both";
+    return { label, pct: top.pct ?? null, shifts: top.shift_count ?? 0 };
+  } catch (e) {
+    console.warn("[GigTrack] fetchStatePlatformSplit threw:", e);
+    return null;
+  }
+};
+
 // ── Tier 3: real "best days to drive" (median $/hr per weekday) ──
 // Returns a Mon..Sun array of { median, shifts } (index 0 = Monday), or null
 // when the gate isn't met. Uses shift DATE only — no start time needed.

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, saveScreenshotCredits, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, saveScreenshotCredits, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -4022,6 +4022,22 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
     return () => { cancelled = true; };
   }, [stateLabel]);
 
+  // ── Tier 5: real state-wide busiest platform (across all drivers) ──
+  // undefined → loading; null → gate not met (honest empty state);
+  // { label, pct } → real cross-user split.
+  const [statePlatform, setStatePlatform] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setStatePlatform(undefined);
+    if (stateLabel && stateLabel !== "your state") {
+      fetchStatePlatformSplit(stateLabel, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS)
+        .then(r => { if (!cancelled) setStatePlatform(r); });
+    } else {
+      setStatePlatform(null);
+    }
+    return () => { cancelled = true; };
+  }, [stateLabel]);
+
   // ── Tier 3: real "best days" day-of-week strip for the active bucket ──
   const [dow, setDow] = useState(undefined);
   useEffect(() => {
@@ -4083,21 +4099,6 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
   const stateShiftTotal = hasRealBoard
     ? stateBoard.reduce((sum, r) => sum + (r.shifts || 0), 0)
     : 0;
-
-  // Real busiest platform from the user's own shifts in the window. The RPC
-  // doesn't return a cross-user platform split yet, so this reflects the
-  // driver's own mix — honest, and "—" when there's nothing logged.
-  const platformSplit = (() => {
-    const cutoff = Date.now() - BENCHMARK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-    const recent = trips.filter(t => new Date(t.ts).getTime() >= cutoff && t.platform);
-    if (!recent.length) return null;
-    const counts = { uber_eats: 0, doordash: 0, both: 0 };
-    for (const t of recent) counts[t.platform] = (counts[t.platform] || 0) + 1;
-    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-    const label = top[0] === "uber_eats" ? "Uber Eats" : top[0] === "doordash" ? "DoorDash" : "Both";
-    const pct = Math.round((top[1] / recent.length) * 100);
-    return { label, pct };
-  })();
 
   // The user's own real median $/hr in this bucket, and their real position on
   // the distribution (from the Tier-2 percentile RPC). Both null when we don't
@@ -4381,7 +4382,13 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="Busiest platform" value={platformSplit ? platformSplit.label : "—"} sub={platformSplit ? `${platformSplit.pct}% of your trips` : "no shifts logged yet"} tone="coral" />
+                <BenchStat
+                  label="Busiest platform"
+                  value={statePlatform ? statePlatform.label : "—"}
+                  sub={statePlatform
+                    ? `${statePlatform.pct}% of ${stateLabel} shifts`
+                    : (statePlatform === undefined ? "loading…" : "not enough data yet")}
+                  tone="coral" />
                 <BenchStat label="Shifts logged" value={stateShiftTotal > 0 ? String(stateShiftTotal) : "—"} sub={`across ${stateLabel} · 30d`} tone="green" />
               </div>
 
