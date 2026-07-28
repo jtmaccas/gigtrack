@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, saveScreenshotCredits, fetchProfile, incrementScreenshotImportsUsed, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, startCreditCheckout, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -2915,9 +2915,10 @@ function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
   if (!open) return null;
   const handleBuy = async (pack) => {
     setBusy(pack.id);
-    await onBuy(pack);          // fake purchase → adds credits
+    await onBuy(pack);          // success → redirects to Stripe (page leaves).
+    // If we're still here, checkout failed (onBuy returned without navigating).
+    // Clear busy and keep the modal open so the user can retry.
     setBusy(null);
-    onClose();
   };
   return (
     <div onClick={onClose} style={{
@@ -9499,6 +9500,57 @@ export default function GigTrack() {
     })();
   }, [authUser]);
 
+  // ── Return from Stripe checkout ──
+  // Stripe redirects back to ?checkout=success (or =cancelled) after payment.
+  // The webhook grants credits server-side, but it fires asynchronously — it may
+  // land a moment before OR after this redirect. So on success we re-fetch the
+  // profile a few times (short backoff) until the balance reflects the new
+  // credits, then show a toast and clean the URL. This runs once on mount.
+  const checkoutHandledRef = useRef(false);
+  useEffect(() => {
+    if (checkoutHandledRef.current) return;
+    if (!authUser) return; // need auth before we can fetch the profile
+    const params = new URLSearchParams(window.location.search);
+    const checkout = params.get("checkout");
+    if (!checkout) return;
+    checkoutHandledRef.current = true;
+
+    // Always strip the query params so a refresh doesn't re-trigger.
+    const cleanUrl = () => {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("checkout");
+      u.searchParams.delete("session_id");
+      window.history.replaceState({}, "", u.pathname + u.search);
+    };
+
+    if (checkout === "cancelled") {
+      showToast("Checkout cancelled — no charge made");
+      cleanUrl();
+      return;
+    }
+
+    if (checkout === "success") {
+      (async () => {
+        const before = screenshotCredits;
+        let applied = false;
+        // Try up to 4 times over ~6s to catch the webhook grant.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const p = await fetchProfile();
+          if (p && typeof p.screenshot_credits === "number") {
+            setScreenshotCredits(p.screenshot_credits);
+            setScreenshotImportsUsed(p.screenshot_imports_used || 0);
+            if (p.screenshot_credits > before) { applied = true; break; }
+          }
+          await new Promise(r => setTimeout(r, 1500));
+        }
+        showToast(applied
+          ? "Payment successful — credits added!"
+          : "Payment received — your credits will appear shortly");
+        cleanUrl();
+      })();
+    }
+  }, [authUser]);
+
   // ── Boot-time cloud reconciliation: push any local shifts not yet in cloud ──
   const reconciledRef = useRef(false);
   useEffect(() => {
@@ -9941,15 +9993,10 @@ export default function GigTrack() {
   // Pre-beta Pro users (BETA_MODE off) still get unlimited.
   const canImportScreenshot = () => (!BETA_MODE && isPro) || screenshotImportsUsed < screenshotCredits;
   const screenshotsRemaining = () => Math.max(0, screenshotCredits - screenshotImportsUsed);
-  // Add a purchased pack to the running balance (fake purchase for now).
-  const addScreenshotCredits = (n) => {
-    setScreenshotCredits(prev => {
-      const next = prev + n;
-      DB.set("gt_screenshot_credits", next);
-      if (authUser) saveScreenshotCredits(next); // fire-and-forget cloud sync
-      return next;
-    });
-  };
+  // NOTE: credits are granted SERVER-SIDE by the stripe-webhook after payment,
+  // then pulled into state via fetchProfile on checkout-return. There is
+  // deliberately no client-side "add credits" function — the browser must never
+  // grant its own credits.
 
   // ── 30-day grace for benchmarks/live drivers ──
   // Free users can see benchmarks for 30 days from signup, then it's gated.
@@ -10327,11 +10374,18 @@ export default function GigTrack() {
         remaining={screenshotsRemaining()}
         onClose={() => setBetaCreditsOpen(false)}
         onBuy={async (pack) => {
-          // Fake purchase for now — no real payment. Real Stripe/RevenueCat
-          // wiring goes here later (checkout → webhook → grant credits).
-          await new Promise(r => setTimeout(r, 600)); // simulate checkout
-          addScreenshotCredits(pack.credits);
-          showToast(`Added ${pack.credits} screenshot credits`);
+          // Real Stripe checkout. Ask the Edge Function for a hosted checkout
+          // URL, then redirect the browser to it. Credits are NOT granted here —
+          // the stripe-webhook grants them after Stripe confirms payment, and
+          // the app picks up the new balance on return (see checkout-return
+          // handler in the boot effect). If this fails, surface a toast and
+          // leave the modal open so the user can retry.
+          const { url, error } = await startCreditCheckout(pack.id);
+          if (error || !url) {
+            showToast("Couldn't start checkout — please try again");
+            return;
+          }
+          window.location.href = url; // leaves the app; Stripe returns to ?checkout=success
         }}
       />
       <Toast msg={toast} />

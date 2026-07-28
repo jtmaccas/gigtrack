@@ -215,7 +215,30 @@ export const incrementScreenshotImportsUsed = async () => {
   }
 };
 
-// ─── LIVE DRIVER PRESENCE ─────────────────────────────────────────────────
+// ─── SCREENSHOT CREDIT PURCHASE (Stripe) ──────────────────────────────────
+// Calls the create-checkout-session Edge Function, which validates the pack
+// server-side, creates a Stripe Checkout Session, records a pending purchase,
+// and returns the hosted checkout URL. The browser NEVER grants credits — it
+// only opens the payment page; the stripe-webhook function grants credits after
+// Stripe confirms payment. Returns { url } on success, or { error } on failure.
+export const startCreditCheckout = async (packId) => {
+  try {
+    const { data, error } = await supabase.functions.invoke("create-checkout-session", {
+      body: { packId },
+    });
+    if (error) {
+      console.warn("[GigTrack] startCreditCheckout error:", error.message);
+      return { error: error.message || "Checkout failed" };
+    }
+    if (!data?.url) {
+      return { error: data?.error || "No checkout URL returned" };
+    }
+    return { url: data.url };
+  } catch (e) {
+    console.warn("[GigTrack] startCreditCheckout threw:", e);
+    return { error: String(e) };
+  }
+};
 // Liveness window: a row counts as "live" if online AND last_seen within this
 // many minutes. TUNABLE BETA KNOB — on PWA the heartbeat only fires in
 // foreground, so a driver who's heads-down delivering goes silent until they
@@ -362,30 +385,6 @@ export const fetchStateLeaderboard = async (state, days = 30, minShifts = 2, lim
   } catch (e) {
     console.warn("[GigTrack] fetchStateLeaderboard threw:", e);
     return [];
-  }
-};
-
-// ── Tier 5: real state-wide busiest platform (across all drivers) ──
-// Returns { label, pct, shifts } for the most-driven platform in the state over
-// the window, or null when the gate isn't met (app shows an honest empty state).
-export const fetchStatePlatformSplit = async (state, days = 30, minShifts = 2) => {
-  if (!state) return null;
-  try {
-    const { data, error } = await supabase.rpc("get_state_platform_split_v2", {
-      p_state: state,
-      p_days: days,
-      p_min_shifts: minShifts,
-    });
-    if (error) { console.warn("[GigTrack] fetchStatePlatformSplit error:", error.message); return null; }
-    if (!Array.isArray(data) || data.length === 0) return null;
-    const top = data[0]; // SQL orders by shift_count desc
-    const label = top.platform === "uber_eats" ? "Uber Eats"
-                : top.platform === "doordash"  ? "DoorDash"
-                : "Both";
-    return { label, pct: top.pct ?? null, shifts: top.shift_count ?? 0 };
-  } catch (e) {
-    console.warn("[GigTrack] fetchStatePlatformSplit threw:", e);
-    return null;
   }
 };
 
