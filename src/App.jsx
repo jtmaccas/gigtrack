@@ -692,13 +692,43 @@ const DB = {
   remove: (key) => localStorage.removeItem(key),
 };
 
+// Wipe ALL GigTrack local data by prefix. Used on user-switch and "delete my
+// data" so no per-user key can survive into another account. Enumerating live
+// keys (rather than a hand-kept list) structurally prevents the "forgot a key"
+// leak class — any gt_* key added in future is wiped automatically. `keep`
+// lists device-level, non-user keys that should persist (e.g. theme). Note:
+// gt_supabase_auth is Supabase's own session token — wiped here too, since a
+// user-switch/delete must not leave the prior session behind.
+const GT_WIPE_KEEP = new Set(["gt_theme"]);
+const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("gt_") && !keep.has(k)) keys.push(k);
+    }
+    keys.forEach(k => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
+  } catch { /* localStorage unavailable — nothing to wipe */ }
+};
+
 // ─── APP VERSION & CHANGELOG ───
 // Bump CURRENT_VERSION by +0.01 each release and add a matching CHANGELOG entry.
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.09";
+const CURRENT_VERSION = "ALPHA 0.10";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.10",
+    date: "28/7/26",
+    items: [
+      { tag: "IMPROVED", text: "Benchmarks now only ever show your real numbers or an honest 'not enough data yet' — the 'You', percentile and distribution figures are never placeholders." },
+      { tag: "IMPROVED", text: "The State tab's busiest platform now reflects real drivers across your state, not just your own shifts." },
+      { tag: "IMPROVED", text: "Screenshot import handles connection drops and slow responses gracefully, with a clear retry — and never uses a credit on a failed read." },
+      { tag: "IMPROVED", text: "A friendlier welcome screen, and a safer recovery screen if the app ever hits an unexpected error." },
+      { tag: "FIXED", text: "Removed voice entry (it wasn't reliable) and tidied up leftover time-of-day fields now that shifts are tracked by date." },
+    ],
+  },
   {
     version: "ALPHA 0.09",
     date: "27/7/26",
@@ -9324,11 +9354,6 @@ export default function GigTrack() {
         const { data: { user } } = await supabase.auth.getUser();
         if (!mounted) return;
         setAuthUser(user);
-        if (user) {
-          console.log("[GigTrack] Supabase auth user:", user.id);
-        } else {
-          console.log("[GigTrack] No auth session — routing to welcome");
-        }
       } catch (e) {
         console.warn("[GigTrack] Supabase auth check failed:", e.message);
       }
@@ -9346,16 +9371,10 @@ export default function GigTrack() {
           // cloud account during reconciliation. ──
           const lastUid = DB.get("gt_last_user_id");
           if (lastUid && lastUid !== newUser.id) {
-            console.warn("[GigTrack] User switch detected — wiping local data for safety. Was:", lastUid, "Now:", newUser.id);
-            DB.remove("gt_user");
-            DB.remove("gt_trips");
-            DB.remove("gt_region");
-            DB.remove("gt_kmpref");
-            DB.remove("gt_weeklygoal");
-            DB.remove("gt_activeshift");
-            DB.remove("gt_live_status");
-            DB.remove("gt_entry_prefill");
-            DB.remove("gt_deleted_seeds");
+            console.warn("[GigTrack] User switch detected — wiping local data for safety.");
+            // Prefix-wipe every gt_* key (keeps device-level prefs like theme).
+            // Covers any current or future per-user key without a hand-kept list.
+            wipeUserData();
             setUser(null);
             setTrips([]);
             setRegion(null);
@@ -9409,8 +9428,14 @@ export default function GigTrack() {
 
               // Pull cloud shifts into local
               const cloudShifts = await fetchAllShifts();
-              if (cloudShifts.length > 0) {
-                const localTrips = DB.get("gt_trips") || [];
+              // Defense-in-depth: drop any LOCAL trip stamped with a different
+              // owner before merging. Trips with _owner null (seeds / pre-stamp
+              // records) are kept — only a foreign non-null owner is filtered.
+              // The wipe-on-switch already prevents this; this is a second layer
+              // in case a wipe is ever missed.
+              const rawLocal = DB.get("gt_trips") || [];
+              const localTrips = rawLocal.filter(t => t._owner == null || t._owner === newUser.id);
+              if (cloudShifts.length > 0 || localTrips.length !== rawLocal.length) {
                 const localIds = new Set(localTrips.map(t => t.id));
                 const newOnes = cloudShifts.filter(t => !localIds.has(t.id));
                 const merged = [...localTrips, ...newOnes];
@@ -9426,20 +9451,15 @@ export default function GigTrack() {
         }
         // Detect sign-out (had a user, now null)
         if (prev && !newUser) {
-          // Wipe everything and go to welcome
+          // Wipe everything and go to welcome. Prefix-wipe so no per-user key
+          // lingers on a shared device after sign-out (keeps device theme).
           setUser(null);
           setTrips([]);
           setRegion(null);
           setKmPref("active");
           setWeeklyGoal(800);
           setShowScoring(true);
-          DB.remove("gt_user");
-          DB.remove("gt_trips");
-          DB.remove("gt_region");
-          DB.remove("gt_kmpref");
-          DB.remove("gt_weeklygoal");
-          DB.remove("gt_show_scoring");
-          DB.remove("gt_last_user_id");
+          wipeUserData();
           reconciledRef.current = false;
           setScreen("welcome");
         }
@@ -9700,13 +9720,10 @@ export default function GigTrack() {
       }
     }
 
-    // Wipe every known localStorage key — including LEGACY keys (gt_fuel_*) that
-    // the app no longer writes. Devices that used GigTrack before the fuel
-    // estimator was removed still have them, and "delete my data" must mean it.
-    ["gt_user","gt_trips","gt_kmpref","gt_atorate","gt_targets","gt_weeklygoal",
-     "gt_fuel_efficiency","gt_fuel_price","gt_region","gt_show_scoring","gt_activeshift",
-     "gt_active_orders","gt_order_prefill","gt_live_status","gt_last_user_id",
-     "gt_entry_prefill"].forEach(k => DB.remove(k));
+    // Wipe every GigTrack localStorage key by prefix — including legacy keys
+    // (gt_fuel_*) from older installs and any future key. "Delete my data" is a
+    // full erase, so nothing is kept (not even theme).
+    wipeUserData({ keep: new Set() });
 
     // Sign out — the auth user is gone server-side, so clear the local session too.
     try { await signOut(); } catch { /* already gone; ignore */ }
