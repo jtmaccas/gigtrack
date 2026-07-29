@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, startCreditCheckout, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, startCreditCheckout, fetchPurchaseHistory, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 
@@ -8521,7 +8521,72 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+// ─── PURCHASE HISTORY ─── Read-only list of the user's completed credit packs.
+function PurchaseHistoryScreen({ onBack }) {
+  const [rows, setRows] = useState(undefined); // undefined = loading; [] = none
+  useEffect(() => {
+    let cancelled = false;
+    fetchPurchaseHistory().then(r => { if (!cancelled) setRows(r); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const fmtDate = (iso) => iso
+    ? new Date(iso).toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" })
+    : "";
+  const fmtMoney = (cents, currency) => cents != null
+    ? `$${(cents / 100).toFixed(2)}${currency && currency.toLowerCase() !== "aud" ? " " + currency.toUpperCase() : ""}`
+    : "";
+
+  const totalCredits = Array.isArray(rows) ? rows.reduce((s, r) => s + (r.credits || 0), 0) : 0;
+
+  return (
+    <div className="view active" style={{background:"var(--bg)"}}>
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">Purchase history</div>
+      </div>
+      <div className="scroll-area" style={{padding:"16px 18px"}}>
+
+        {rows === undefined && (
+          <div style={{textAlign:"center",color:"var(--muted)",fontSize:"13px",padding:"40px 0"}}>Loading…</div>
+        )}
+
+        {Array.isArray(rows) && rows.length === 0 && (
+          <div style={{textAlign:"center",padding:"48px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
+            <div style={{fontSize:"34px",marginBottom:"12px"}}>🧾</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",color:"var(--text)",marginBottom:"6px"}}>No purchases yet</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",maxWidth:"260px",lineHeight:"1.5"}}>
+              When you buy a screenshot credit pack, it'll show up here as a record.
+            </div>
+          </div>
+        )}
+
+        {Array.isArray(rows) && rows.length > 0 && (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"14px"}}>
+              {rows.length} purchase{rows.length === 1 ? "" : "s"} · {totalCredits} credits total
+            </div>
+            {rows.map((r, i) => (
+              <div key={i} style={{
+                display:"flex",alignItems:"center",justifyContent:"space-between",
+                padding:"14px 16px",marginBottom:"10px",
+                background:"var(--elevated)",border:"1px solid var(--border)",borderRadius:"14px",
+              }}>
+                <div>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"800",color:"var(--text)"}}>{r.credits} screenshot credits</div>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginTop:"2px"}}>{fmtDate(r.completed_at)}</div>
+                </div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"800",color:"var(--text)"}}>{fmtMoney(r.amount_cents, r.currency)}</div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -8797,7 +8862,23 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 </div>
               )}
 
-              {/* Compare a Region — scout another zone's benchmarks */}
+              {/* Purchase history — receipts for past credit packs */}
+              {isBeta && (
+                <div
+                  className="settings-item"
+                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                  onClick={onPurchaseHistory}
+                >
+                  <div className="settings-item-left">
+                    <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
+                      Purchase history
+                    </div>
+                    <div className="settings-item-sub">Your past screenshot credit purchases</div>
+                  </div>
+                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+                </div>
+              )}
               <div
                 className="settings-item"
                 style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
@@ -10298,6 +10379,7 @@ export default function GigTrack() {
           onWhatsNew={() => setWhatsNewOpen(true)}
           isBeta={isBeta}
           onBuyCredits={() => setBetaCreditsOpen(true)}
+          onPurchaseHistory={() => setScreen("purchasehistory")}
           screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
@@ -10341,6 +10423,9 @@ export default function GigTrack() {
             });
           }}
         />
+      )}
+      {screen === "purchasehistory" && (
+        <PurchaseHistoryScreen onBack={() => setScreen("settings")} />
       )}
       <ConfirmDialog
         show={!!confirm} title={confirm?.title || ""} sub={confirm?.sub || ""}

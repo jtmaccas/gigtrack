@@ -239,6 +239,31 @@ export const startCreditCheckout = async (packId) => {
     return { error: String(e) };
   }
 };
+
+// ─── PURCHASE HISTORY ─────────────────────────────────────────────────────
+// Reads the current user's COMPLETED credit purchases, newest first. RLS
+// already restricts rows to the caller (purchases_select_own); we also filter
+// to status='completed' so pending/failed checkouts don't show. Read-only —
+// users can read their own purchases but never write them. Returns [] on error.
+export const fetchPurchaseHistory = async () => {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+    const { data, error } = await supabase
+      .from("purchases")
+      .select("pack_id, credits, amount_cents, currency, completed_at")
+      .eq("status", "completed")
+      .order("completed_at", { ascending: false });
+    if (error) {
+      console.warn("[GigTrack] fetchPurchaseHistory error:", error.message);
+      return [];
+    }
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.warn("[GigTrack] fetchPurchaseHistory threw:", e);
+    return [];
+  }
+};
 // Liveness window: a row counts as "live" if online AND last_seen within this
 // many minutes. TUNABLE BETA KNOB — on PWA the heartbeat only fires in
 // foreground, so a driver who's heads-down delivering goes silent until they
