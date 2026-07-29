@@ -719,8 +719,15 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.13";
+const CURRENT_VERSION = "ALPHA 0.14";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.14",
+    date: "29/7/26",
+    items: [
+      { tag: "NEW", text: "Weekly catch-up (in progress): turn a weekly earnings summary into per-day shift entries, with a resumable task on your home screen to finish the week over time." },
+    ],
+  },
   {
     version: "ALPHA 0.13",
     date: "29/7/26",
