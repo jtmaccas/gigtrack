@@ -8623,10 +8623,11 @@ function InstallHelpScreen({ onBack }) {
   const [platform, setPlatform] = useState(null); // null | "ios" | "android"
 
   const iosSteps = [
-    "Open GigTrack in Safari (this only works in Safari, not Chrome).",
-    "Tap the Share button — the square with an up arrow, at the bottom of the screen.",
-    "Scroll down and tap \"Add to Home Screen\".",
-    "Tap \"Add\" in the top corner. GigTrack now sits on your home screen like an app.",
+    "Open GigTrack in Safari or Chrome — both work the same way now.",
+    "Tap the Share button. In Chrome it's in the address bar; in Safari, tap the three dots (•••) then Share.",
+    "If you don't see it straight away, tap \"More\" (the three dots).",
+    "Tap \"Add to Home Screen\".",
+    "Make sure \"Open as Web App\" stays turned ON, then tap Add. This is what makes it open like a real app.",
   ];
   const androidSteps = [
     "Open GigTrack in Chrome.",
@@ -8694,7 +8695,7 @@ function InstallHelpScreen({ onBack }) {
 
         {platform === "ios" && (
           <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",lineHeight:"1.5",marginTop:"14px",padding:"0 4px"}}>
-            Note: on iPhone this only works in the Safari browser — Apple doesn't allow other browsers to add apps to the home screen.
+            Tip: if GigTrack opens in a browser tab instead of full screen, the "Open as Web App" toggle was probably off — remove it and add it again with that toggle on.
           </div>
         )}
       </div>
