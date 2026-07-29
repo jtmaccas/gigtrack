@@ -9755,7 +9755,7 @@ export default function GigTrack() {
     });
     // Remember which day this was so we can mark it done on return.
     DB.set("gt_catchup_pending_date", day.date);
-    setScreen("new");
+    setScreen("newtrip");
   };
 
 
