@@ -8625,8 +8625,7 @@ function InstallHelpScreen({ onBack }) {
   const iosSteps = [
     "Open GigTrack in Safari or Chrome — both work the same way now.",
     "Tap the Share button. In Chrome it's in the address bar; in Safari, tap the three dots (•••) then Share.",
-    "If you don't see it straight away, tap \"More\" (the three dots).",
-    "Tap \"Add to Home Screen\".",
+    "Tap \"Add to Home Screen\". If you don't see it, tap \"More\" (•••) to find it, then tap it.",
     "Make sure \"Open as Web App\" stays turned ON, then tap Add. This is what makes it open like a real app.",
   ];
   const androidSteps = [
