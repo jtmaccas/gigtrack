@@ -8716,8 +8716,9 @@ function InstallHelpScreen({ onBack }) {
 // Each day routes into the SAME new-shift form via gt_entry_prefill, so all the
 // derived fields (score, deduction, ratios) compute exactly like any shift.
 function WeeklyCatchupScreen({ detection, savedDates = [], onAddDay, onBack }) {
-  const { platform, week_start, week_end, days = [], week_totals = {} } = detection || {};
+  const { platform, week_start, week_end, days = [], week_totals = {}, screenshotUrl = null } = detection || {};
   const platLabel = platform === "doordash" ? "DoorDash" : "Uber Eats";
+  const [shotExpanded, setShotExpanded] = useState(false);
 
   const fmtRange = (a, b) => {
     if (!a || !b) return "";
@@ -8746,6 +8747,45 @@ function WeeklyCatchupScreen({ detection, savedDates = [], onAddDay, onBack }) {
 
         <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"16px"}}>
           This looks like your {platLabel} week{week_start ? ` (${fmtRange(week_start, week_end)})` : ""}. We found the days you worked — tap each to add its details. {platform === "doordash" ? "Earnings are filled in from your dash list; add your km and hours." : "Add your earnings, km and hours for each day."}
+        </div>
+
+        {/* Screenshot thumbnail — tap to expand. Shows the user's own weekly
+            screenshot in the real flow (blob URL); a labelled placeholder in mock. */}
+        <div style={{marginBottom:"18px"}}>
+          <div
+            onClick={() => screenshotUrl && setShotExpanded(v => !v)}
+            style={{
+              borderRadius:"14px",overflow:"hidden",border:"1px solid var(--border)",
+              cursor:screenshotUrl ? "pointer" : "default",background:"var(--elevated)",
+              maxHeight:shotExpanded ? "none" : "150px",
+              display:"flex",alignItems:shotExpanded ? "flex-start" : "center",justifyContent:"center",
+              position:"relative",
+            }}
+          >
+            {screenshotUrl ? (
+              <img src={screenshotUrl} alt="Your weekly summary"
+                style={{width:"100%",display:"block",objectFit:shotExpanded ? "contain" : "cover",objectPosition:"top"}} />
+            ) : (
+              <div style={{padding:"28px 16px",textAlign:"center"}}>
+                <div style={{fontSize:"26px",marginBottom:"6px"}}>🖼️</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>Your weekly screenshot appears here</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"3px"}}>(placeholder — the real one shows in the live flow)</div>
+              </div>
+            )}
+            {screenshotUrl && !shotExpanded && (
+              <div style={{
+                position:"absolute",bottom:0,left:0,right:0,padding:"18px 0 8px",
+                background:"linear-gradient(transparent, rgba(0,0,0,.55))",
+                color:"#fff",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",textAlign:"center",
+              }}>Tap to expand ↓</div>
+            )}
+          </div>
+          {screenshotUrl && shotExpanded && (
+            <button onClick={() => setShotExpanded(false)} style={{
+              width:"100%",marginTop:"8px",padding:"8px",border:"none",cursor:"pointer",
+              background:"transparent",color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",
+            }}>Collapse ↑</button>
+          )}
         </div>
 
         {/* Reference strip — the real weekly totals, as a sanity check only */}
