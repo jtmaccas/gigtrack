@@ -8617,7 +8617,92 @@ function PurchaseHistoryScreen({ onBack }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+// ─── ADD TO HOME SCREEN ─── Platform-picked install instructions (no detection;
+// the user taps their own phone type, which is foolproof across browsers).
+function InstallHelpScreen({ onBack }) {
+  const [platform, setPlatform] = useState(null); // null | "ios" | "android"
+
+  const iosSteps = [
+    "Open GigTrack in Safari (this only works in Safari, not Chrome).",
+    "Tap the Share button — the square with an up arrow, at the bottom of the screen.",
+    "Scroll down and tap \"Add to Home Screen\".",
+    "Tap \"Add\" in the top corner. GigTrack now sits on your home screen like an app.",
+  ];
+  const androidSteps = [
+    "Open GigTrack in Chrome.",
+    "Tap the three-dot menu (⋮) in the top-right corner.",
+    "Tap \"Add to Home screen\" (or \"Install app\" if it appears).",
+    "Tap \"Add\" / \"Install\". GigTrack now sits on your home screen like an app.",
+  ];
+  const steps = platform === "ios" ? iosSteps : platform === "android" ? androidSteps : [];
+
+  const PhoneButton = ({ id, label, icon }) => (
+    <button
+      onClick={() => setPlatform(id)}
+      style={{
+        flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"10px",
+        padding:"22px 12px",cursor:"pointer",
+        background:platform === id ? "var(--coral-dim)" : "var(--elevated)",
+        border:platform === id ? "1.5px solid var(--coral)" : "1px solid var(--border)",
+        borderRadius:"16px",
+      }}
+    >
+      <span style={{color:platform === id ? "var(--coral)" : "var(--muted)"}}>{icon}</span>
+      <span style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)"}}>{label}</span>
+    </button>
+  );
+
+  return (
+    <div className="view active" style={{background:"var(--bg)"}}>
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">Add to home screen</div>
+      </div>
+      <div className="scroll-area" style={{padding:"18px"}}>
+
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"20px"}}>
+          Install GigTrack on your phone so it opens like a normal app — full screen, one tap from your home screen. Pick your phone below.
+        </div>
+
+        <div style={{display:"flex",gap:"12px",marginBottom:"22px"}}>
+          <PhoneButton id="ios" label="iPhone"
+            icon={<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg>} />
+          <PhoneButton id="android" label="Android"
+            icon={<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M11 18h2"/></svg>} />
+        </div>
+
+        {platform && (
+          <div style={{
+            background:"var(--elevated)",border:"1px solid var(--border)",borderRadius:"16px",padding:"6px 4px",
+          }}>
+            {steps.map((step, i) => (
+              <div key={i} style={{
+                display:"flex",gap:"14px",alignItems:"flex-start",padding:"14px 14px",
+                borderBottom:i < steps.length - 1 ? "0.5px solid var(--border)" : "none",
+              }}>
+                <div style={{
+                  flexShrink:0,width:"24px",height:"24px",borderRadius:"100px",
+                  background:"var(--coral)",color:"var(--on-coral)",
+                  display:"flex",alignItems:"center",justifyContent:"center",
+                  fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"800",
+                }}>{i + 1}</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",lineHeight:"1.5",paddingTop:"2px"}}>{step}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {platform === "ios" && (
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",lineHeight:"1.5",marginTop:"14px",padding:"0 4px"}}>
+            Note: on iPhone this only works in the Safari browser — Apple doesn't allow other browsers to add apps to the home screen.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -8967,6 +9052,22 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
           <div>
             <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Feedback</div>
             <SettingsSectionCard>
+              {/* Add to home screen — install instructions per platform */}
+              <div
+                className="settings-item"
+                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                onClick={onInstallHelp}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/><path d="M12 7v6M9.5 10.5L12 13l2.5-2.5"/></svg>
+                    Add to home screen
+                  </div>
+                  <div className="settings-item-sub">Install GigTrack like an app on your phone</div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+
               {/* What's new — reopen the current version's changelog anytime */}
               <div
                 className="settings-item"
@@ -10411,6 +10512,7 @@ export default function GigTrack() {
           isBeta={isBeta}
           onBuyCredits={() => setBetaCreditsOpen(true)}
           onPurchaseHistory={() => setScreen("purchasehistory")}
+          onInstallHelp={() => setScreen("installhelp")}
           screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
@@ -10457,6 +10559,9 @@ export default function GigTrack() {
       )}
       {screen === "purchasehistory" && (
         <PurchaseHistoryScreen onBack={() => setScreen("settings")} />
+      )}
+      {screen === "installhelp" && (
+        <InstallHelpScreen onBack={() => setScreen("settings")} />
       )}
       <ConfirmDialog
         show={!!confirm} title={confirm?.title || ""} sub={confirm?.sub || ""}
