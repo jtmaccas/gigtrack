@@ -6082,7 +6082,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   // Determine initial shift date — timer prefill or edit (date only)
   const initShiftDate = timerPrefill
     ? toDateInput(timerPrefill.startedAt)
-    : toDateInput(editTrip?.ts);
+    : (DB.get("gt_entry_prefill")?.date || toDateInput(editTrip?.ts));
 
   // Initial online time from timer prefill
   const initOnlineHrs  = timerPrefill ? String(Math.floor((timerPrefill.totalMin||0) / 60)) : (editTrip ? String(Math.floor((editTrip.totalMin||0)/60)) : "");
@@ -8709,7 +8709,104 @@ function InstallHelpScreen({ onBack }) {
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+// ─── WEEKLY CATCH-UP ─── Turns a weekly summary into per-day shift entries.
+// Platform-aware: DoorDash days arrive with real earnings pre-filled (read from
+// the printed dash list); Uber days arrive blank (we only detected which days
+// had a bar). The weekly totals show as a reference strip — never split.
+// Each day routes into the SAME new-shift form via gt_entry_prefill, so all the
+// derived fields (score, deduction, ratios) compute exactly like any shift.
+function WeeklyCatchupScreen({ detection, savedDates = [], onAddDay, onBack }) {
+  const { platform, week_start, week_end, days = [], week_totals = {} } = detection || {};
+  const platLabel = platform === "doordash" ? "DoorDash" : "Uber Eats";
+
+  const fmtRange = (a, b) => {
+    if (!a || !b) return "";
+    const opt = { day: "numeric", month: "short" };
+    return `${new Date(a).toLocaleDateString("en-AU", opt)} – ${new Date(b).toLocaleDateString("en-AU", opt)}`;
+  };
+  const fmtDay = (iso) => new Date(iso).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+  const savedSet = new Set(savedDates);
+  const remaining = days.filter(d => !savedSet.has(d.date)).length;
+
+  // Reference chips from whatever totals the AI got (all optional).
+  const refChips = [];
+  if (week_totals.earned != null) refChips.push(`$${Number(week_totals.earned).toFixed(2)} earned`);
+  if (week_totals.trips != null) refChips.push(`${week_totals.trips} trips`);
+  if (week_totals.deliveries != null) refChips.push(`${week_totals.deliveries} deliveries`);
+  if (week_totals.online_hrs != null) refChips.push(`${week_totals.online_hrs} online`);
+  if (week_totals.active_hrs != null) refChips.push(`${week_totals.active_hrs} active`);
+
+  return (
+    <div className="view active" style={{background:"var(--bg)"}}>
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">Catch up your week</div>
+      </div>
+      <div className="scroll-area" style={{padding:"18px"}}>
+
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"16px"}}>
+          This looks like your {platLabel} week{week_start ? ` (${fmtRange(week_start, week_end)})` : ""}. We found the days you worked — tap each to add its details. {platform === "doordash" ? "Earnings are filled in from your dash list; add your km and hours." : "Add your earnings, km and hours for each day."}
+        </div>
+
+        {/* Reference strip — the real weekly totals, as a sanity check only */}
+        {refChips.length > 0 && (
+          <div style={{
+            background:"var(--elevated)",border:"1px solid var(--border)",borderRadius:"14px",
+            padding:"12px 14px",marginBottom:"20px",
+          }}>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".06em",textTransform:"uppercase",color:"var(--muted2)",marginBottom:"8px"}}>Your week (for reference)</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:"7px"}}>
+              {refChips.map((c, i) => (
+                <span key={i} style={{
+                  fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",color:"var(--text)",
+                  background:"var(--bg)",border:"1px solid var(--border)",borderRadius:"100px",padding:"4px 10px",
+                }}>{c}</span>
+              ))}
+            </div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"9px",lineHeight:"1.4"}}>These are your whole-week totals — we don't split them across days, you enter each day's real figures.</div>
+          </div>
+        )}
+
+        {/* Per-day cards */}
+        {days.map((d, i) => {
+          const done = savedSet.has(d.date);
+          return (
+            <div key={i} style={{
+              display:"flex",alignItems:"center",justifyContent:"space-between",
+              padding:"14px 16px",marginBottom:"10px",
+              background:done ? "var(--pos-dim, var(--elevated))" : "var(--elevated)",
+              border:done ? "1.5px solid var(--pos, #1E9E68)" : "1px solid var(--border)",
+              borderRadius:"14px",opacity:done ? 0.85 : 1,
+            }}>
+              <div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"800",color:"var(--text)"}}>{fmtDay(d.date)}</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginTop:"2px"}}>
+                  {done ? "Added ✓" : d.earned != null ? `$${Number(d.earned).toFixed(2)} earned · add km & hours` : "Add this day's details"}
+                </div>
+              </div>
+              {!done && (
+                <button
+                  onClick={() => onAddDay(d)}
+                  style={{
+                    border:"none",cursor:"pointer",background:"var(--coral)",color:"var(--on-coral)",
+                    borderRadius:"10px",padding:"9px 15px",
+                    fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800",
+                  }}
+                >Add</button>
+              )}
+            </div>
+          );
+        })}
+
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",textAlign:"center",marginTop:"18px"}}>
+          {remaining === 0 ? "All days added — nice work! 🎉" : `${remaining} day${remaining === 1 ? "" : "s"} left to add`}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, onTestCatchupUber, onTestCatchupDoorDash, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -9074,6 +9171,26 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
               </div>
+
+              {/* TEMP (Stage 2 test) — preview the weekly catch-up flow with mock data. Remove when Edge Function is wired. */}
+              {isBeta && (
+                <>
+                  <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}} onClick={onTestCatchupUber}>
+                    <div className="settings-item-left">
+                      <div className="settings-item-label">🧪 Preview catch-up (Uber mock)</div>
+                      <div className="settings-item-sub">Test-only — weekly catch-up flow</div>
+                    </div>
+                    <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+                  </div>
+                  <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}} onClick={onTestCatchupDoorDash}>
+                    <div className="settings-item-left">
+                      <div className="settings-item-label">🧪 Preview catch-up (DoorDash mock)</div>
+                      <div className="settings-item-sub">Test-only — weekly catch-up flow</div>
+                    </div>
+                    <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+                  </div>
+                </>
+              )}
 
               {/* What's new — reopen the current version's changelog anytime */}
               <div
@@ -9550,6 +9667,54 @@ export default function GigTrack() {
     setInstallBanner(false);
     DB.set("gt_install_nudge_done", true); // never show again
   };
+
+  // ── Weekly catch-up (Stage 2: mock-data build) ──
+  // `catchup` holds the detection result from the Edge Function (mocked for now).
+  // `catchupSaved` tracks which day-dates have been added, so cards flip to done.
+  const [catchup, setCatchup] = useState(null);
+  const [catchupSaved, setCatchupSaved] = useState([]);
+  // MOCK detection results — remove when the Edge Function is wired (Stage 3).
+  // Toggle between these to preview both platforms.
+  const MOCK_CATCHUP_UBER = {
+    type: "weekly", platform: "uber_eats",
+    week_start: "2026-07-20", week_end: "2026-07-26",
+    days: [
+      { date: "2026-07-20", earned: null },
+      { date: "2026-07-21", earned: null },
+      { date: "2026-07-22", earned: null },
+      { date: "2026-07-24", earned: null },
+      { date: "2026-07-25", earned: null },
+      { date: "2026-07-26", earned: null },
+    ],
+    week_totals: { earned: 2020.54, trips: 111, online_hrs: "44h39m", active_hrs: "43h22m" },
+  };
+  const MOCK_CATCHUP_DOORDASH = {
+    type: "weekly", platform: "doordash",
+    week_start: "2026-03-24", week_end: "2026-03-30",
+    days: [
+      { date: "2026-03-26", earned: 31.55 }, // 11.97 + 19.58 summed
+      { date: "2026-03-27", earned: 22.76 },
+      { date: "2026-03-28", earned: 35.77 }, // 23.33 + 12.44 summed
+    ],
+    week_totals: { earned: 90.08, deliveries: 9, online_hrs: "7h41m", active_hrs: "3h44m" },
+  };
+  const openCatchup = (detection) => {
+    setCatchup(detection);
+    setCatchupSaved([]);
+    setScreen("catchup");
+  };
+  // Route a single day into the existing new-shift form, pre-filled.
+  const addCatchupDay = (day) => {
+    DB.set("gt_entry_prefill", {
+      date: day.date,
+      platform: catchup?.platform || null,
+      earned: day.earned != null ? day.earned : undefined,
+    });
+    // Remember which day this was so we can mark it done on return.
+    DB.set("gt_catchup_pending_date", day.date);
+    setScreen("new");
+  };
+
 
   // "What's new" modal: after an update reload, show the current version's
   // changelog once. First-ever launch just stamps the version silently (a new
@@ -10487,8 +10652,24 @@ export default function GigTrack() {
       )}
       {screen === "newtrip" && (
         <NewTripScreen
-          onBack={() => { setEditId(null); setTimerPrefill(null); setScreen(editId ? "detail" : "home"); }}
-          onSaved={handleSaved}
+          onBack={() => {
+            setEditId(null); setTimerPrefill(null);
+            const pend = DB.get("gt_catchup_pending_date");
+            if (pend && catchup) { DB.remove("gt_catchup_pending_date"); DB.remove("gt_entry_prefill"); setScreen("catchup"); return; }
+            setScreen(editId ? "detail" : "home");
+          }}
+          onSaved={(rec, isEdit, onCommitted) => {
+            const pend = DB.get("gt_catchup_pending_date");
+            handleSaved(rec, isEdit, () => {
+              if (onCommitted) onCommitted();
+              if (pend && catchup) {
+                setCatchupSaved(prev => prev.includes(pend) ? prev : [...prev, pend]);
+                DB.remove("gt_catchup_pending_date");
+              }
+            });
+            // After a catch-up day saves, return to the catch-up list (not home).
+            if (pend && catchup) setScreen("catchup");
+          }}
           editTrip={editId ? editTrip : null}
           kmPref={kmPref}
           atoRate={atoRate}
@@ -10540,6 +10721,8 @@ export default function GigTrack() {
           onBuyCredits={() => setBetaCreditsOpen(true)}
           onPurchaseHistory={() => setScreen("purchasehistory")}
           onInstallHelp={() => setScreen("installhelp")}
+          onTestCatchupUber={() => openCatchup(MOCK_CATCHUP_UBER)}
+          onTestCatchupDoorDash={() => openCatchup(MOCK_CATCHUP_DOORDASH)}
           screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
@@ -10589,6 +10772,14 @@ export default function GigTrack() {
       )}
       {screen === "installhelp" && (
         <InstallHelpScreen onBack={() => setScreen("settings")} />
+      )}
+      {screen === "catchup" && catchup && (
+        <WeeklyCatchupScreen
+          detection={catchup}
+          savedDates={catchupSaved}
+          onAddDay={addCatchupDay}
+          onBack={() => setScreen("home")}
+        />
       )}
       <ConfirmDialog
         show={!!confirm} title={confirm?.title || ""} sub={confirm?.sub || ""}
