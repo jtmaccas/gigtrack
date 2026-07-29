@@ -719,8 +719,15 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.12";
+const CURRENT_VERSION = "ALPHA 0.13";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.13",
+    date: "29/7/26",
+    items: [
+      { tag: "NEW", text: "You can now add GigTrack to your home screen so it opens like a proper app — find step-by-step instructions for iPhone and Android under Settings." },
+    ],
+  },
   {
     version: "ALPHA 0.12",
     date: "29/7/26",
