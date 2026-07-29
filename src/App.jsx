@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, startCreditCheckout, fetchPurchaseHistory, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -7263,198 +7265,211 @@ function exportPDF(trips, user) {
   const fmtD = iso => new Date(iso).toLocaleDateString("en-AU", { day:"2-digit", month:"short", year:"numeric" });
   const fmtMoney = v => `$${(v || 0).toFixed(2)}`;
 
-  // Table rows
-  const rows = sorted.map((t, i) => {
-    const platName = t.platform === "uber_eats" ? "Uber Eats" : t.platform === "doordash" ? "DoorDash" : "—";
-    const dur = (() => {
-      const m = Math.round((t.totalHrs || 0) * 60);
-      return `${Math.floor(m/60)}h ${m%60}m`;
-    })();
-    const tripDed = (t.totalKm || 0) * atoRateForDate(t.ts);
-    return `<tr>
-      <td class="num">${i+1}</td>
-      <td>${fmtD(t.ts)}</td>
-      <td>${platName}</td>
-      <td class="num">${dur}</td>
-      <td class="num">${(t.totalKm || 0).toFixed(1)}</td>
-      <td class="num">${t.dels || 0}</td>
-      <td class="num">${fmtMoney(t.base)}</td>
-      <td class="num">${fmtMoney(t.tip)}</td>
-      <td class="num">${fmtMoney(t.bonus)}</td>
-      <td class="num strong">${fmtMoney(t.totalEarned)}</td>
-      <td class="num ded">${fmtMoney(tripDed)}</td>
-    </tr>`;
-  }).join("");
-
   const periodLabel = useFY
     ? `FY ${ATO_FY_LABEL} · ${fmtD(fyStart.toISOString())} – ${fmtD(new Date(fyEnd.getTime()-86400000).toISOString())}`
     : `All-time · ${fmtD(sorted[0].ts)} – ${fmtD(sorted[sorted.length-1].ts)}`;
 
-  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<title>GigTrack — ATO Shift Report</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:11px;color:#1B1A17;background:#fff;padding:32px;}
+  // ── Build a real vector PDF with jsPDF (A4 landscape) ──
+  // Rebuilt from the old print-HTML so it downloads as a proper file (saves to
+  // Files / share sheet on iOS) instead of a print window that traps the PWA.
+  const CORAL = [240, 86, 46];
+  const INDIGO = [79, 70, 229];
+  const AMBER = [192, 66, 28];
+  const INK = [27, 26, 23];
+  const MUTED = [138, 128, 113];
+  const GREEN = [30, 158, 104];
+  const CREAM = [251, 247, 241];
+  const BORDER = [237, 230, 220];
 
-/* Header */
-.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;padding-bottom:16px;border-bottom:2px solid #F0562E;}
-.brand-block{display:flex;align-items:center;gap:10px;}
-.brand-logo{width:32px;height:32px;background:linear-gradient(120deg,#F0562E,#F6863A);border-radius:8px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;}
-.brand-name{font-size:22px;font-weight:800;color:#1B1A17;letter-spacing:-.02em;}
-.brand-tag{font-size:10px;color:#8A8071;letter-spacing:.04em;margin-top:1px;}
-.header-right{text-align:right;font-size:10px;color:#8A8071;line-height:1.6;}
-.header-right strong{display:block;color:#1B1A17;font-size:13px;font-weight:700;margin-bottom:2px;}
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const M = 32; // margin
+  let y = M;
 
-/* Period banner */
-.period{background:#FDEDE7;border:1px solid #F6C3B2;border-radius:8px;padding:8px 14px;font-size:10px;color:#C0421C;margin-bottom:18px;font-weight:600;letter-spacing:.02em;}
+  // ── Header: brand block + right-aligned meta ──
+  doc.setFillColor(...CORAL);
+  doc.roundedRect(M, y, 26, 26, 5, 5, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text("GT", M + 13, y + 17, { align: "center" });
 
-/* Hero squares */
-.hero-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;}
-.hero{border:1px solid #EDE6DC;border-radius:10px;padding:14px 14px 12px;background:#fff;position:relative;overflow:hidden;}
-.hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
-.hero.h-green::before{background:#F0562E;}
-.hero.h-blue::before{background:#4F46E5;}
-.hero.h-amber::before{background:#F6863A;}
-.hero.h-purple::before{background:#4F46E5;}
-.hero-label{font-size:9px;color:#8A8071;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;font-weight:600;}
-.hero-value{font-size:20px;font-weight:800;color:#1B1A17;letter-spacing:-.02em;line-height:1;}
-.hero-sub{font-size:9px;color:#8A8071;margin-top:5px;}
-.hero.h-green .hero-value{color:#F0562E;}
-.hero.h-blue .hero-value{color:#4F46E5;}
-.hero.h-amber .hero-value{color:#C0421C;}
+  doc.setTextColor(...INK);
+  doc.setFontSize(20);
+  doc.text("GigTrack", M + 34, y + 13);
+  doc.setTextColor(...MUTED);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.text("ATO Shift Report", M + 34, y + 23);
 
-/* Mini summary row */
-.mini-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px;}
-.mini{background:#FBF7F1;border:1px solid #EDE6DC;border-radius:8px;padding:10px 12px;}
-.mini-label{font-size:9px;color:#8A8071;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px;font-weight:600;}
-.mini-value{font-size:13px;font-weight:700;color:#1B1A17;}
+  // Right meta
+  doc.setTextColor(...INK);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text(user?.name || "Driver", pageW - M, y + 8, { align: "right" });
+  doc.setTextColor(...MUTED);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.text(`Generated ${fmtD(new Date().toISOString())}`, pageW - M, y + 20, { align: "right" });
+  doc.text(`${sorted.length} shift${sorted.length !== 1 ? "s" : ""} included`, pageW - M, y + 30, { align: "right" });
 
-/* Table */
-.section-title{font-size:12px;font-weight:700;color:#1B1A17;margin-bottom:8px;letter-spacing:-.01em;}
-table{width:100%;border-collapse:collapse;font-size:9.5px;margin-bottom:18px;}
-thead tr{background:#1B1A17;color:#fff;}
-thead th{padding:8px 6px;text-align:left;font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;}
-thead th.num{text-align:right;}
-tbody tr:nth-child(even){background:#FBF7F1;}
-tbody td{padding:6px;border-bottom:1px solid #EDE6DC;vertical-align:middle;}
-tbody td.num{text-align:right;font-variant-numeric:tabular-nums;}
-tbody td.strong{font-weight:700;color:#1B1A17;}
-tbody td.ded{font-weight:700;color:#1E9E68;}
-tfoot tr{background:#F1EBE1;}
-tfoot td{padding:9px 6px;font-weight:800;font-size:10px;border-top:2px solid #1B1A17;}
-tfoot td.num{text-align:right;font-variant-numeric:tabular-nums;}
-tfoot td.ded{color:#1E9E68;}
+  y += 34;
+  doc.setDrawColor(...CORAL);
+  doc.setLineWidth(1.5);
+  doc.line(M, y, pageW - M, y);
+  y += 14;
 
-/* Notes & footer */
-.notes{background:#FFFBEB;border:1px solid #FCD34D;border-radius:8px;padding:13px 15px;margin-bottom:14px;font-size:10px;color:#78350F;line-height:1.7;}
-.notes strong{display:block;font-size:11px;margin-bottom:5px;color:#78350F;}
-.footer{text-align:center;color:#A69E92;font-size:9px;border-top:1px solid #EDE6DC;padding-top:10px;margin-top:6px;}
+  // ── Period banner ──
+  doc.setFillColor(253, 237, 231);
+  doc.roundedRect(M, y, pageW - 2 * M, 20, 4, 4, "F");
+  doc.setTextColor(...AMBER);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text(periodLabel, M + 10, y + 13);
+  y += 32;
 
-/* Print */
-@media print{
-  body{padding:14px;}
-  @page{margin:1cm;size:A4 landscape;}
-  .hero-grid,.mini-grid{page-break-inside:avoid;}
-  table{page-break-inside:auto;}
-  tr{page-break-inside:avoid;}
-  thead{display:table-header-group;}
-}
-</style></head><body>
+  // ── Hero stat cards (3 across) ──
+  const heroW = (pageW - 2 * M - 2 * 10) / 3;
+  const heroData = [
+    { label: "TOTAL EARNED", value: fmtMoney(totalEarned), sub: `${sorted.length} shift${sorted.length !== 1 ? "s" : ""}`, color: CORAL },
+    { label: "ATO DEDUCTION", value: fmtMoney(totalDed), sub: `${cappedKm.toFixed(1)} km × ${reportRateLabel}/km${totalTotalKm > ATO_KM_CAP ? ` (cap ${ATO_KM_CAP.toLocaleString()})` : ""}`, color: INDIGO },
+    { label: "DISTANCE", value: `${totalTotalKm.toFixed(1)} km`, sub: `${totalActiveKm.toFixed(1)} km active delivery`, color: AMBER },
+  ];
+  heroData.forEach((h, i) => {
+    const hx = M + i * (heroW + 10);
+    doc.setDrawColor(...BORDER);
+    doc.setLineWidth(0.5);
+    doc.roundedRect(hx, y, heroW, 52, 6, 6, "S");
+    doc.setFillColor(...h.color);
+    doc.rect(hx, y, 3, 52, "F"); // accent stripe
+    doc.setTextColor(...MUTED);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7);
+    doc.text(h.label, hx + 12, y + 14);
+    doc.setTextColor(...h.color);
+    doc.setFontSize(17);
+    doc.text(h.value, hx + 12, y + 32);
+    doc.setTextColor(...MUTED);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.text(h.sub, hx + 12, y + 44);
+  });
+  y += 64;
 
-<div class="header">
-  <div class="brand-block">
-    <div class="brand-logo">GT</div>
-    <div>
-      <div class="brand-name">GigTrack</div>
-      <div class="brand-tag">ATO Shift Report</div>
-    </div>
-  </div>
-  <div class="header-right">
-    <strong>${user?.name || "Driver"}</strong>
-    Generated ${fmtD(new Date().toISOString())}<br>
-    ${sorted.length} shift${sorted.length !== 1 ? "s" : ""} included
-  </div>
-</div>
+  // ── Mini breakdown (4 across) ──
+  const miniW = (pageW - 2 * M - 3 * 10) / 4;
+  const miniData = [
+    { label: "BASE EARNINGS", value: fmtMoney(totalBase) },
+    { label: "TIPS", value: fmtMoney(totalTips) },
+    { label: "BONUSES", value: fmtMoney(totalBonuses) },
+    { label: "DELIVERIES · ONLINE HRS", value: `${totalDels} · ${totalHrs.toFixed(1)} hrs` },
+  ];
+  miniData.forEach((m, i) => {
+    const mx = M + i * (miniW + 10);
+    doc.setFillColor(...CREAM);
+    doc.setDrawColor(...BORDER);
+    doc.setLineWidth(0.5);
+    doc.roundedRect(mx, y, miniW, 34, 4, 4, "FD");
+    doc.setTextColor(...MUTED);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.text(m.label, mx + 10, y + 13);
+    doc.setTextColor(...INK);
+    doc.setFontSize(11);
+    doc.text(m.value, mx + 10, y + 27);
+  });
+  y += 48;
 
-<div class="period">${periodLabel}</div>
+  // ── Shift table via autoTable ──
+  doc.setTextColor(...INK);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.text("Chronological shift breakdown", M, y);
+  y += 8;
 
-<!-- HERO SQUARES -->
-<div class="hero-grid">
-  <div class="hero h-green">
-    <div class="hero-label">Total earned</div>
-    <div class="hero-value">${fmtMoney(totalEarned)}</div>
-    <div class="hero-sub">${sorted.length} shift${sorted.length !== 1 ? "s" : ""}</div>
-  </div>
-  <div class="hero h-blue">
-    <div class="hero-label">ATO Deduction</div>
-    <div class="hero-value">${fmtMoney(totalDed)}</div>
-    <div class="hero-sub">${cappedKm.toFixed(1)} km × ${reportRateLabel}/km${totalTotalKm > ATO_KM_CAP ? ` (capped at ${ATO_KM_CAP.toLocaleString()})` : ""}</div>
-  </div>
-  <div class="hero h-amber">
-    <div class="hero-label">Distance</div>
-    <div class="hero-value">${totalTotalKm.toFixed(1)} km</div>
-    <div class="hero-sub">${totalActiveKm.toFixed(1)} km on active delivery</div>
-  </div>
-</div>
+  const body = sorted.map((t, i) => {
+    const platName = t.platform === "uber_eats" ? "Uber Eats" : t.platform === "doordash" ? "DoorDash" : "—";
+    const mins = Math.round((t.totalHrs || 0) * 60);
+    const dur = `${Math.floor(mins/60)}h ${mins%60}m`;
+    const tripDed = (t.totalKm || 0) * atoRateForDate(t.ts);
+    return [
+      i + 1, fmtD(t.ts), platName, dur,
+      (t.totalKm || 0).toFixed(1), t.dels || 0,
+      fmtMoney(t.base), fmtMoney(t.tip), fmtMoney(t.bonus),
+      fmtMoney(t.totalEarned), fmtMoney(tripDed),
+    ];
+  });
 
-<!-- MINI BREAKDOWN -->
-<div class="mini-grid">
-  <div class="mini"><div class="mini-label">Base earnings</div><div class="mini-value">${fmtMoney(totalBase)}</div></div>
-  <div class="mini"><div class="mini-label">Tips</div><div class="mini-value">${fmtMoney(totalTips)}</div></div>
-  <div class="mini"><div class="mini-label">Bonuses</div><div class="mini-value">${fmtMoney(totalBonuses)}</div></div>
-  <div class="mini"><div class="mini-label">Deliveries · Online hrs</div><div class="mini-value">${totalDels} · ${totalHrs.toFixed(1)} hrs</div></div>
-</div>
+  autoTable(doc, {
+    startY: y,
+    margin: { left: M, right: M },
+    head: [["#", "Date", "Platform", "Duration", "Total km", "Dels", "Base", "Tips", "Bonus", "Earned", "ATO ded."]],
+    body,
+    foot: [[
+      { content: `TOTAL (${sorted.length} shifts)`, colSpan: 3 },
+      `${totalHrs.toFixed(1)}h`, totalTotalKm.toFixed(1), totalDels,
+      fmtMoney(totalBase), fmtMoney(totalTips), fmtMoney(totalBonuses),
+      fmtMoney(totalEarned), fmtMoney(totalDed),
+    ]],
+    styles: { fontSize: 7.5, cellPadding: 3, textColor: INK, lineColor: BORDER, lineWidth: 0.5 },
+    headStyles: { fillColor: INK, textColor: [255, 255, 255], fontSize: 7, fontStyle: "bold" },
+    footStyles: { fillColor: [241, 235, 225], textColor: INK, fontStyle: "bold", fontSize: 8 },
+    alternateRowStyles: { fillColor: CREAM },
+    columnStyles: {
+      0: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" },
+      5: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" },
+      8: { halign: "right" }, 9: { halign: "right", fontStyle: "bold" },
+      10: { halign: "right", textColor: GREEN, fontStyle: "bold" },
+    },
+    // Green ATO-deduction column in the footer too
+    didParseCell: (data) => {
+      if (data.section === "foot" && data.column.index === 10) data.cell.styles.textColor = GREEN;
+    },
+  });
 
-<!-- TABLE -->
-<div class="section-title">Chronological shift breakdown</div>
-<table>
-  <thead>
-    <tr>
-      <th class="num">#</th>
-      <th>Date</th>
-      <th>Platform</th>
-      <th class="num">Duration</th>
-      <th class="num">Total km</th>
-      <th class="num">Dels</th>
-      <th class="num">Base</th>
-      <th class="num">Tips</th>
-      <th class="num">Bonus</th>
-      <th class="num">Earned</th>
-      <th class="num">ATO ded.</th>
-    </tr>
-  </thead>
-  <tbody>${rows}</tbody>
-  <tfoot>
-    <tr>
-      <td colspan="3">TOTAL (${sorted.length} shifts)</td>
-      <td class="num">${totalHrs.toFixed(1)}h</td>
-      <td class="num">${totalTotalKm.toFixed(1)}</td>
-      <td class="num">${totalDels}</td>
-      <td class="num">${fmtMoney(totalBase)}</td>
-      <td class="num">${fmtMoney(totalTips)}</td>
-      <td class="num">${fmtMoney(totalBonuses)}</td>
-      <td class="num">${fmtMoney(totalEarned)}</td>
-      <td class="num ded">${fmtMoney(totalDed)}</td>
-    </tr>
-  </tfoot>
-</table>
+  let afterTableY = (doc.lastAutoTable?.finalY || y) + 16;
+  const pageH = doc.internal.pageSize.getHeight();
+  if (afterTableY > pageH - 70) { doc.addPage(); afterTableY = M; }
 
-<div class="notes">
-  <strong>ATO disclaimer & method</strong>
-  This report uses the ATO cents per kilometre method. Rates are applied per financial year based on each shift's date (${reportRateLabel}/km), capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.
-</div>
+  // ── ATO notes ──
+  doc.setFillColor(255, 251, 235);
+  doc.setDrawColor(252, 211, 77);
+  doc.setLineWidth(0.5);
+  const notesText = `This report uses the ATO cents per kilometre method. Rates are applied per financial year based on each shift's date (${reportRateLabel}/km), capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.`;
+  const wrapped = doc.splitTextToSize(notesText, pageW - 2 * M - 24);
+  const notesH = 22 + wrapped.length * 10;
+  doc.roundedRect(M, afterTableY, pageW - 2 * M, notesH, 4, 4, "FD");
+  doc.setTextColor(120, 53, 15);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text("ATO disclaimer & method", M + 12, afterTableY + 15);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.text(wrapped, M + 12, afterTableY + 27);
 
-<div class="footer">
-  GigTrack · Generated ${new Date().toLocaleDateString("en-AU", { day:"2-digit", month:"long", year:"numeric" })} ${new Date().toLocaleTimeString("en-AU", { hour:"2-digit", minute:"2-digit" })}
-</div>
+  // ── Footer ──
+  const footY = afterTableY + notesH + 14;
+  doc.setDrawColor(...BORDER);
+  doc.setLineWidth(0.5);
+  doc.line(M, footY, pageW - M, footY);
+  doc.setTextColor(166, 158, 146);
+  doc.setFontSize(7.5);
+  doc.text(
+    `GigTrack · Generated ${new Date().toLocaleDateString("en-AU", { day:"2-digit", month:"long", year:"numeric" })} ${new Date().toLocaleTimeString("en-AU", { hour:"2-digit", minute:"2-digit" })}`,
+    pageW / 2, footY + 12, { align: "center" }
+  );
 
-</body></html>`;
-
-  const win = window.open("", "_blank");
-  if (!win) { alert("Allow popups for GigTrack to export PDF."); return; }
-  win.document.write(html);
-  win.document.close();
-  win.onload = () => { win.focus(); setTimeout(() => win.print(), 250); };
+  // ── Download as a real file (same mechanism as CSV — works in iOS PWA) ──
+  const filename = `gigtrack-ato-report-${localDateStr()}.pdf`;
+  const blob = doc.output("blob");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ─── TRIP LOG ───
