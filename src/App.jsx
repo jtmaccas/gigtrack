@@ -8729,16 +8729,22 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
   // Running tally of what the user has ENTERED so far this week (from the real
   // saved shifts that fall in this week), to compare against the weekly totals.
   // Honest sanity check — we sum the user's own entered figures, nothing guessed.
-  const inWeek = (iso) => {
-    if (!week_start || !week_end) return false;
-    const d = iso.slice(0, 10);
-    return d >= week_start && d <= week_end;
+  // Timezone-safe local date key ("YYYY-MM-DD") from a stored ts. The stored ts
+  // is local-midnight converted to UTC, so slicing the ISO string can shift the
+  // day on +10 (Brisbane). Read LOCAL components instead.
+  const localDateKey = (iso) => {
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   };
-  const weekTrips = trips.filter(t => t.ts && inWeek(t.ts));
-  const enteredEarned = weekTrips.reduce((s, t) => s + (t.totalEarned || 0), 0);
-  const enteredMins = weekTrips.reduce((s, t) => s + (t.totalMin || 0), 0);
+  // Map each week day-date → its saved shift (if any), so cards can show what was
+  // entered and the tally can sum correctly.
+  const tripByDate = {};
+  trips.forEach(t => { if (t.ts) tripByDate[localDateKey(t.ts)] = t; });
+  const savedWeekTrips = days.map(d => tripByDate[d.date]).filter(Boolean);
+  const enteredEarned = savedWeekTrips.reduce((s, t) => s + (t.totalEarned || 0), 0);
+  const enteredMins = savedWeekTrips.reduce((s, t) => s + (t.totalMin || 0), 0);
   const parseHrsLabel = (lbl) => {
-    // "44h39m" → minutes; returns null if unparseable
     if (!lbl || typeof lbl !== "string") return null;
     const m = lbl.match(/(\d+)\s*h\s*(\d+)?/i);
     if (!m) return null;
@@ -8757,7 +8763,8 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
   };
   const fmtDay = (iso) => new Date(iso).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
   const savedSet = new Set(savedDates);
-  const remaining = days.filter(d => !savedSet.has(d.date)).length;
+  const isDayDone = (date) => !!tripByDate[date] || savedSet.has(date);
+  const remaining = days.filter(d => !isDayDone(d.date)).length;
 
   // Reference chips from whatever totals the AI got (all optional).
   const refChips = [];
@@ -8857,19 +8864,23 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
 
         {/* Per-day cards */}
         {days.map((d, i) => {
-          const done = savedSet.has(d.date);
+          const savedTrip = tripByDate[d.date];
+          const done = !!savedTrip || savedSet.has(d.date);
+          const doneSummary = savedTrip
+            ? `Added ✓  ·  $${(savedTrip.totalEarned || 0).toFixed(2)}${savedTrip.totalMin ? `  ·  ${fmtMins(savedTrip.totalMin)}` : ""}`
+            : "Added ✓";
           return (
             <div key={i} style={{
               display:"flex",alignItems:"center",justifyContent:"space-between",
               padding:"14px 16px",marginBottom:"10px",
               background:done ? "var(--pos-dim, var(--elevated))" : "var(--elevated)",
               border:done ? "1.5px solid var(--pos, #1E9E68)" : "1px solid var(--border)",
-              borderRadius:"14px",opacity:done ? 0.85 : 1,
+              borderRadius:"14px",opacity:done ? 0.92 : 1,
             }}>
               <div>
                 <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"800",color:"var(--text)"}}>{fmtDay(d.date)}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginTop:"2px"}}>
-                  {done ? "Added ✓" : d.earned != null ? `$${Number(d.earned).toFixed(2)} earned · add km & hours` : "Add this day's details"}
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:done ? "var(--pos, #1E9E68)" : "var(--muted)",marginTop:"2px",fontWeight:done ? "700" : "400"}}>
+                  {done ? doneSummary : d.earned != null ? `$${Number(d.earned).toFixed(2)} earned · add km & hours` : "Add this day's details"}
                 </div>
               </div>
               {!done && (
