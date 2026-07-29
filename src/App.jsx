@@ -719,8 +719,15 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.11";
+const CURRENT_VERSION = "ALPHA 0.12";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.12",
+    date: "29/7/26",
+    items: [
+      { tag: "FIXED", text: "PDF export now saves as a proper file you can keep or share — it no longer gets stuck open on iPhone when added to your home screen." },
+    ],
+  },
   {
     version: "ALPHA 0.11",
     date: "29/7/26",
