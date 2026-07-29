@@ -4568,7 +4568,7 @@ function WeeklyGoalCard({ trips, weeklyGoal }) {
 }
 
 // ─── HOME SCREEN ───
-function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, activeShift, onStartTimer, onEndTimer, onPauseTimer, onResumeTimer, onOrderSession, weeklyGoal, onResumeShiftScreen, region, isPro = false, benchmarksUnlocked = false, benchmarkDaysRemaining = 0, onUpgrade, onLogShift, onDetail, onBenchmarks, liveStatus = null, onGoOnline, onGoOffline }) {
+function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, activeShift, onStartTimer, onEndTimer, onPauseTimer, onResumeTimer, onOrderSession, weeklyGoal, onResumeShiftScreen, region, isPro = false, benchmarksUnlocked = false, benchmarkDaysRemaining = 0, onUpgrade, onLogShift, onDetail, onBenchmarks, liveStatus = null, onGoOnline, onGoOffline, catchupTask = null, catchupRemaining = 0, onResumeCatchup, onDismissCatchup }) {
   const { fyStart } = getFYBounds();
   const { weekStart, weekEnd } = getWeekBounds();
   const fyTrips = trips.filter(t => new Date(t.ts) >= fyStart);
@@ -4864,6 +4864,38 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
               <div style={{fontSize:"11px",color:"rgba(255,255,255,.8)",marginTop:"3px"}}>Tap to return to shift</div>
             </div>
             <div style={{fontSize:"22px",color:"rgba(255,255,255,.7)"}}>›</div>
+          </div>
+        )}
+
+        {/* Tasks — resume an unfinished weekly catch-up. Only shows when there's
+            an active task with days still to fill. */}
+        {catchupTask && catchupRemaining > 0 && (
+          <div style={{margin:"14px 16px 0"}}>
+            <div style={{fontSize:"10px",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",fontWeight:"800",marginBottom:"8px",paddingLeft:"2px"}}>Tasks</div>
+            <div style={{
+              padding:"16px 18px",background:"var(--elevated)",
+              border:"1.5px solid var(--coral)",borderRadius:"18px",
+              display:"flex",alignItems:"center",gap:"14px",
+            }}>
+              <div style={{flexShrink:0,fontSize:"24px"}}>📅</div>
+              <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={onResumeCatchup}>
+                <div style={{fontSize:"14px",fontWeight:"800",color:"var(--text)",lineHeight:1.3}}>
+                  Finish your {catchupTask.platform === "doordash" ? "DoorDash" : "Uber"} week
+                </div>
+                <div style={{fontSize:"12px",color:"var(--muted)",marginTop:"3px"}}>
+                  {catchupRemaining} day{catchupRemaining === 1 ? "" : "s"} left to add · tap to continue
+                </div>
+              </div>
+              <button
+                onClick={onResumeCatchup}
+                style={{flexShrink:0,border:"none",cursor:"pointer",background:"var(--coral)",color:"var(--on-coral)",borderRadius:"10px",padding:"9px 14px",fontSize:"13px",fontWeight:"800"}}
+              >Resume</button>
+              <button
+                onClick={onDismissCatchup}
+                aria-label="Dismiss task"
+                style={{flexShrink:0,border:"none",cursor:"pointer",background:"transparent",color:"var(--muted2)",fontSize:"18px",lineHeight:1,padding:"2px 4px"}}
+              >×</button>
+            </div>
           </div>
         )}
 
@@ -9770,7 +9802,9 @@ export default function GigTrack() {
   // ── Weekly catch-up (Stage 2: mock-data build) ──
   // `catchup` holds the detection result from the Edge Function (mocked for now).
   // `catchupSaved` tracks which day-dates have been added, so cards flip to done.
-  const [catchup, setCatchup] = useState(null);
+  // The task is PERSISTED to localStorage (gt_catchup_task) so it survives reloads
+  // and shows as a resumable "task" on the Home screen until the week is done.
+  const [catchup, setCatchup] = useState(() => DB.get("gt_catchup_task") || null);
   const [catchupSaved, setCatchupSaved] = useState([]);
   // MOCK detection results — remove when the Edge Function is wired (Stage 3).
   // Toggle between these to preview both platforms.
@@ -9799,6 +9833,7 @@ export default function GigTrack() {
   };
   const openCatchup = (detection) => {
     setCatchup(detection);
+    DB.set("gt_catchup_task", detection); // persist so it survives reloads
     setCatchupSaved([]);
     setScreen("catchup");
   };
@@ -9813,6 +9848,34 @@ export default function GigTrack() {
     DB.set("gt_catchup_pending_date", day.date);
     setScreen("newtrip");
   };
+  // Timezone-safe local date key from a stored ts (mirrors the catch-up screen).
+  const catchupLocalKey = (iso) => {
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  // Days of the active task that still have no saved shift.
+  const catchupRemainingDays = () => {
+    if (!catchup?.days) return 0;
+    const have = new Set(trips.filter(t => t.ts).map(t => catchupLocalKey(t.ts)));
+    return catchup.days.filter(d => !have.has(d.date)).length;
+  };
+  const resumeCatchup = () => { if (catchup) setScreen("catchup"); };
+  const dismissCatchup = () => {
+    setCatchup(null);
+    setCatchupSaved([]);
+    DB.remove("gt_catchup_task");
+    DB.remove("gt_catchup_pending_date");
+  };
+  // When every day of the active task has a saved shift, the task is finished —
+  // keep it around while the user is ON the catch-up screen (so they see the
+  // "all done 🎉" state), but clear it once they leave, so Home doesn't keep
+  // showing a completed task.
+  useEffect(() => {
+    if (catchup && screen !== "catchup" && screen !== "newtrip" && catchupRemainingDays() === 0) {
+      dismissCatchup();
+    }
+  }, [screen, trips]);
 
 
   // "What's new" modal: after an update reload, show the current version's
@@ -10614,6 +10677,10 @@ export default function GigTrack() {
           onLogShift={() => setScreen("logshift")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
           onBenchmarks={() => benchmarksUnlocked ? setScreen("benchmarks") : setScreen("paywall")}
+          catchupTask={catchup}
+          catchupRemaining={catchupRemainingDays()}
+          onResumeCatchup={resumeCatchup}
+          onDismissCatchup={dismissCatchup}
         />
       )}
       {screen === "benchmarks" && (
