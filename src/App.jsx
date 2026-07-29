@@ -8769,10 +8769,17 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
     const pad = n => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   };
-  // Map each week day-date → its saved shift (if any), so cards can show what was
-  // entered and the tally can sum correctly.
+  // Map each week day-date → its saved shift (if any), matching on date AND
+  // platform. A shift only counts toward THIS week if its platform matches the
+  // week's platform, or is "both" (worked both apps that day). This prevents a
+  // DoorDash shift from marking an Uber-week day as done, and vice versa — a
+  // driver may work both apps on the same day, so each platform's shift is
+  // tracked separately.
+  const platformMatches = (t) => t.platform === platform || t.platform === "both";
   const tripByDate = {};
-  trips.forEach(t => { if (t.ts) tripByDate[localDateKey(t.ts)] = t; });
+  trips.forEach(t => {
+    if (t.ts && platformMatches(t)) tripByDate[localDateKey(t.ts)] = t;
+  });
   const savedWeekTrips = days.map(d => tripByDate[d.date]).filter(Boolean);
   const enteredEarned = savedWeekTrips.reduce((s, t) => s + (t.totalEarned || 0), 0);
   const enteredMins = savedWeekTrips.reduce((s, t) => s + (t.totalMin || 0), 0);
@@ -9854,10 +9861,17 @@ export default function GigTrack() {
     const pad = n => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   };
-  // Days of the active task that still have no saved shift.
+  // Days of the active task that still have no saved shift. Matches on date AND
+  // platform (or "both") — same rule as the catch-up screen, so the Home count
+  // and the screen agree.
   const catchupRemainingDays = () => {
     if (!catchup?.days) return 0;
-    const have = new Set(trips.filter(t => t.ts).map(t => catchupLocalKey(t.ts)));
+    const plat = catchup.platform;
+    const have = new Set(
+      trips
+        .filter(t => t.ts && (t.platform === plat || t.platform === "both"))
+        .map(t => catchupLocalKey(t.ts))
+    );
     return catchup.days.filter(d => !have.has(d.date)).length;
   };
   const resumeCatchup = () => { if (catchup) setScreen("catchup"); };
