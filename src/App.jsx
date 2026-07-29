@@ -8487,8 +8487,6 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
         <div className="detail-section">
           <div className="detail-section-title">Time</div>
           <div className="detail-grid">
-            <DI label="Shift Start" value={new Date(trip.ts).toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})} />
-            <DI label="Shift End" value={(() => { const end = new Date(new Date(trip.ts).getTime() + trip.totalMin*60000); return end.toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"}); })()} />
             <DI label="Online Time" value={`${trip.totalMin} min (${trip.totalHrs.toFixed(1)} hrs)`} />
             <DI label="Active Time" value={trip.activeMins ? `${trip.activeMins} min (${(trip.activeMins/60).toFixed(1)} hrs)` : "—"} />
             {trip.activeMins && trip.totalMin ? (
