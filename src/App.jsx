@@ -128,8 +128,9 @@ const BETA_MODE = true;
 const FREE_SCREENSHOT_CREDITS = 10;
 // One-time top-up packs (credits added to the running balance).
 const SCREENSHOT_PACKS = [
+  { id: "pack20", credits: 20, price: 2.49, label: "20 screenshots" },
   { id: "pack50", credits: 50, price: 3.99, label: "50 screenshots" },
-  { id: "pack100", credits: 100, price: 5.99, label: "100 screenshots" },
+  { id: "pack100", credits: 100, price: 5.99, label: "100 screenshots", badge: "Best value" },
 ];
 
 // Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
@@ -2944,11 +2945,22 @@ function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
             style={{
               width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",
               padding:"16px",marginBottom:"10px",cursor:busy != null ? "default" : "pointer",
-              background:"var(--elevated)",border:"1px solid var(--coral-border)",borderRadius:"14px",
+              background:"var(--elevated)",
+              border:pack.badge ? "1.5px solid var(--coral)" : "1px solid var(--coral-border)",
+              borderRadius:"14px",
             }}
           >
             <div style={{textAlign:"left"}}>
-              <div style={{fontSize:"15px",fontWeight:"800",color:"var(--text)"}}>{pack.credits} screenshots</div>
+              <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                <span style={{fontSize:"15px",fontWeight:"800",color:"var(--text)"}}>{pack.credits} screenshots</span>
+                {pack.badge && (
+                  <span style={{
+                    fontSize:"9px",fontWeight:"800",letterSpacing:".04em",textTransform:"uppercase",
+                    color:"var(--on-coral)",background:"var(--coral)",
+                    padding:"2px 7px",borderRadius:"100px",
+                  }}>{pack.badge}</span>
+                )}
+              </div>
               <div style={{fontSize:"11px",color:"var(--muted)",fontWeight:"500",marginTop:"2px"}}>{(pack.price / pack.credits * 100).toFixed(1)}c each · one-time</div>
             </div>
             <div style={{
