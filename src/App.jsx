@@ -9531,6 +9531,19 @@ export default function GigTrack() {
   useEffect(() => onNeedRefresh(() => setUpdateReady(true)), []);
   const [benchmarksScout, setBenchmarksScout] = useState(false);
 
+  // ── Install nudge ── After the 2nd shift, offer "add to home screen" ONCE
+  // (one-and-done). Skipped entirely if already running as an installed PWA, or
+  // if the user has previously seen/dismissed it (gt_install_nudge_done).
+  const [installBanner, setInstallBanner] = useState(false);
+  const isStandalonePWA = () =>
+    (typeof window !== "undefined" &&
+      ((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+        window.navigator.standalone === true));
+  const dismissInstallBanner = () => {
+    setInstallBanner(false);
+    DB.set("gt_install_nudge_done", true); // never show again
+  };
+
   // "What's new" modal: after an update reload, show the current version's
   // changelog once. First-ever launch just stamps the version silently (a new
   // user doesn't need a changelog for a version they never saw the prior one of).
@@ -10122,6 +10135,13 @@ export default function GigTrack() {
       setEditId(null);
       setTimerPrefill(null);
 
+      // Install nudge: the moment they save their 2nd shift (a returning, engaged
+      // user), offer "add to home screen" once. Never if already installed or
+      // already shown before.
+      if (!isEdit && updated.length === 2 && !isStandalonePWA() && !DB.get("gt_install_nudge_done")) {
+        setInstallBanner(true);
+      }
+
       // Cloud sync — fire and forget. If it fails (offline, etc), the synced
       // flag stays false and Pass 4's reconciliation will catch it on next boot.
       syncShift(record).then(result => {
@@ -10568,6 +10588,45 @@ export default function GigTrack() {
         confirmLabel={confirm?.confirmLabel} cancelLabel={confirm?.cancelLabel}
         onConfirm={confirm?.onConfirm} onCancel={confirm?.onCancel || (() => setConfirm(null))}
       />
+      {installBanner && (
+        <div
+          role="status"
+          style={{
+            position:"fixed", left:"12px", right:"12px", bottom:"84px", zIndex:400,
+            background:"var(--coral)", color:"var(--on-coral)",
+            borderRadius:"14px", padding:"12px 14px",
+            display:"flex", alignItems:"center", gap:"12px",
+            boxShadow:"0 10px 30px -8px rgba(240,86,46,.5)",
+          }}
+        >
+          <span style={{flexShrink:0,fontSize:"20px"}}>📲</span>
+          <div style={{flex:1, minWidth:0}}>
+            <div style={{fontSize:"13px", fontWeight:"800", lineHeight:1.3}}>Add GigTrack to your home screen</div>
+            <div style={{fontSize:"11px", opacity:.9, marginTop:"2px"}}>Open it like an app — one tap, no browser.</div>
+          </div>
+          <button
+            onClick={() => { setInstallBanner(false); DB.set("gt_install_nudge_done", true); setScreen("installhelp"); }}
+            style={{
+              flexShrink:0, border:"none", cursor:"pointer",
+              background:"var(--on-coral)", color:"var(--coral)",
+              borderRadius:"10px", padding:"9px 13px",
+              fontSize:"12px", fontWeight:"800",
+            }}
+          >
+            Show me
+          </button>
+          <button
+            onClick={dismissInstallBanner}
+            aria-label="Dismiss"
+            style={{
+              flexShrink:0, border:"none", cursor:"pointer", background:"transparent",
+              color:"var(--on-coral)", opacity:.8, fontSize:"18px", lineHeight:1, padding:"2px 4px",
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       {updateReady && (
         <div
           role="status"
