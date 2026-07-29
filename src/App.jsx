@@ -8718,10 +8718,37 @@ function InstallHelpScreen({ onBack }) {
 // had a bar). The weekly totals show as a reference strip — never split.
 // Each day routes into the SAME new-shift form via gt_entry_prefill, so all the
 // derived fields (score, deduction, ratios) compute exactly like any shift.
-function WeeklyCatchupScreen({ detection, savedDates = [], onAddDay, onBack }) {
+function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay, onBack }) {
   const { platform, week_start, week_end, days = [], week_totals = {}, screenshotUrl = null } = detection || {};
   const platLabel = platform === "doordash" ? "DoorDash" : "Uber Eats";
   const [shotExpanded, setShotExpanded] = useState(false);
+  // Clear the one-shot "which day am I editing" marker whenever we land back on
+  // the list (handleSaved's navigation has already used it to return here).
+  useEffect(() => { DB.remove("gt_catchup_pending_date"); }, []);
+
+  // Running tally of what the user has ENTERED so far this week (from the real
+  // saved shifts that fall in this week), to compare against the weekly totals.
+  // Honest sanity check — we sum the user's own entered figures, nothing guessed.
+  const inWeek = (iso) => {
+    if (!week_start || !week_end) return false;
+    const d = iso.slice(0, 10);
+    return d >= week_start && d <= week_end;
+  };
+  const weekTrips = trips.filter(t => t.ts && inWeek(t.ts));
+  const enteredEarned = weekTrips.reduce((s, t) => s + (t.totalEarned || 0), 0);
+  const enteredMins = weekTrips.reduce((s, t) => s + (t.totalMin || 0), 0);
+  const parseHrsLabel = (lbl) => {
+    // "44h39m" → minutes; returns null if unparseable
+    if (!lbl || typeof lbl !== "string") return null;
+    const m = lbl.match(/(\d+)\s*h\s*(\d+)?/i);
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60 + (m[2] ? parseInt(m[2], 10) : 0);
+  };
+  const weekEarnedTotal = week_totals.earned != null ? Number(week_totals.earned) : null;
+  const weekMinsTotal = parseHrsLabel(week_totals.online_hrs);
+  const remainEarned = weekEarnedTotal != null ? Math.max(0, weekEarnedTotal - enteredEarned) : null;
+  const remainMins = weekMinsTotal != null ? Math.max(0, weekMinsTotal - enteredMins) : null;
+  const fmtMins = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
 
   const fmtRange = (a, b) => {
     if (!a || !b) return "";
@@ -8807,6 +8834,24 @@ function WeeklyCatchupScreen({ detection, savedDates = [], onAddDay, onBack }) {
               ))}
             </div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"9px",lineHeight:"1.4"}}>These are your whole-week totals — we don't split them across days, you enter each day's real figures.</div>
+          </div>
+        )}
+
+        {/* Running "remaining" banner — how much of the week's totals is left to
+            account for, based on what the user has entered so far. Honest tally. */}
+        {(remainEarned != null || remainMins != null) && (
+          <div style={{
+            background:"var(--coral-dim, rgba(240,86,46,.1))",border:"1px solid var(--coral)",
+            borderRadius:"14px",padding:"12px 14px",marginBottom:"20px",
+          }}>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"800",color:"var(--coral)",marginBottom:"4px"}}>
+              Still to account for
+            </div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",lineHeight:"1.5"}}>
+              {remainEarned != null && <span><strong>${remainEarned.toFixed(2)}</strong> of earnings{remainMins != null ? " · " : ""}</span>}
+              {remainMins != null && <span><strong>{fmtMins(remainMins)}</strong> of online time</span>}
+              {" "}left, based on what you've entered so far.
+            </div>
           </div>
         )}
 
@@ -10371,6 +10416,9 @@ export default function GigTrack() {
       });
 
       setTimeout(() => {
+        // If saving a catch-up day, return to the week list to keep completing
+        // it — not home/detail. (The catch-up onSaved also marks the day done.)
+        if (DB.get("gt_catchup_pending_date")) { setScreen("catchup"); return; }
         if (isEdit) { setDetailId(record.id); setScreen("detail"); }
         else setScreen("home");
       }, 700);
@@ -10705,13 +10753,13 @@ export default function GigTrack() {
             const pend = DB.get("gt_catchup_pending_date");
             handleSaved(rec, isEdit, () => {
               if (onCommitted) onCommitted();
+              // Mark this day done. Do NOT remove gt_catchup_pending_date here —
+              // handleSaved's delayed navigation reads it to return to the
+              // catch-up list; the catch-up screen clears it on mount.
               if (pend && catchup) {
                 setCatchupSaved(prev => prev.includes(pend) ? prev : [...prev, pend]);
-                DB.remove("gt_catchup_pending_date");
               }
             });
-            // After a catch-up day saves, return to the catch-up list (not home).
-            if (pend && catchup) setScreen("catchup");
           }}
           editTrip={editId ? editTrip : null}
           kmPref={kmPref}
@@ -10820,6 +10868,7 @@ export default function GigTrack() {
         <WeeklyCatchupScreen
           detection={catchup}
           savedDates={catchupSaved}
+          trips={trips}
           onAddDay={addCatchupDay}
           onBack={() => setScreen("home")}
         />
