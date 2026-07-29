@@ -6079,10 +6079,24 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
-  // Determine initial shift date — timer prefill or edit (date only)
+  // Read one-shot prefills ONCE (useState initializer runs a single time even if
+  // the component body re-renders). Removing them during render caused a race:
+  // a re-render would find them already deleted and lose the carried-over data
+  // (earnings/tips/dels vanished when coming from the Confirm screen's "add details").
+  // NOTE: these must be declared BEFORE initShiftDate below — initShiftDate reads
+  // entryPrefill.date, and doing its own DB.get would hit the same delete race.
+  const [orderPrefill] = useState(() => DB.get("gt_order_prefill"));
+  const [entryPrefill] = useState(() => DB.get("gt_entry_prefill"));
+  useEffect(() => {
+    if (orderPrefill) DB.remove("gt_order_prefill");
+    if (entryPrefill) DB.remove("gt_entry_prefill");
+  }, []);
+
+  // Determine initial shift date — timer prefill, entry prefill (catch-up /
+  // screenshot), or edit (date only)
   const initShiftDate = timerPrefill
     ? toDateInput(timerPrefill.startedAt)
-    : (DB.get("gt_entry_prefill")?.date || toDateInput(editTrip?.ts));
+    : (entryPrefill?.date || toDateInput(editTrip?.ts));
 
   // Initial online time from timer prefill
   const initOnlineHrs  = timerPrefill ? String(Math.floor((timerPrefill.totalMin||0) / 60)) : (editTrip ? String(Math.floor((editTrip.totalMin||0)/60)) : "");
@@ -6090,17 +6104,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   const initKmFromGps  = timerPrefill?.totalKm ? String(timerPrefill.totalKm.toFixed(2)) : null;
 
   const [shiftDate, setShiftDate] = useState(initShiftDate);
-  // Check for order session prefill
-  // Read one-shot prefills ONCE (useState initializer runs a single time even if
-  // the component body re-renders). Removing them during render caused a race:
-  // a re-render would find them already deleted and lose the carried-over data
-  // (earnings/tips/dels vanished when coming from the Confirm screen's "add details").
-  const [orderPrefill] = useState(() => DB.get("gt_order_prefill"));
-  const [entryPrefill] = useState(() => DB.get("gt_entry_prefill"));
-  useEffect(() => {
-    if (orderPrefill) DB.remove("gt_order_prefill");
-    if (entryPrefill) DB.remove("gt_entry_prefill");
-  }, []);
 
   const [totalEarned, setTotalEarned] = useState(
     entryPrefill?.earned != null ? String(entryPrefill.earned)
