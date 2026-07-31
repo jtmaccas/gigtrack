@@ -4,6 +4,7 @@ import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
@@ -134,6 +135,63 @@ const SCREENSHOT_PACKS = [
   { id: "pack50", credits: 50, price: 3.99, label: "50 screenshots" },
   { id: "pack100", credits: 100, price: 5.99, label: "100 screenshots", badge: "Best value" },
 ];
+
+// ─── CSV/EXCEL BULK IMPORT — field definitions + fuzzy header matching ─────
+// The GigTrack shift fields a spreadsheet column can map to. `key` is internal,
+// `label` is shown, `required` gates import, `aliases` drive fuzzy matching.
+const CSV_FIELDS = [
+  { key: "date",       label: "Shift date",     required: true,  aliases: ["date", "shift date", "start date", "day", "shift day", "work date", "trip date"] },
+  { key: "earned",     label: "Total earned",   required: true,  aliases: ["earned", "total earned", "total", "earnings", "net fare", "net earnings", "pay", "payout", "income", "amount", "total pay", "gross"] },
+  { key: "totalKm",    label: "Total km",       required: false, aliases: ["km", "kms", "total km", "distance", "kilometres", "kilometers", "mileage", "total distance"] },
+  { key: "totalMin",   label: "Online time",    required: false, aliases: ["online", "online time", "hours", "time", "duration", "shift time", "online hours", "total time", "hrs"] },
+  { key: "activeKm",   label: "Active km",      required: false, aliases: ["active km", "delivery km", "active distance", "on trip km"] },
+  { key: "activeMins", label: "Active time",   required: false, aliases: ["active", "active time", "delivery time", "on trip time", "active hours"] },
+  { key: "dels",       label: "Deliveries",     required: false, aliases: ["deliveries", "dels", "trips", "orders", "jobs", "completed deliveries", "trip count", "delivery count"] },
+  { key: "tip",        label: "Tips",           required: false, aliases: ["tip", "tips", "gratuity", "customer tip"] },
+  { key: "bonus",      label: "Bonuses",        required: false, aliases: ["bonus", "bonuses", "promotion", "promotions", "incentive", "quest"] },
+  { key: "notes",      label: "Notes",          required: false, aliases: ["notes", "note", "comment", "comments", "memo"] },
+];
+
+// Normalise a header for comparison: lowercase, strip non-alphanumerics.
+const csvNormHeader = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+// Score similarity between a header and an alias (0..1). Exact match = 1;
+// contains/contained = high; token overlap = partial. Simple + dependency-free.
+const csvScore = (header, alias) => {
+  const h = csvNormHeader(header), a = csvNormHeader(alias);
+  if (!h || !a) return 0;
+  if (h === a) return 1;
+  if (h === a + "s" || a === h + "s") return 0.97; // simple plural
+  if (h.includes(a) || a.includes(h)) return 0.85;
+  const ht = new Set(h.split(" ")), at = a.split(" ");
+  const overlap = at.filter(t => ht.has(t)).length;
+  if (overlap > 0) return 0.5 + 0.3 * (overlap / Math.max(ht.size, at.length));
+  return 0;
+};
+
+// Auto-map headers → fields. Returns { mapping: {fieldKey: headerIndex|null},
+// unmapizedRequired: [fieldKey], confidence: {fieldKey: score} }. A field only
+// auto-maps if its best header scores >= threshold and that header isn't already
+// taken by a higher-scoring field.
+const csvAutoMap = (headers, threshold = 0.6) => {
+  const pairs = [];
+  CSV_FIELDS.forEach(f => {
+    headers.forEach((h, i) => {
+      const best = Math.max(...f.aliases.map(a => csvScore(h, a)));
+      if (best >= threshold) pairs.push({ field: f.key, headerIdx: i, score: best });
+    });
+  });
+  pairs.sort((a, b) => b.score - a.score); // greedily assign best first
+  const mapping = {}; const usedHeaders = new Set(); const confidence = {};
+  CSV_FIELDS.forEach(f => { mapping[f.key] = null; });
+  pairs.forEach(p => {
+    if (mapping[p.field] == null && !usedHeaders.has(p.headerIdx)) {
+      mapping[p.field] = p.headerIdx; usedHeaders.add(p.headerIdx); confidence[p.field] = p.score;
+    }
+  });
+  const unmappedRequired = CSV_FIELDS.filter(f => f.required && mapping[f.key] == null).map(f => f.key);
+  return { mapping, unmappedRequired, confidence };
+};
 
 // Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
 // Rules: default = first 3 id segments. Some cities over-split at 3 segments
@@ -8752,6 +8810,160 @@ function InstallHelpScreen({ onBack }) {
 // ─── WEEKLY CATCH-UP ─── Turns a weekly summary into per-day shift entries.
 // Platform-aware: DoorDash days arrive with real earnings pre-filled (read from
 // the printed dash list); Uber days arrive blank (we only detected which days
+// ─── CSV / EXCEL BULK IMPORT (Stage 1: parse + map + confirm) ─────────────
+// Pick a file → parse (SheetJS) → fuzzy auto-map headers → confirmation screen
+// where the user adjusts the column→field mapping and sees a preview. The actual
+// bulk insert + credit charge + Tasks review-queue come in Stage 2. `onImport`
+// receives the parsed rows + final mapping when the user confirms.
+function CsvImportScreen({ onImport, onBack }) {
+  const [stage, setStage] = useState("pick");   // pick | mapping | error
+  const [fileName, setFileName] = useState("");
+  const [headers, setHeaders] = useState([]);
+  const [rows, setRows] = useState([]);          // array of arrays (data rows)
+  const [mapping, setMapping] = useState({});    // fieldKey → headerIdx | null
+  const [filePlatform, setFilePlatform] = useState("uber_eats");
+  const [errMsg, setErrMsg] = useState("");
+  const fileRef = useRef(null);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    setFileName(file.name);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      // header:1 → array-of-arrays; first row = headers.
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+      const nonEmpty = aoa.filter(r => r.some(c => String(c).trim() !== ""));
+      if (nonEmpty.length < 2) {
+        setErrMsg("This file doesn't have a header row plus at least one data row.");
+        setStage("error");
+        return;
+      }
+      const hdr = nonEmpty[0].map(h => String(h).trim());
+      const dataRows = nonEmpty.slice(1);
+      const auto = csvAutoMap(hdr);
+      setHeaders(hdr);
+      setRows(dataRows);
+      setMapping(auto.mapping);
+      setStage("mapping");
+    } catch (e) {
+      setErrMsg("Couldn't read that file. Make sure it's a .csv, .xlsx or .xls export.");
+      setStage("error");
+    }
+  };
+
+  const setFieldMap = (fieldKey, headerIdx) => {
+    setMapping(prev => {
+      const next = { ...prev };
+      // Clear this header from any other field (one header maps to one field).
+      if (headerIdx !== null) {
+        Object.keys(next).forEach(k => { if (next[k] === headerIdx) next[k] = null; });
+      }
+      next[fieldKey] = headerIdx;
+      return next;
+    });
+  };
+
+  const requiredUnmapped = CSV_FIELDS.filter(f => f.required && (mapping[f.key] == null)).map(f => f.label);
+  const canImport = requiredUnmapped.length === 0;
+
+  const cell = (rowArr, idx) => idx == null ? "" : (rowArr[idx] ?? "");
+
+  return (
+    <div className="view active" style={{background:"var(--bg)"}}>
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">Bulk import</div>
+      </div>
+      <div className="scroll-area" style={{padding:"18px"}}>
+
+        {stage === "pick" && (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"18px"}}>
+              Upload a spreadsheet of past shifts (.csv, .xlsx or .xls) and we'll match its columns to your shift fields, then import them in bulk.
+            </div>
+            <input
+              ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}}
+              onChange={(e) => handleFile(e.target.files?.[0])}
+            />
+            <button
+              onClick={() => fileRef.current?.click()}
+              style={{width:"100%",padding:"16px",border:"1.5px dashed var(--coral)",borderRadius:"16px",background:"var(--elevated)",cursor:"pointer",color:"var(--coral)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
+            >📄 Choose a file</button>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginTop:"12px",lineHeight:"1.5"}}>
+              Your file should have a header row (e.g. Date, Earnings, Km). We'll guess the matches — you confirm before anything is imported.
+            </div>
+          </>
+        )}
+
+        {stage === "error" && (
+          <div style={{textAlign:"center",padding:"40px 18px"}}>
+            <div style={{fontSize:"30px",marginBottom:"10px"}}>⚠️</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",marginBottom:"6px"}}>Couldn't read that file</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",lineHeight:"1.5",marginBottom:"18px"}}>{errMsg}</div>
+            <button onClick={() => { setStage("pick"); setErrMsg(""); }} style={{border:"none",cursor:"pointer",background:"var(--coral)",color:"var(--on-coral)",borderRadius:"10px",padding:"10px 18px",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800"}}>Try another file</button>
+          </div>
+        )}
+
+        {stage === "mapping" && (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"4px"}}>{fileName} · {rows.length} row{rows.length === 1 ? "" : "s"}</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",fontWeight:"700",marginBottom:"14px"}}>Match your columns</div>
+
+            {CSV_FIELDS.map(f => (
+              <div key={f.key} style={{marginBottom:"12px"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>
+                  {f.label}{f.required && <span style={{color:"var(--coral)"}}> *</span>}
+                </div>
+                <select
+                  value={mapping[f.key] == null ? "" : mapping[f.key]}
+                  onChange={(e) => setFieldMap(f.key, e.target.value === "" ? null : parseInt(e.target.value, 10))}
+                  style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:mapping[f.key]==null && f.required ? "1.5px solid var(--coral)" : "1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}
+                >
+                  <option value="">— not in my file —</option>
+                  {headers.map((h, i) => (
+                    <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
+                  ))}
+                </select>
+                {mapping[f.key] != null && rows[0] && (
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginTop:"3px"}}>
+                    e.g. "{String(cell(rows[0], mapping[f.key])).slice(0, 30)}"
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* Platform for the whole file (used unless a platform column is added later) */}
+            <div style={{marginTop:"18px",marginBottom:"12px"}}>
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>Platform for these shifts</div>
+              <select value={filePlatform} onChange={(e) => setFilePlatform(e.target.value)}
+                style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:"1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}>
+                <option value="uber_eats">Uber Eats</option>
+                <option value="doordash">DoorDash</option>
+                <option value="both">Both</option>
+              </select>
+            </div>
+
+            {!canImport && (
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--coral)",fontWeight:"600",margin:"10px 0",lineHeight:"1.5"}}>
+                Please match: {requiredUnmapped.join(", ")} — these are required to import.
+              </div>
+            )}
+
+            <button
+              onClick={() => canImport && onImport({ rows, headers, mapping, platform: filePlatform, fileName })}
+              disabled={!canImport}
+              style={{width:"100%",marginTop:"8px",padding:"15px",border:"none",borderRadius:"14px",cursor:canImport ? "pointer" : "default",background:canImport ? "var(--coral)" : "var(--border)",color:canImport ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
+            >Preview import ({rows.length} row{rows.length === 1 ? "" : "s"})</button>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",textAlign:"center",marginTop:"10px"}}>Nothing is imported yet — you'll confirm on the next step.</div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // had a bar). The weekly totals show as a reference strip — never split.
 // Each day routes into the SAME new-shift form via gt_entry_prefill, so all the
 // derived fields (score, deduction, ratios) compute exactly like any shift.
@@ -8949,7 +9161,7 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, onTestCatchupUber, onTestCatchupDoorDash, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, onTestCatchupUber, onTestCatchupDoorDash, onCsvImport, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -9329,6 +9541,13 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                     <div className="settings-item-left">
                       <div className="settings-item-label">🧪 Preview catch-up (DoorDash mock)</div>
                       <div className="settings-item-sub">Test-only — weekly catch-up flow</div>
+                    </div>
+                    <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+                  </div>
+                  <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}} onClick={onCsvImport}>
+                    <div className="settings-item-left">
+                      <div className="settings-item-label">🧪 Bulk import (CSV/Excel) — Stage 1</div>
+                      <div className="settings-item-sub">Test-only — parse & map, no insert yet</div>
                     </div>
                     <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
                   </div>
@@ -10911,6 +11130,7 @@ export default function GigTrack() {
           onInstallHelp={() => setScreen("installhelp")}
           onTestCatchupUber={() => openCatchup(MOCK_CATCHUP_UBER)}
           onTestCatchupDoorDash={() => openCatchup(MOCK_CATCHUP_DOORDASH)}
+          onCsvImport={() => setScreen("csvimport")}
           screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
@@ -10968,6 +11188,25 @@ export default function GigTrack() {
           trips={trips}
           onAddDay={addCatchupDay}
           onBack={() => setScreen("home")}
+        />
+      )}
+      {screen === "csvimport" && (
+        <CsvImportScreen
+          onBack={() => setScreen("settings")}
+          onImport={({ rows, mapping, platform, fileName }) => {
+            // STAGE 1 STUB — proves parse + mapping works. Stage 2 will build the
+            // real record-per-row insert, dedupe/incomplete → Tasks review queue,
+            // and the 10-credit charge. For now, just report what we parsed.
+            const dateIdx = mapping.date, earnedIdx = mapping.earned;
+            let ok = 0, bad = 0;
+            rows.forEach(r => {
+              const hasDate = dateIdx != null && String(r[dateIdx] ?? "").trim() !== "";
+              const hasEarned = earnedIdx != null && String(r[earnedIdx] ?? "").trim() !== "";
+              if (hasDate && hasEarned) ok++; else bad++;
+            });
+            showToast(`Parsed ${fileName}: ${ok} ready, ${bad} need attention (${platform})`);
+            setScreen("settings");
+          }}
         />
       )}
       <ConfirmDialog
