@@ -9172,12 +9172,22 @@ function CsvImportScreen({ onImport, onBack }) {
                   )}
                 </div>
 
-                {/* odometer toggle for km fields */}
+                {/* distance segmented control: Total km / Odometer */}
                 {isOdoField && (
-                  <button
-                    onClick={() => setOdoMode(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
-                    style={{border:"none",cursor:"pointer",background:"transparent",color:odoOn ? "var(--pos)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",padding:"0",marginTop:"7px"}}
-                  >{odoOn ? "✓ using odometer start/finish" : "recorded by odometer?"}</button>
+                  <div style={{marginTop:"9px"}}>
+                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"700",color:"var(--muted2)",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"5px"}}>How is this recorded?</div>
+                    <div style={{display:"flex",gap:"5px"}}>
+                      {[[false,"Total km"],[true,"Odometer"]].map(([val, lbl]) => {
+                        const on = odoOn === val;
+                        return (
+                          <button key={String(val)}
+                            onClick={() => setOdoMode(prev => ({ ...prev, [f.key]: val }))}
+                            style={{flex:1,padding:"7px 4px",borderRadius:"8px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",border:on?"1px solid var(--coral)":"1px solid var(--border)",background:on?"var(--coral)":"var(--elevated)",color:on?"var(--on-coral)":"var(--muted)"}}
+                          >{lbl}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
 
                 {/* time-unit segmented control: Hours / Minutes / Hr + Min */}
