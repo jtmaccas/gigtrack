@@ -172,14 +172,19 @@ const csvNum = (v) => {
 // treat bare numbers as hours; "min" → minutes; otherwise a heuristic (a value
 // with a decimal point, or a small whole number, is hours; a large one is
 // minutes — nobody logs "4.2 minutes", and "90 hours" isn't a shift).
-const csvTimeToMin = (v, unitHint = "") => {
+// Parse a single time column into MINUTES. Per the import model, a single time
+// column is ALWAYS hours (the user picks "separate Hr & Min columns" mode if
+// their data is split). So "4.2" = 4.2 hours = 252 min, "1.5" = 90 min, "8" =
+// 480 min. Explicit in-value units are still honoured ("1h 30m", "1:30", "45m")
+// since those are unambiguous. Column NAME is deliberately ignored.
+const csvTimeToMin = (v) => {
   if (v == null) return null;
   const s = String(v).trim().toLowerCase();
   if (s === "") return null;
   // "1:30" style (h:mm)
   const colon = s.match(/^(\d+):(\d{1,2})$/);
   if (colon) return parseInt(colon[1], 10) * 60 + parseInt(colon[2], 10);
-  // explicit units in the value: "1h 30m" / "1h30" / "5h" / "45m" / "1.5h"
+  // explicit units in the value: "1h 30m" / "5h" / "45m" / "1.5h"
   const hm = s.match(/(\d+(?:\.\d+)?)\s*h(?:ours?|rs?)?/);
   const mm = s.match(/(\d+)\s*m(?:in)?/);
   if (hm || mm) {
@@ -187,17 +192,10 @@ const csvTimeToMin = (v, unitHint = "") => {
     const m = mm ? parseInt(mm[1], 10) : 0;
     return Math.round(h * 60 + m);
   }
-  // bare number — decide hours vs minutes
+  // bare number → HOURS (single-column rule)
   const n = csvNum(s);
   if (n == null) return null;
-  const hint = String(unitHint).toLowerCase();
-  const saysHours = /hour|hrs?\b|\bhr\b/.test(hint);
-  const saysMins = /min/.test(hint);
-  let asHours;
-  if (saysHours) asHours = true;
-  else if (saysMins) asHours = false;
-  else asHours = String(s).includes(".") || n <= 16; // heuristic fallback
-  return Math.round(asHours ? n * 60 : n);
+  return Math.round(n * 60);
 };
 
 // Parse a date cell to a local Date at midnight, timezone-safe. Handles common
@@ -256,7 +254,7 @@ const csvNormPlatform = (v, fallback = null) => {
 // atoRateForDate, computeTrip }. Produces the SAME shape as manual entry so all
 // derived fields (score, ratios, deduction) are computed identically.
 const buildTripFromCsvRow = (row, deps) => {
-  const { mapping, odoMode, odoCols, splitTime, splitCols, filePlatform, region, owner, computeTrip: ct, rateForDate, headers } = deps;
+  const { mapping, odoMode, odoCols, timeUnit, splitCols, filePlatform, region, owner, computeTrip: ct, rateForDate, headers } = deps;
   const cell = (idx) => idx == null ? "" : (row[idx] ?? "");
 
   // Required: date + earnings
@@ -291,19 +289,24 @@ const buildTripFromCsvRow = (row, deps) => {
     activeKm = csvNum(cell(mapping.activeKm));
   }
 
-  // Time — split (Hr + Min columns) mode takes precedence, else single column.
+  // Time — unit-aware. "split" reads two columns; "minutes" reads the column
+  // as-is; "hours" (default) multiplies by 60. csvTimeToMin still honours any
+  // explicit in-value units like "1h 30m".
   const splitToMin = (cfg) => {
     const h = cfg?.hr != null ? (csvNum(cell(cfg.hr)) || 0) : 0;
     const m = cfg?.min != null ? (csvNum(cell(cfg.min)) || 0) : 0;
     if (cfg?.hr == null && cfg?.min == null) return null;
     return Math.round(h * 60 + m);
   };
-  const totalMin = splitTime?.totalMin
-    ? (splitToMin(splitCols.totalMin) || 0)
-    : (mapping.totalMin != null ? (csvTimeToMin(cell(mapping.totalMin), headers?.[mapping.totalMin] || "") || 0) : 0);
-  const activeMin = splitTime?.activeMins
-    ? splitToMin(splitCols.activeMins)
-    : (mapping.activeMins != null ? csvTimeToMin(cell(mapping.activeMins), headers?.[mapping.activeMins] || "") : null);
+  const timeFromCol = (fieldKey, mapIdx) => {
+    const u = timeUnit?.[fieldKey] || "hours";
+    if (u === "split") return splitToMin(splitCols[fieldKey]);
+    if (mapIdx == null) return null;
+    if (u === "minutes") { const nn = csvNum(cell(mapIdx)); return nn == null ? null : Math.round(nn); }
+    return csvTimeToMin(cell(mapIdx)); // hours
+  };
+  const totalMin = timeFromCol("totalMin", mapping.totalMin) || 0;
+  const activeMin = timeFromCol("activeMins", mapping.activeMins);
   const dels = mapping.dels != null ? (csvNum(cell(mapping.dels)) || 0) : 0;
   const platform = mapping.platform != null ? csvNormPlatform(cell(mapping.platform), filePlatform) : filePlatform;
   const notesVal = mapping.notes != null ? String(cell(mapping.notes)).trim() : "";
@@ -9017,11 +9020,11 @@ function CsvImportScreen({ onImport, onBack }) {
   const [odoMode, setOdoMode] = useState({ totalKm: false, activeKm: false });
   const [odoCols, setOdoCols] = useState({ totalKm: { start: null, finish: null }, activeKm: { start: null, finish: null } });
   const ODO_FIELDS = ["totalKm", "activeKm"]; // fields that support odometer entry
-  // Split-time mode per time field: when on, the field is read from TWO columns
-  // (an Hours column + a Minutes column) instead of one. Mirrors odometer.
-  const [splitTime, setSplitTime] = useState({ totalMin: false, activeMins: false });
+  // Time-unit per time field: "hours" (single col, ×60), "minutes" (single col,
+  // as-is), or "split" (two columns: Hr + Min). Default hours.
+  const [timeUnit, setTimeUnit] = useState({ totalMin: "hours", activeMins: "hours" });
   const [splitCols, setSplitCols] = useState({ totalMin: { hr: null, min: null }, activeMins: { hr: null, min: null } });
-  const TIME_FIELDS = ["totalMin", "activeMins"]; // fields that support split hr/min entry
+  const TIME_FIELDS = ["totalMin", "activeMins"]; // fields that support the unit picker
   const [errMsg, setErrMsg] = useState("");
   const fileRef = useRef(null);
 
@@ -9139,7 +9142,8 @@ function CsvImportScreen({ onImport, onBack }) {
               }
               // Split-time (two columns: Hr + Min) for time fields.
               const isTimeField = TIME_FIELDS.includes(f.key);
-              const splitOn = isTimeField && splitTime[f.key];
+              const unit = isTimeField ? (timeUnit[f.key] || "hours") : null;
+              const splitOn = isTimeField && unit === "split";
               const splitHr = splitCols[f.key]?.hr;
               const splitMin = splitCols[f.key]?.min;
               let splitPreview = null;
@@ -9176,12 +9180,22 @@ function CsvImportScreen({ onImport, onBack }) {
                   >{odoOn ? "✓ using odometer start/finish" : "recorded by odometer?"}</button>
                 )}
 
-                {/* split-time toggle for time fields */}
+                {/* time-unit segmented control: Hours / Minutes / Hr + Min */}
                 {isTimeField && (
-                  <button
-                    onClick={() => setSplitTime(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
-                    style={{border:"none",cursor:"pointer",background:"transparent",color:splitOn ? "var(--pos)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",padding:"0",marginTop:"7px"}}
-                  >{splitOn ? "✓ using separate Hr / Min columns" : "recorded as separate Hr & Min columns?"}</button>
+                  <div style={{marginTop:"9px"}}>
+                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"700",color:"var(--muted2)",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"5px"}}>How is this recorded?</div>
+                    <div style={{display:"flex",gap:"5px"}}>
+                      {[["hours","Hours"],["minutes","Minutes"],["split","Hr + Min"]].map(([val, lbl]) => {
+                        const on = unit === val;
+                        return (
+                          <button key={val}
+                            onClick={() => setTimeUnit(prev => ({ ...prev, [f.key]: val }))}
+                            style={{flex:1,padding:"7px 4px",borderRadius:"8px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",border:on?"1px solid var(--coral)":"1px solid var(--border)",background:on?"var(--coral)":"var(--elevated)",color:on?"var(--on-coral)":"var(--muted)"}}
+                          >{lbl}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
 
                 {/* single-column mapping: source chip → field chip */}
@@ -9205,7 +9219,15 @@ function CsvImportScreen({ onImport, onBack }) {
                     </div>
                     {mapping[f.key] != null && rows[0] && (
                       <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:"var(--muted2)",marginTop:"7px"}}>
-                        e.g. "{String(cell(rows[0], mapping[f.key])).slice(0, 30)}"
+                        {isTimeField ? (() => {
+                          const raw = String(cell(rows[0], mapping[f.key]));
+                          const mins = unit === "minutes"
+                            ? (csvNum(raw) != null ? Math.round(csvNum(raw)) : null)
+                            : csvTimeToMin(raw); // hours
+                          return mins != null
+                            ? `e.g. "${raw.slice(0,20)}" → ${Math.floor(mins/60)}h ${mins%60}m (read as ${unit})`
+                            : `e.g. "${raw.slice(0,30)}"`;
+                        })() : `e.g. "${String(cell(rows[0], mapping[f.key])).slice(0, 30)}"`}
                       </div>
                     )}
                   </div>
@@ -9302,7 +9324,7 @@ function CsvImportScreen({ onImport, onBack }) {
             )}
 
             <button
-              onClick={() => canImport && onImport({ rows, headers, mapping, odoMode, odoCols, splitTime, splitCols, platform: filePlatform, fileName })}
+              onClick={() => canImport && onImport({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform: filePlatform, fileName })}
               disabled={!canImport}
               style={{width:"100%",marginTop:"8px",padding:"15px",border:"none",borderRadius:"14px",cursor:canImport ? "pointer" : "default",background:canImport ? "var(--coral)" : "var(--border)",color:canImport ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
             >Preview import ({rows.length} row{rows.length === 1 ? "" : "s"})</button>
@@ -11543,14 +11565,14 @@ export default function GigTrack() {
       {screen === "csvimport" && (
         <CsvImportScreen
           onBack={() => setScreen("settings")}
-          onImport={({ rows, headers, mapping, odoMode, odoCols, splitTime, splitCols, platform, fileName }) => {
+          onImport={({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform, fileName }) => {
             // STAGE 2a — real batch insert of clean rows. Dupes and incomplete
             // rows are just COUNTED for now (reported to the user); routing them
             // to a review queue comes with the permanent Tasks screen (Needs
             // #5/#6). The 10-credit charge also lands then. Clean rows import for
             // real here, via the same record shape as manual entry.
             const deps = {
-              mapping, odoMode, odoCols, splitTime, splitCols, filePlatform: platform, headers,
+              mapping, odoMode, odoCols, timeUnit, splitCols, filePlatform: platform, headers,
               region: region ?? null, owner: authUser?.id || null,
               computeTrip, rateForDate: (d) => atoRate || atoRateForDate(d),
             };
