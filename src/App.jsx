@@ -6148,9 +6148,22 @@ function ManualFieldRow({ status, label, sublabel, value, onChange, type = "text
 function ManualGroupHeader({ children }) {
   return (
     <div style={{
-      fontSize:"10px",fontWeight:"700",color:"var(--muted2)",
+      fontSize:"10px",fontWeight:"800",color:"var(--coral)",
       letterSpacing:".08em",textTransform:"uppercase",
-      marginTop:"18px",marginBottom:"8px",
+      marginBottom:"11px",
+    }}>{children}</div>
+  );
+}
+
+// M1 card wrapper — groups a section's header + fields into a rounded card.
+function ManualCard({ children }) {
+  return (
+    <div style={{
+      background:"var(--elevated)",
+      border:"1px solid var(--border)",
+      borderRadius:"16px",
+      padding:"15px",
+      marginBottom:"14px",
     }}>{children}</div>
   );
 }
