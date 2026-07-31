@@ -8823,6 +8823,11 @@ function CsvImportScreen({ onImport, onBack }) {
   const [rows, setRows] = useState([]);          // array of arrays (data rows)
   const [mapping, setMapping] = useState({});    // fieldKey → headerIdx | null
   const [filePlatform, setFilePlatform] = useState("uber_eats");
+  // Odometer mode per km field: when on, the field is computed as (finish - start)
+  // from TWO columns instead of one. { totalKm: false, activeKm: false }
+  const [odoMode, setOdoMode] = useState({ totalKm: false, activeKm: false });
+  const [odoCols, setOdoCols] = useState({ totalKm: { start: null, finish: null }, activeKm: { start: null, finish: null } });
+  const ODO_FIELDS = ["totalKm", "activeKm"]; // fields that support odometer entry
   const [errMsg, setErrMsg] = useState("");
   const fileRef = useRef(null);
 
@@ -8912,28 +8917,81 @@ function CsvImportScreen({ onImport, onBack }) {
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"4px"}}>{fileName} · {rows.length} row{rows.length === 1 ? "" : "s"}</div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",fontWeight:"700",marginBottom:"14px"}}>Match your columns</div>
 
-            {CSV_FIELDS.map(f => (
+            {CSV_FIELDS.map(f => {
+              const isOdoField = ODO_FIELDS.includes(f.key);
+              const odoOn = isOdoField && odoMode[f.key];
+              const odoStart = odoCols[f.key]?.start;
+              const odoFinish = odoCols[f.key]?.finish;
+              // Preview the computed difference when both odo columns are set.
+              let odoPreview = null;
+              if (odoOn && odoStart != null && odoFinish != null && rows[0]) {
+                const s = parseFloat(String(cell(rows[0], odoStart)).replace(/[^0-9.\-]/g, ""));
+                const fin = parseFloat(String(cell(rows[0], odoFinish)).replace(/[^0-9.\-]/g, ""));
+                if (!isNaN(s) && !isNaN(fin)) odoPreview = (fin - s);
+              }
+              return (
               <div key={f.key} style={{marginBottom:"12px"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>
-                  {f.label}{f.required && <span style={{color:"var(--coral)"}}> *</span>}
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}}>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>
+                    {f.label}{f.required && <span style={{color:"var(--coral)"}}> *</span>}
+                  </div>
+                  {isOdoField && (
+                    <button
+                      onClick={() => setOdoMode(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                      style={{border:"none",cursor:"pointer",background:"transparent",color:odoOn ? "var(--coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",padding:"0"}}
+                    >{odoOn ? "✓ odometer start/finish" : "recorded by odometer?"}</button>
+                  )}
                 </div>
-                <select
-                  value={mapping[f.key] == null ? "" : mapping[f.key]}
-                  onChange={(e) => setFieldMap(f.key, e.target.value === "" ? null : parseInt(e.target.value, 10))}
-                  style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:mapping[f.key]==null && f.required ? "1.5px solid var(--coral)" : "1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}
-                >
-                  <option value="">— not in my file —</option>
-                  {headers.map((h, i) => (
-                    <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
-                  ))}
-                </select>
-                {mapping[f.key] != null && rows[0] && (
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginTop:"3px"}}>
-                    e.g. "{String(cell(rows[0], mapping[f.key])).slice(0, 30)}"
+
+                {!odoOn && (
+                  <>
+                    <select
+                      value={mapping[f.key] == null ? "" : mapping[f.key]}
+                      onChange={(e) => setFieldMap(f.key, e.target.value === "" ? null : parseInt(e.target.value, 10))}
+                      style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:mapping[f.key]==null && f.required ? "1.5px solid var(--coral)" : "1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}
+                    >
+                      <option value="">— not in my file —</option>
+                      {headers.map((h, i) => (
+                        <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
+                      ))}
+                    </select>
+                    {mapping[f.key] != null && rows[0] && (
+                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginTop:"3px"}}>
+                        e.g. "{String(cell(rows[0], mapping[f.key])).slice(0, 30)}"
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {odoOn && (
+                  <div style={{display:"flex",gap:"8px"}}>
+                    {["start", "finish"].map(which => (
+                      <div key={which} style={{flex:1}}>
+                        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginBottom:"3px",textTransform:"uppercase",letterSpacing:".04em",fontWeight:"700"}}>Odometer {which}</div>
+                        <select
+                          value={odoCols[f.key]?.[which] == null ? "" : odoCols[f.key][which]}
+                          onChange={(e) => setOdoCols(prev => ({ ...prev, [f.key]: { ...prev[f.key], [which]: e.target.value === "" ? null : parseInt(e.target.value, 10) } }))}
+                          style={{width:"100%",padding:"10px",borderRadius:"10px",border:"1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px"}}
+                        >
+                          <option value="">— pick —</option>
+                          {headers.map((h, i) => (
+                            <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {odoOn && odoPreview != null && (
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:odoPreview < 0 ? "var(--coral)" : "var(--muted2)",marginTop:"4px"}}>
+                    {odoPreview < 0
+                      ? `⚠ First row gives ${odoPreview.toFixed(1)} km — finish is less than start (check the columns).`
+                      : `e.g. first row = ${odoPreview.toFixed(1)} km (finish − start)`}
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
 
             {/* File-wide platform — only shown when NO platform column is mapped.
                 If the sheet has a platform column, the user maps it above and each
@@ -8963,7 +9021,7 @@ function CsvImportScreen({ onImport, onBack }) {
             )}
 
             <button
-              onClick={() => canImport && onImport({ rows, headers, mapping, platform: filePlatform, fileName })}
+              onClick={() => canImport && onImport({ rows, headers, mapping, odoMode, odoCols, platform: filePlatform, fileName })}
               disabled={!canImport}
               style={{width:"100%",marginTop:"8px",padding:"15px",border:"none",borderRadius:"14px",cursor:canImport ? "pointer" : "default",background:canImport ? "var(--coral)" : "var(--border)",color:canImport ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
             >Preview import ({rows.length} row{rows.length === 1 ? "" : "s"})</button>
