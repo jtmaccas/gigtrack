@@ -155,6 +155,155 @@ const CSV_FIELDS = [
 // Section order for the mapping screen.
 const CSV_GROUPS = ["Date", "Earnings", "Distance", "Time", "Details"];
 
+// Parse a spreadsheet cell into a number: strips $, commas, spaces, units.
+// Returns null if not a number (so callers can distinguish "0" from "blank").
+const csvNum = (v) => {
+  if (v == null) return null;
+  const s = String(v).replace(/[^0-9.\-]/g, "").trim();
+  if (s === "" || s === "-" || s === ".") return null;
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+};
+
+// Parse a time cell into MINUTES. Handles "90", "1h 30m", "1:30", "1.5h", "5h".
+const csvTimeToMin = (v) => {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (s === "") return null;
+  // "1:30" style
+  const colon = s.match(/^(\d+):(\d{1,2})$/);
+  if (colon) return parseInt(colon[1], 10) * 60 + parseInt(colon[2], 10);
+  // "1h 30m" / "1h30" / "5h" / "45m"
+  const hm = s.match(/(\d+(?:\.\d+)?)\s*h(?:ours?)?/);
+  const mm = s.match(/(\d+)\s*m(?:in)?/);
+  if (hm || mm) {
+    const h = hm ? parseFloat(hm[1]) : 0;
+    const m = mm ? parseInt(mm[1], 10) : 0;
+    return Math.round(h * 60 + m);
+  }
+  // bare number → assume minutes
+  const n = csvNum(s);
+  return n == null ? null : Math.round(n);
+};
+
+// Parse a date cell to a local Date at midnight, timezone-safe. Handles common
+// spreadsheet formats: ISO (2026-07-24), DD/MM/YYYY, D/M/YY, "24 Jul 2026", and
+// Excel serial numbers. Returns null if unparseable. Ambiguous D/M vs M/D is
+// resolved as DAY-FIRST (Australian audience).
+const csvParseDate = (v) => {
+  if (v == null || String(v).trim() === "") return null;
+  const s = String(v).trim();
+  // Excel serial (a plain number, typically > 30000 for modern dates)
+  if (/^\d{4,6}$/.test(s)) {
+    const serial = parseInt(s, 10);
+    if (serial > 20000 && serial < 80000) {
+      // Excel epoch 1899-12-30
+      const d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+  }
+  // ISO YYYY-MM-DD
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return new Date(parseInt(m[1],10), parseInt(m[2],10)-1, parseInt(m[3],10));
+  // DD/MM/YYYY or DD-MM-YYYY (day-first for AU audience). Reject impossible
+  // day/month rather than letting JS Date silently roll over into a wrong date.
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (m) {
+    let [_, d1, mo, yr] = m;
+    let day = parseInt(d1, 10), month = parseInt(mo, 10);
+    let year = parseInt(yr, 10); if (year < 100) year += 2000;
+    // If the first number can't be a day but the second can, it's likely US
+    // M/D order — swap so we still parse it correctly rather than fail.
+    if (day > 31 && month <= 12) return null;
+    if (day > 12 && month > 12) return null; // both impossible as day → give up
+    if (month > 12 && day <= 12) { const t = day; day = month; month = t; }
+    if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+    return new Date(year, month - 1, day);
+  }
+  // "24 Jul 2026" / "Jul 24, 2026" — let Date try, then strip time
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  return null;
+};
+
+// Normalise a per-row platform value to the app's internal ids.
+const csvNormPlatform = (v, fallback = null) => {
+  const s = String(v || "").toLowerCase().replace(/[^a-z]/g, "");
+  if (!s) return fallback;
+  if (s.includes("uber") || s === "ue" || s === "ueats") return "uber_eats";
+  if (s.includes("doordash") || s === "dd" || s.includes("dash")) return "doordash";
+  if (s.includes("both") || s.includes("all")) return "both";
+  return fallback;
+};
+
+// Build a full shift record from a mapped CSV row, or return { error } if the
+// row is missing required fields (date + earnings) or has a bad odometer diff.
+// `deps` supplies { mapping, odoMode, odoCols, filePlatform, region, owner,
+// atoRateForDate, computeTrip }. Produces the SAME shape as manual entry so all
+// derived fields (score, ratios, deduction) are computed identically.
+const buildTripFromCsvRow = (row, deps) => {
+  const { mapping, odoMode, odoCols, filePlatform, region, owner, computeTrip: ct, rateForDate } = deps;
+  const cell = (idx) => idx == null ? "" : (row[idx] ?? "");
+
+  // Required: date + earnings
+  const date = csvParseDate(cell(mapping.date));
+  if (!date) return { error: "no_date" };
+  const earned = csvNum(cell(mapping.earned));
+  if (earned == null) return { error: "no_earned" };
+
+  // Earnings split (if tip/bonus columns mapped, base = earned - tip - bonus)
+  const tip = mapping.tip != null ? (csvNum(cell(mapping.tip)) || 0) : 0;
+  const bonus = mapping.bonus != null ? (csvNum(cell(mapping.bonus)) || 0) : 0;
+  const base = Math.max(0, earned - tip - bonus);
+
+  // Distance — odometer mode computes finish - start
+  let totalKm = 0;
+  if (odoMode?.totalKm) {
+    const s = csvNum(cell(odoCols.totalKm.start));
+    const f = csvNum(cell(odoCols.totalKm.finish));
+    if (s == null || f == null) return { error: "odo_incomplete" };
+    const diff = f - s;
+    if (diff < 0) return { error: "odo_negative" };
+    totalKm = diff;
+  } else {
+    totalKm = mapping.totalKm != null ? (csvNum(cell(mapping.totalKm)) || 0) : 0;
+  }
+  let activeKm = null;
+  if (odoMode?.activeKm) {
+    const s = csvNum(cell(odoCols.activeKm.start));
+    const f = csvNum(cell(odoCols.activeKm.finish));
+    if (s != null && f != null && (f - s) >= 0) activeKm = f - s;
+  } else if (mapping.activeKm != null) {
+    activeKm = csvNum(cell(mapping.activeKm));
+  }
+
+  const totalMin = mapping.totalMin != null ? (csvTimeToMin(cell(mapping.totalMin)) || 0) : 0;
+  const activeMin = mapping.activeMins != null ? csvTimeToMin(cell(mapping.activeMins)) : null;
+  const dels = mapping.dels != null ? (csvNum(cell(mapping.dels)) || 0) : 0;
+  const platform = mapping.platform != null ? csvNormPlatform(cell(mapping.platform), filePlatform) : filePlatform;
+  const notesVal = mapping.notes != null ? String(cell(mapping.notes)).trim() : "";
+
+  const inputs = { base, tip, bonus, tDel: totalMin, tWait: 0, activeMin: activeMin || null, activeKmInput: activeKm != null && activeKm !== "" ? activeKm : null, kmDel: totalKm, kmWait: 0, dels, expenses: 0 };
+  const c = ct(inputs);
+  const effectiveRate = rateForDate(date);
+  const tsLocalMidnight = new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString();
+
+  return {
+    record: {
+      id: Date.now() + Math.floor(Math.random() * 100000), // unique across a bulk
+      ts: tsLocalMidnight,
+      region: region ?? null,
+      _owner: owner ?? null,
+      activeMins: activeMin || null,
+      activeKm: activeKm != null ? activeKm : null,
+      platform: platform || null,
+      notes: notesVal || null,
+      ...inputs, ...c, deduction: totalKm * effectiveRate,
+      _csvImport: true, // provenance flag
+    }
+  };
+};
+
 // Normalise a header for comparison: lowercase, strip non-alphanumerics.
 const csvNormHeader = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
@@ -11282,19 +11431,67 @@ export default function GigTrack() {
       {screen === "csvimport" && (
         <CsvImportScreen
           onBack={() => setScreen("settings")}
-          onImport={({ rows, mapping, platform, fileName }) => {
-            // STAGE 1 STUB — proves parse + mapping works. Stage 2 will build the
-            // real record-per-row insert, dedupe/incomplete → Tasks review queue,
-            // and the 10-credit charge. For now, just report what we parsed.
-            const dateIdx = mapping.date, earnedIdx = mapping.earned;
-            let ok = 0, bad = 0;
-            rows.forEach(r => {
-              const hasDate = dateIdx != null && String(r[dateIdx] ?? "").trim() !== "";
-              const hasEarned = earnedIdx != null && String(r[earnedIdx] ?? "").trim() !== "";
-              if (hasDate && hasEarned) ok++; else bad++;
+          onImport={({ rows, mapping, odoMode, odoCols, platform, fileName }) => {
+            // STAGE 2a — real batch insert of clean rows. Dupes and incomplete
+            // rows are just COUNTED for now (reported to the user); routing them
+            // to a review queue comes with the permanent Tasks screen (Needs
+            // #5/#6). The 10-credit charge also lands then. Clean rows import for
+            // real here, via the same record shape as manual entry.
+            const deps = {
+              mapping, odoMode, odoCols, filePlatform: platform,
+              region: region ?? null, owner: authUser?.id || null,
+              computeTrip, rateForDate: (d) => atoRate || atoRateForDate(d),
+            };
+            // Existing shift keys for dup detection: date|platform|earned.
+            const keyOf = (ts, plat, earned) => {
+              const d = new Date(ts);
+              const dk = `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
+              return `${dk}|${plat||""}|${Math.round((earned||0)*100)}`;
+            };
+            const existingKeys = new Set(trips.map(t => keyOf(t.ts, t.platform, t.totalEarned)));
+
+            const toAdd = [];
+            let dupes = 0, incomplete = 0;
+            const seenInFile = new Set();
+            rows.forEach(row => {
+              const built = buildTripFromCsvRow(row, deps);
+              if (built.error) { incomplete++; return; }
+              const rec = built.record;
+              const k = keyOf(rec.ts, rec.platform, rec.totalEarned);
+              if (existingKeys.has(k) || seenInFile.has(k)) { dupes++; return; } // skip dup for now
+              seenInFile.add(k);
+              toAdd.push(rec);
             });
-            showToast(`Parsed ${fileName}: ${ok} ready, ${bad} need attention (${platform})`);
-            setScreen("settings");
+
+            if (toAdd.length === 0) {
+              showToast(`No new shifts imported — ${dupes} duplicate(s), ${incomplete} need attention`);
+              setScreen("settings");
+              return;
+            }
+
+            // ONE batched state update + persist (not per-row handleSaved).
+            const updated = [...trips, ...toAdd];
+            setTrips(updated);
+            DB.set("gt_trips", updated);
+
+            // Fire-and-forget cloud sync for each new record; reconcile flags as
+            // they land (Pass 4 boot reconciliation catches any that fail).
+            Promise.all(toAdd.map(r => syncShift(r).then(res => res.ok ? r.id : null).catch(() => null)))
+              .then(okIds => {
+                const okSet = new Set(okIds.filter(Boolean));
+                if (okSet.size === 0) return;
+                setTrips(prev => {
+                  const next = prev.map(t => okSet.has(t.id) ? { ...t, _synced: true } : t);
+                  DB.set("gt_trips", next);
+                  return next;
+                });
+              });
+
+            const extras = [];
+            if (dupes) extras.push(`${dupes} duplicate(s) skipped`);
+            if (incomplete) extras.push(`${incomplete} need attention`);
+            showToast(`Imported ${toAdd.length} shift${toAdd.length === 1 ? "" : "s"}${extras.length ? " · " + extras.join(" · ") : ""}`);
+            setScreen("home");
           }}
         />
       )}
