@@ -256,7 +256,7 @@ const csvNormPlatform = (v, fallback = null) => {
 // atoRateForDate, computeTrip }. Produces the SAME shape as manual entry so all
 // derived fields (score, ratios, deduction) are computed identically.
 const buildTripFromCsvRow = (row, deps) => {
-  const { mapping, odoMode, odoCols, filePlatform, region, owner, computeTrip: ct, rateForDate, headers } = deps;
+  const { mapping, odoMode, odoCols, splitTime, splitCols, filePlatform, region, owner, computeTrip: ct, rateForDate, headers } = deps;
   const cell = (idx) => idx == null ? "" : (row[idx] ?? "");
 
   // Required: date + earnings
@@ -291,8 +291,19 @@ const buildTripFromCsvRow = (row, deps) => {
     activeKm = csvNum(cell(mapping.activeKm));
   }
 
-  const totalMin = mapping.totalMin != null ? (csvTimeToMin(cell(mapping.totalMin), headers?.[mapping.totalMin] || "") || 0) : 0;
-  const activeMin = mapping.activeMins != null ? csvTimeToMin(cell(mapping.activeMins), headers?.[mapping.activeMins] || "") : null;
+  // Time — split (Hr + Min columns) mode takes precedence, else single column.
+  const splitToMin = (cfg) => {
+    const h = cfg?.hr != null ? (csvNum(cell(cfg.hr)) || 0) : 0;
+    const m = cfg?.min != null ? (csvNum(cell(cfg.min)) || 0) : 0;
+    if (cfg?.hr == null && cfg?.min == null) return null;
+    return Math.round(h * 60 + m);
+  };
+  const totalMin = splitTime?.totalMin
+    ? (splitToMin(splitCols.totalMin) || 0)
+    : (mapping.totalMin != null ? (csvTimeToMin(cell(mapping.totalMin), headers?.[mapping.totalMin] || "") || 0) : 0);
+  const activeMin = splitTime?.activeMins
+    ? splitToMin(splitCols.activeMins)
+    : (mapping.activeMins != null ? csvTimeToMin(cell(mapping.activeMins), headers?.[mapping.activeMins] || "") : null);
   const dels = mapping.dels != null ? (csvNum(cell(mapping.dels)) || 0) : 0;
   const platform = mapping.platform != null ? csvNormPlatform(cell(mapping.platform), filePlatform) : filePlatform;
   const notesVal = mapping.notes != null ? String(cell(mapping.notes)).trim() : "";
@@ -9006,6 +9017,11 @@ function CsvImportScreen({ onImport, onBack }) {
   const [odoMode, setOdoMode] = useState({ totalKm: false, activeKm: false });
   const [odoCols, setOdoCols] = useState({ totalKm: { start: null, finish: null }, activeKm: { start: null, finish: null } });
   const ODO_FIELDS = ["totalKm", "activeKm"]; // fields that support odometer entry
+  // Split-time mode per time field: when on, the field is read from TWO columns
+  // (an Hours column + a Minutes column) instead of one. Mirrors odometer.
+  const [splitTime, setSplitTime] = useState({ totalMin: false, activeMins: false });
+  const [splitCols, setSplitCols] = useState({ totalMin: { hr: null, min: null }, activeMins: { hr: null, min: null } });
+  const TIME_FIELDS = ["totalMin", "activeMins"]; // fields that support split hr/min entry
   const [errMsg, setErrMsg] = useState("");
   const fileRef = useRef(null);
 
@@ -9121,10 +9137,23 @@ function CsvImportScreen({ onImport, onBack }) {
                 const fin = parseFloat(String(cell(rows[0], odoFinish)).replace(/[^0-9.\-]/g, ""));
                 if (!isNaN(s) && !isNaN(fin)) odoPreview = (fin - s);
               }
+              // Split-time (two columns: Hr + Min) for time fields.
+              const isTimeField = TIME_FIELDS.includes(f.key);
+              const splitOn = isTimeField && splitTime[f.key];
+              const splitHr = splitCols[f.key]?.hr;
+              const splitMin = splitCols[f.key]?.min;
+              let splitPreview = null;
+              if (splitOn && (splitHr != null || splitMin != null) && rows[0]) {
+                const h = splitHr != null ? parseInt(String(cell(rows[0], splitHr)).replace(/[^0-9]/g, ""), 10) : 0;
+                const m = splitMin != null ? parseInt(String(cell(rows[0], splitMin)).replace(/[^0-9]/g, ""), 10) : 0;
+                if (!isNaN(h) || !isNaN(m)) splitPreview = (h || 0) * 60 + (m || 0);
+              }
+              // A field counts as "done" if singly mapped, or its special mode is on.
+              const fieldDone = mapping[f.key] != null || odoOn || splitOn;
               return (
               <div key={f.key} style={{
                 background:"var(--elevated)",
-                border:`1.5px solid ${mapping[f.key]!=null || odoOn ? "var(--pos)" : (f.required ? "var(--coral)" : "var(--border)")}`,
+                border:`1.5px solid ${fieldDone ? "var(--pos)" : (f.required ? "var(--coral)" : "var(--border)")}`,
                 borderRadius:"14px",padding:"13px 14px",marginBottom:"9px",
               }}>
                 {/* header: field name + status pill */}
@@ -9132,7 +9161,7 @@ function CsvImportScreen({ onImport, onBack }) {
                   <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800",color:"var(--text)"}}>
                     {f.label}{f.required && <span style={{color:"var(--coral)"}}> *</span>}
                   </div>
-                  {(mapping[f.key]!=null || odoOn) ? (
+                  {fieldDone ? (
                     <span style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",textTransform:"uppercase",letterSpacing:".04em",color:"var(--pos)",background:"rgba(30,158,104,.12)",padding:"3px 8px",borderRadius:"100px"}}>✓ matched</span>
                   ) : (
                     <span style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",textTransform:"uppercase",letterSpacing:".04em",color:f.required?"var(--coral)":"var(--muted2)",background:f.required?"var(--coral-dim, rgba(240,86,46,.09))":"var(--bg)",padding:"3px 8px",borderRadius:"100px"}}>{f.required ? "choose" : "optional"}</span>
@@ -9147,8 +9176,16 @@ function CsvImportScreen({ onImport, onBack }) {
                   >{odoOn ? "✓ using odometer start/finish" : "recorded by odometer?"}</button>
                 )}
 
+                {/* split-time toggle for time fields */}
+                {isTimeField && (
+                  <button
+                    onClick={() => setSplitTime(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                    style={{border:"none",cursor:"pointer",background:"transparent",color:splitOn ? "var(--pos)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",padding:"0",marginTop:"7px"}}
+                  >{splitOn ? "✓ using separate Hr / Min columns" : "recorded as separate Hr & Min columns?"}</button>
+                )}
+
                 {/* single-column mapping: source chip → field chip */}
-                {!odoOn && (
+                {!odoOn && !splitOn && (
                   <div style={{marginTop:"10px"}}>
                     <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
                       <div style={{flex:1,position:"relative"}}>
@@ -9203,6 +9240,34 @@ function CsvImportScreen({ onImport, onBack }) {
                     )}
                   </div>
                 )}
+
+                {/* split-time: two columns (Hr + Min) */}
+                {splitOn && (
+                  <div style={{marginTop:"10px"}}>
+                    <div style={{display:"flex",gap:"8px"}}>
+                      {[["hr","Hours column"],["min","Minutes column"]].map(([which, lbl]) => (
+                        <div key={which} style={{flex:1}}>
+                          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",color:"var(--muted2)",marginBottom:"3px",textTransform:"uppercase",letterSpacing:".04em",fontWeight:"700"}}>{lbl}</div>
+                          <select
+                            value={splitCols[f.key]?.[which] == null ? "" : splitCols[f.key][which]}
+                            onChange={(e) => setSplitCols(prev => ({ ...prev, [f.key]: { ...prev[f.key], [which]: e.target.value === "" ? null : parseInt(e.target.value, 10) } }))}
+                            style={{width:"100%",padding:"9px",borderRadius:"8px",border:"1px solid var(--border)",background:"var(--bg)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",WebkitAppearance:"none",appearance:"none"}}
+                          >
+                            <option value="">— pick —</option>
+                            {headers.map((h, i) => (
+                              <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                    {splitPreview != null && (
+                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:"var(--muted2)",marginTop:"7px"}}>
+                        e.g. first row = {Math.floor(splitPreview/60)}h {splitPreview%60}m ({splitPreview} min)
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               );
                 })}
@@ -9237,7 +9302,7 @@ function CsvImportScreen({ onImport, onBack }) {
             )}
 
             <button
-              onClick={() => canImport && onImport({ rows, headers, mapping, odoMode, odoCols, platform: filePlatform, fileName })}
+              onClick={() => canImport && onImport({ rows, headers, mapping, odoMode, odoCols, splitTime, splitCols, platform: filePlatform, fileName })}
               disabled={!canImport}
               style={{width:"100%",marginTop:"8px",padding:"15px",border:"none",borderRadius:"14px",cursor:canImport ? "pointer" : "default",background:canImport ? "var(--coral)" : "var(--border)",color:canImport ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
             >Preview import ({rows.length} row{rows.length === 1 ? "" : "s"})</button>
@@ -11478,14 +11543,14 @@ export default function GigTrack() {
       {screen === "csvimport" && (
         <CsvImportScreen
           onBack={() => setScreen("settings")}
-          onImport={({ rows, headers, mapping, odoMode, odoCols, platform, fileName }) => {
+          onImport={({ rows, headers, mapping, odoMode, odoCols, splitTime, splitCols, platform, fileName }) => {
             // STAGE 2a — real batch insert of clean rows. Dupes and incomplete
             // rows are just COUNTED for now (reported to the user); routing them
             // to a review queue comes with the permanent Tasks screen (Needs
             // #5/#6). The 10-credit charge also lands then. Clean rows import for
             // real here, via the same record shape as manual entry.
             const deps = {
-              mapping, odoMode, odoCols, filePlatform: platform, headers,
+              mapping, odoMode, odoCols, splitTime, splitCols, filePlatform: platform, headers,
               region: region ?? null, owner: authUser?.id || null,
               computeTrip, rateForDate: (d) => atoRate || atoRateForDate(d),
             };
