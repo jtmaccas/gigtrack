@@ -9078,12 +9078,18 @@ function CsvImportScreen({ onImport, onBack }) {
 
         {stage === "mapping" && (
           <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"4px"}}>{fileName} · {rows.length} row{rows.length === 1 ? "" : "s"}</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"4px"}}>
+              {fileName} · {rows.length} row{rows.length === 1 ? "" : "s"}
+              {(() => {
+                const matched = CSV_FIELDS.filter(f => mapping[f.key] != null).length;
+                return matched > 0 ? <span style={{color:"var(--pos)",fontWeight:"700"}}> · {matched} auto-matched</span> : null;
+              })()}
+            </div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",fontWeight:"700",marginBottom:"14px"}}>Match your columns</div>
 
             {CSV_GROUPS.map(group => (
-              <div key={group} style={{marginBottom:"22px"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".08em",textTransform:"uppercase",color:"var(--coral)",marginBottom:"10px",paddingBottom:"6px",borderBottom:"1px solid var(--border)"}}>{group}</div>
+              <div key={group} style={{marginBottom:"20px"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".08em",textTransform:"uppercase",color:"var(--coral)",marginBottom:"10px"}}>{group}</div>
                 {CSV_FIELDS.filter(f => f.group === group).map(f => {
               const isOdoField = ODO_FIELDS.includes(f.key);
               const odoOn = isOdoField && odoMode[f.key];
@@ -9097,63 +9103,85 @@ function CsvImportScreen({ onImport, onBack }) {
                 if (!isNaN(s) && !isNaN(fin)) odoPreview = (fin - s);
               }
               return (
-              <div key={f.key} style={{marginBottom:"12px"}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}}>
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>
+              <div key={f.key} style={{
+                background:"var(--elevated)",
+                border:`1.5px solid ${mapping[f.key]!=null || odoOn ? "var(--pos)" : (f.required ? "var(--coral)" : "var(--border)")}`,
+                borderRadius:"14px",padding:"13px 14px",marginBottom:"9px",
+              }}>
+                {/* header: field name + status pill */}
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px"}}>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800",color:"var(--text)"}}>
                     {f.label}{f.required && <span style={{color:"var(--coral)"}}> *</span>}
                   </div>
-                  {isOdoField && (
-                    <button
-                      onClick={() => setOdoMode(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
-                      style={{border:"none",cursor:"pointer",background:"transparent",color:odoOn ? "var(--coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",padding:"0"}}
-                    >{odoOn ? "✓ odometer start/finish" : "recorded by odometer?"}</button>
+                  {(mapping[f.key]!=null || odoOn) ? (
+                    <span style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",textTransform:"uppercase",letterSpacing:".04em",color:"var(--pos)",background:"rgba(30,158,104,.12)",padding:"3px 8px",borderRadius:"100px"}}>✓ matched</span>
+                  ) : (
+                    <span style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",textTransform:"uppercase",letterSpacing:".04em",color:f.required?"var(--coral)":"var(--muted2)",background:f.required?"var(--coral-dim, rgba(240,86,46,.09))":"var(--bg)",padding:"3px 8px",borderRadius:"100px"}}>{f.required ? "choose" : "optional"}</span>
                   )}
                 </div>
 
-                {!odoOn && (
-                  <>
-                    <select
-                      value={mapping[f.key] == null ? "" : mapping[f.key]}
-                      onChange={(e) => setFieldMap(f.key, e.target.value === "" ? null : parseInt(e.target.value, 10))}
-                      style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:mapping[f.key]==null && f.required ? "1.5px solid var(--coral)" : "1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}
-                    >
-                      <option value="">— not in my file —</option>
-                      {headers.map((h, i) => (
-                        <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
-                      ))}
-                    </select>
-                    {mapping[f.key] != null && rows[0] && (
-                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginTop:"3px"}}>
-                        e.g. "{String(cell(rows[0], mapping[f.key])).slice(0, 30)}"
-                      </div>
-                    )}
-                  </>
+                {/* odometer toggle for km fields */}
+                {isOdoField && (
+                  <button
+                    onClick={() => setOdoMode(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                    style={{border:"none",cursor:"pointer",background:"transparent",color:odoOn ? "var(--pos)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",padding:"0",marginTop:"7px"}}
+                  >{odoOn ? "✓ using odometer start/finish" : "recorded by odometer?"}</button>
                 )}
 
-                {odoOn && (
-                  <div style={{display:"flex",gap:"8px"}}>
-                    {["start", "finish"].map(which => (
-                      <div key={which} style={{flex:1}}>
-                        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginBottom:"3px",textTransform:"uppercase",letterSpacing:".04em",fontWeight:"700"}}>Odometer {which}</div>
+                {/* single-column mapping: source chip → field chip */}
+                {!odoOn && (
+                  <div style={{marginTop:"10px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                      <div style={{flex:1,position:"relative"}}>
                         <select
-                          value={odoCols[f.key]?.[which] == null ? "" : odoCols[f.key][which]}
-                          onChange={(e) => setOdoCols(prev => ({ ...prev, [f.key]: { ...prev[f.key], [which]: e.target.value === "" ? null : parseInt(e.target.value, 10) } }))}
-                          style={{width:"100%",padding:"10px",borderRadius:"10px",border:"1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px"}}
+                          value={mapping[f.key] == null ? "" : mapping[f.key]}
+                          onChange={(e) => setFieldMap(f.key, e.target.value === "" ? null : parseInt(e.target.value, 10))}
+                          style={{width:"100%",padding:"9px 10px",borderRadius:"8px",border:"1px solid var(--border)",background:"var(--bg)",color:mapping[f.key]==null?"var(--muted2)":"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",textAlign:"center",WebkitAppearance:"none",appearance:"none"}}
                         >
-                          <option value="">— pick —</option>
+                          <option value="">tap to pick a column</option>
                           {headers.map((h, i) => (
                             <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
                           ))}
                         </select>
                       </div>
-                    ))}
+                      <span style={{color:"var(--muted2)",fontSize:"14px"}}>→</span>
+                      <div style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",textAlign:"center",padding:"9px 10px",borderRadius:"8px",background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)"}}>{f.label}</div>
+                    </div>
+                    {mapping[f.key] != null && rows[0] && (
+                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:"var(--muted2)",marginTop:"7px"}}>
+                        e.g. "{String(cell(rows[0], mapping[f.key])).slice(0, 30)}"
+                      </div>
+                    )}
                   </div>
                 )}
-                {odoOn && odoPreview != null && (
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:odoPreview < 0 ? "var(--coral)" : "var(--muted2)",marginTop:"4px"}}>
-                    {odoPreview < 0
-                      ? `⚠ First row gives ${odoPreview.toFixed(1)} km — finish is less than start (check the columns).`
-                      : `e.g. first row = ${odoPreview.toFixed(1)} km (finish − start)`}
+
+                {/* odometer: two source chips (start + finish) */}
+                {odoOn && (
+                  <div style={{marginTop:"10px"}}>
+                    <div style={{display:"flex",gap:"8px"}}>
+                      {["start", "finish"].map(which => (
+                        <div key={which} style={{flex:1}}>
+                          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",color:"var(--muted2)",marginBottom:"3px",textTransform:"uppercase",letterSpacing:".04em",fontWeight:"700"}}>Odometer {which}</div>
+                          <select
+                            value={odoCols[f.key]?.[which] == null ? "" : odoCols[f.key][which]}
+                            onChange={(e) => setOdoCols(prev => ({ ...prev, [f.key]: { ...prev[f.key], [which]: e.target.value === "" ? null : parseInt(e.target.value, 10) } }))}
+                            style={{width:"100%",padding:"9px",borderRadius:"8px",border:"1px solid var(--border)",background:"var(--bg)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",WebkitAppearance:"none",appearance:"none"}}
+                          >
+                            <option value="">— pick —</option>
+                            {headers.map((h, i) => (
+                              <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                    {odoPreview != null && (
+                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:odoPreview < 0 ? "var(--coral)" : "var(--muted2)",marginTop:"7px"}}>
+                        {odoPreview < 0
+                          ? `⚠ First row gives ${odoPreview.toFixed(1)} km — finish is less than start (check the columns).`
+                          : `e.g. first row = ${odoPreview.toFixed(1)} km (finish − start)`}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
