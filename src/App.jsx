@@ -166,24 +166,38 @@ const csvNum = (v) => {
 };
 
 // Parse a time cell into MINUTES. Handles "90", "1h 30m", "1:30", "1.5h", "5h".
-const csvTimeToMin = (v) => {
+// Parse a time cell into MINUTES. Handles "90", "1h 30m", "1:30", "1.5h", "5h",
+// and — critically — decimal hours like "4.2" (= 4.2 HOURS = 252 min, NOT 4.2
+// minutes). `unitHint` comes from the mapped column's header: "hours"/"hrs" →
+// treat bare numbers as hours; "min" → minutes; otherwise a heuristic (a value
+// with a decimal point, or a small whole number, is hours; a large one is
+// minutes — nobody logs "4.2 minutes", and "90 hours" isn't a shift).
+const csvTimeToMin = (v, unitHint = "") => {
   if (v == null) return null;
   const s = String(v).trim().toLowerCase();
   if (s === "") return null;
-  // "1:30" style
+  // "1:30" style (h:mm)
   const colon = s.match(/^(\d+):(\d{1,2})$/);
   if (colon) return parseInt(colon[1], 10) * 60 + parseInt(colon[2], 10);
-  // "1h 30m" / "1h30" / "5h" / "45m"
-  const hm = s.match(/(\d+(?:\.\d+)?)\s*h(?:ours?)?/);
+  // explicit units in the value: "1h 30m" / "1h30" / "5h" / "45m" / "1.5h"
+  const hm = s.match(/(\d+(?:\.\d+)?)\s*h(?:ours?|rs?)?/);
   const mm = s.match(/(\d+)\s*m(?:in)?/);
   if (hm || mm) {
     const h = hm ? parseFloat(hm[1]) : 0;
     const m = mm ? parseInt(mm[1], 10) : 0;
     return Math.round(h * 60 + m);
   }
-  // bare number → assume minutes
+  // bare number — decide hours vs minutes
   const n = csvNum(s);
-  return n == null ? null : Math.round(n);
+  if (n == null) return null;
+  const hint = String(unitHint).toLowerCase();
+  const saysHours = /hour|hrs?\b|\bhr\b/.test(hint);
+  const saysMins = /min/.test(hint);
+  let asHours;
+  if (saysHours) asHours = true;
+  else if (saysMins) asHours = false;
+  else asHours = String(s).includes(".") || n <= 16; // heuristic fallback
+  return Math.round(asHours ? n * 60 : n);
 };
 
 // Parse a date cell to a local Date at midnight, timezone-safe. Handles common
@@ -242,7 +256,7 @@ const csvNormPlatform = (v, fallback = null) => {
 // atoRateForDate, computeTrip }. Produces the SAME shape as manual entry so all
 // derived fields (score, ratios, deduction) are computed identically.
 const buildTripFromCsvRow = (row, deps) => {
-  const { mapping, odoMode, odoCols, filePlatform, region, owner, computeTrip: ct, rateForDate } = deps;
+  const { mapping, odoMode, odoCols, filePlatform, region, owner, computeTrip: ct, rateForDate, headers } = deps;
   const cell = (idx) => idx == null ? "" : (row[idx] ?? "");
 
   // Required: date + earnings
@@ -277,8 +291,8 @@ const buildTripFromCsvRow = (row, deps) => {
     activeKm = csvNum(cell(mapping.activeKm));
   }
 
-  const totalMin = mapping.totalMin != null ? (csvTimeToMin(cell(mapping.totalMin)) || 0) : 0;
-  const activeMin = mapping.activeMins != null ? csvTimeToMin(cell(mapping.activeMins)) : null;
+  const totalMin = mapping.totalMin != null ? (csvTimeToMin(cell(mapping.totalMin), headers?.[mapping.totalMin] || "") || 0) : 0;
+  const activeMin = mapping.activeMins != null ? csvTimeToMin(cell(mapping.activeMins), headers?.[mapping.activeMins] || "") : null;
   const dels = mapping.dels != null ? (csvNum(cell(mapping.dels)) || 0) : 0;
   const platform = mapping.platform != null ? csvNormPlatform(cell(mapping.platform), filePlatform) : filePlatform;
   const notesVal = mapping.notes != null ? String(cell(mapping.notes)).trim() : "";
@@ -11464,14 +11478,14 @@ export default function GigTrack() {
       {screen === "csvimport" && (
         <CsvImportScreen
           onBack={() => setScreen("settings")}
-          onImport={({ rows, mapping, odoMode, odoCols, platform, fileName }) => {
+          onImport={({ rows, headers, mapping, odoMode, odoCols, platform, fileName }) => {
             // STAGE 2a — real batch insert of clean rows. Dupes and incomplete
             // rows are just COUNTED for now (reported to the user); routing them
             // to a review queue comes with the permanent Tasks screen (Needs
             // #5/#6). The 10-credit charge also lands then. Clean rows import for
             // real here, via the same record shape as manual entry.
             const deps = {
-              mapping, odoMode, odoCols, filePlatform: platform,
+              mapping, odoMode, odoCols, filePlatform: platform, headers,
               region: region ?? null, owner: authUser?.id || null,
               computeTrip, rateForDate: (d) => atoRate || atoRateForDate(d),
             };
