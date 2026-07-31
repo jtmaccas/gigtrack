@@ -9085,7 +9085,12 @@ function CsvImportScreen({ onImport, onBack }) {
                 return matched > 0 ? <span style={{color:"var(--pos)",fontWeight:"700"}}> · {matched} auto-matched</span> : null;
               })()}
             </div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",fontWeight:"700",marginBottom:"14px"}}>Match your columns</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",fontWeight:"700",marginBottom:"6px"}}>Match your columns</div>
+            <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px",background:"var(--bg)",border:"1px solid var(--border)",borderRadius:"10px",padding:"9px 12px"}}>
+              <span style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"800",color:"var(--coral)",textTransform:"uppercase",letterSpacing:".04em"}}>Pick from your file</span>
+              <span style={{color:"var(--muted2)",fontSize:"13px"}}>→</span>
+              <span style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",color:"var(--muted)",textAlign:"center",textTransform:"uppercase",letterSpacing:".04em"}}>Goes to (fixed)</span>
+            </div>
 
             {CSV_GROUPS.map(group => (
               <div key={group} style={{marginBottom:"20px"}}>
@@ -9136,7 +9141,7 @@ function CsvImportScreen({ onImport, onBack }) {
                         <select
                           value={mapping[f.key] == null ? "" : mapping[f.key]}
                           onChange={(e) => setFieldMap(f.key, e.target.value === "" ? null : parseInt(e.target.value, 10))}
-                          style={{width:"100%",padding:"9px 10px",borderRadius:"8px",border:"1px solid var(--border)",background:"var(--bg)",color:mapping[f.key]==null?"var(--muted2)":"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",textAlign:"center",WebkitAppearance:"none",appearance:"none"}}
+                          style={{width:"100%",padding:"10px 26px 10px 10px",borderRadius:"8px",border:mapping[f.key]==null && f.required ? "1.5px solid var(--coral)" : "1px solid var(--muted2)",background:"var(--elevated)",color:mapping[f.key]==null?"var(--muted2)":"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",textAlign:"left",WebkitAppearance:"none",appearance:"none",backgroundImage:"url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23F0562E' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>\")",backgroundRepeat:"no-repeat",backgroundPosition:"right 9px center"}}
                         >
                           <option value="">tap to pick a column</option>
                           {headers.map((h, i) => (
@@ -9145,7 +9150,7 @@ function CsvImportScreen({ onImport, onBack }) {
                         </select>
                       </div>
                       <span style={{color:"var(--muted2)",fontSize:"14px"}}>→</span>
-                      <div style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",textAlign:"center",padding:"9px 10px",borderRadius:"8px",background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)"}}>{f.label}</div>
+                      <div style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",textAlign:"center",padding:"9px 6px",color:"var(--muted)"}}>{f.label}</div>
                     </div>
                     {mapping[f.key] != null && rows[0] && (
                       <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:"var(--muted2)",marginTop:"7px"}}>
