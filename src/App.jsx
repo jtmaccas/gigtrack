@@ -140,18 +140,20 @@ const SCREENSHOT_PACKS = [
 // The GigTrack shift fields a spreadsheet column can map to. `key` is internal,
 // `label` is shown, `required` gates import, `aliases` drive fuzzy matching.
 const CSV_FIELDS = [
-  { key: "date",       label: "Shift date",     required: true,  aliases: ["date", "shift date", "start date", "day", "shift day", "work date", "trip date"] },
-  { key: "earned",     label: "Total earned",   required: true,  aliases: ["earned", "total earned", "total", "earnings", "net fare", "net earnings", "pay", "payout", "income", "amount", "total pay", "gross"] },
-  { key: "totalKm",    label: "Total km",       required: false, aliases: ["km", "kms", "total km", "distance", "kilometres", "kilometers", "mileage", "total distance"] },
-  { key: "totalMin",   label: "Online time",    required: false, aliases: ["online", "online time", "hours", "time", "duration", "shift time", "online hours", "total time", "hrs"] },
-  { key: "activeKm",   label: "Active km",      required: false, aliases: ["active km", "delivery km", "active distance", "on trip km"] },
-  { key: "activeMins", label: "Active time",   required: false, aliases: ["active", "active time", "delivery time", "on trip time", "active hours"] },
-  { key: "dels",       label: "Deliveries",     required: false, aliases: ["deliveries", "dels", "trips", "orders", "jobs", "completed deliveries", "trip count", "delivery count"] },
-  { key: "platform",   label: "Platform",       required: false, aliases: ["platform", "app", "service", "company", "provider", "source"] },
-  { key: "tip",        label: "Tips",           required: false, aliases: ["tip", "tips", "gratuity", "customer tip"] },
-  { key: "bonus",      label: "Bonuses",        required: false, aliases: ["bonus", "bonuses", "promotion", "promotions", "incentive", "quest"] },
-  { key: "notes",      label: "Notes",          required: false, aliases: ["notes", "note", "comment", "comments", "memo"] },
+  { key: "date",       label: "Shift date",     group: "Date",     required: true,  aliases: ["date", "shift date", "start date", "day", "shift day", "work date", "trip date"] },
+  { key: "earned",     label: "Total earned",   group: "Earnings", required: true,  aliases: ["earned", "total earned", "total", "earnings", "net fare", "net earnings", "pay", "payout", "income", "amount", "total pay", "gross"] },
+  { key: "tip",        label: "Tips",           group: "Earnings", required: false, aliases: ["tip", "tips", "gratuity", "customer tip"] },
+  { key: "bonus",      label: "Bonuses",        group: "Earnings", required: false, aliases: ["bonus", "bonuses", "promotion", "promotions", "incentive", "quest"] },
+  { key: "totalKm",    label: "Total km",       group: "Distance", required: false, aliases: ["km", "kms", "total km", "distance", "kilometres", "kilometers", "mileage", "total distance"] },
+  { key: "activeKm",   label: "Active km",      group: "Distance", required: false, aliases: ["active km", "delivery km", "active distance", "on trip km"] },
+  { key: "totalMin",   label: "Online time",    group: "Time",     required: false, aliases: ["online", "online time", "hours", "time", "duration", "shift time", "online hours", "total time", "hrs"] },
+  { key: "activeMins", label: "Active time",    group: "Time",     required: false, aliases: ["active", "active time", "delivery time", "on trip time", "active hours"] },
+  { key: "dels",       label: "Deliveries",     group: "Details",  required: false, aliases: ["deliveries", "dels", "trips", "orders", "jobs", "completed deliveries", "trip count", "delivery count"] },
+  { key: "platform",   label: "Platform",       group: "Details",  required: false, aliases: ["platform", "app", "service", "company", "provider", "source"] },
+  { key: "notes",      label: "Notes",          group: "Details",  required: false, aliases: ["notes", "note", "comment", "comments", "memo"] },
 ];
+// Section order for the mapping screen.
+const CSV_GROUPS = ["Date", "Earnings", "Distance", "Time", "Details"];
 
 // Normalise a header for comparison: lowercase, strip non-alphanumerics.
 const csvNormHeader = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -8917,7 +8919,10 @@ function CsvImportScreen({ onImport, onBack }) {
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"4px"}}>{fileName} · {rows.length} row{rows.length === 1 ? "" : "s"}</div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",fontWeight:"700",marginBottom:"14px"}}>Match your columns</div>
 
-            {CSV_FIELDS.map(f => {
+            {CSV_GROUPS.map(group => (
+              <div key={group} style={{marginBottom:"22px"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".08em",textTransform:"uppercase",color:"var(--coral)",marginBottom:"10px",paddingBottom:"6px",borderBottom:"1px solid var(--border)"}}>{group}</div>
+                {CSV_FIELDS.filter(f => f.group === group).map(f => {
               const isOdoField = ODO_FIELDS.includes(f.key);
               const odoOn = isOdoField && odoMode[f.key];
               const odoStart = odoCols[f.key]?.start;
@@ -8991,7 +8996,9 @@ function CsvImportScreen({ onImport, onBack }) {
                 )}
               </div>
               );
-            })}
+                })}
+              </div>
+            ))}
 
             {/* File-wide platform — only shown when NO platform column is mapped.
                 If the sheet has a platform column, the user maps it above and each
