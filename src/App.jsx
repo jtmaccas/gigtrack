@@ -147,6 +147,7 @@ const CSV_FIELDS = [
   { key: "activeKm",   label: "Active km",      required: false, aliases: ["active km", "delivery km", "active distance", "on trip km"] },
   { key: "activeMins", label: "Active time",   required: false, aliases: ["active", "active time", "delivery time", "on trip time", "active hours"] },
   { key: "dels",       label: "Deliveries",     required: false, aliases: ["deliveries", "dels", "trips", "orders", "jobs", "completed deliveries", "trip count", "delivery count"] },
+  { key: "platform",   label: "Platform",       required: false, aliases: ["platform", "app", "service", "company", "provider", "source"] },
   { key: "tip",        label: "Tips",           required: false, aliases: ["tip", "tips", "gratuity", "customer tip"] },
   { key: "bonus",      label: "Bonuses",        required: false, aliases: ["bonus", "bonuses", "promotion", "promotions", "incentive", "quest"] },
   { key: "notes",      label: "Notes",          required: false, aliases: ["notes", "note", "comment", "comments", "memo"] },
@@ -8934,16 +8935,26 @@ function CsvImportScreen({ onImport, onBack }) {
               </div>
             ))}
 
-            {/* Platform for the whole file (used unless a platform column is added later) */}
-            <div style={{marginTop:"18px",marginBottom:"12px"}}>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>Platform for these shifts</div>
-              <select value={filePlatform} onChange={(e) => setFilePlatform(e.target.value)}
-                style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:"1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}>
-                <option value="uber_eats">Uber Eats</option>
-                <option value="doordash">DoorDash</option>
-                <option value="both">Both</option>
-              </select>
-            </div>
+            {/* File-wide platform — only shown when NO platform column is mapped.
+                If the sheet has a platform column, the user maps it above and each
+                row uses its own value instead. */}
+            {mapping.platform == null && (
+              <div style={{marginTop:"18px",marginBottom:"12px"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>Platform for all these shifts</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginBottom:"6px"}}>Your file has no platform column, so pick one for the whole file.</div>
+                <select value={filePlatform} onChange={(e) => setFilePlatform(e.target.value)}
+                  style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:"1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}>
+                  <option value="uber_eats">Uber Eats</option>
+                  <option value="doordash">DoorDash</option>
+                  <option value="both">Both</option>
+                </select>
+              </div>
+            )}
+            {mapping.platform != null && (
+              <div style={{marginTop:"18px",marginBottom:"12px",fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",lineHeight:"1.5"}}>
+                Platform will be read per-row from your "{headers[mapping.platform] || "Platform"}" column. Values like "uber"/"doordash" are matched automatically; anything unrecognised falls back per row.
+              </div>
+            )}
 
             {!canImport && (
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--coral)",fontWeight:"600",margin:"10px 0",lineHeight:"1.5"}}>
