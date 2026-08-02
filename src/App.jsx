@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.134";
+const CURRENT_VERSION = "ALPHA 0.14.135";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -9191,7 +9191,40 @@ function CsvImportScreen({ onImport, onBack }) {
   };
 
   const requiredUnmapped = CSV_FIELDS.filter(f => f.required && (mapping[f.key] == null)).map(f => f.label);
-  const canImport = requiredUnmapped.length === 0;
+
+  // Online time is required AND must actually contain values — a column can be
+  // mapped but blank for every row (the exact bug: user mapped active time, left
+  // online empty). Scan the rows with the same unit-aware logic the importer
+  // uses; if online is configured but NO row yields a usable value, block here
+  // in the form (not after a submit that would burn a credit).
+  const onlineHasValues = (() => {
+    const unit = timeUnit?.totalMin || "hours";
+    const readOnline = (rowArr) => {
+      const c = (idx) => idx == null ? "" : (rowArr[idx] ?? "");
+      if (unit === "split") {
+        const cfg = splitCols.totalMin || {};
+        if (cfg.hr == null && cfg.min == null) return null;
+        const h = cfg.hr != null ? (csvNum(c(cfg.hr)) || 0) : 0;
+        const m = cfg.min != null ? (csvNum(c(cfg.min)) || 0) : 0;
+        const mins = Math.round(h * 60 + m);
+        return mins > 0 ? mins : null;
+      }
+      const idx = mapping.totalMin;
+      if (idx == null) return null;
+      if (unit === "minutes") { const nn = csvNum(c(idx)); return nn != null && nn > 0 ? nn : null; }
+      const mins = csvTimeToMin(c(idx));
+      return mins != null && mins > 0 ? mins : null;
+    };
+    // Configured if either a single column is chosen or split has at least one part.
+    const configured = mapping.totalMin != null ||
+      (unit === "split" && (splitCols.totalMin?.hr != null || splitCols.totalMin?.min != null));
+    if (!configured) return false; // not configured → the "unmapped" path handles it
+    return (rows || []).some(r => readOnline(r) != null);
+  })();
+
+  // Online counts as a blocking problem when it's configured but every row is blank.
+  const onlineMappedButEmpty = requiredUnmapped.indexOf("Online time") === -1 && !onlineHasValues;
+  const canImport = requiredUnmapped.length === 0 && !onlineMappedButEmpty;
 
   const cell = (rowArr, idx) => idx == null ? "" : (rowArr[idx] ?? "");
 
@@ -9451,7 +9484,11 @@ function CsvImportScreen({ onImport, onBack }) {
 
             {!canImport && (
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--coral)",fontWeight:"600",margin:"10px 0",lineHeight:"1.5"}}>
-                Please match: {requiredUnmapped.join(", ")} — these are required to import.
+                {requiredUnmapped.length > 0
+                  ? `Please match: ${requiredUnmapped.join(", ")} — these are required to import.`
+                  : onlineMappedButEmpty
+                    ? "Online time is required, but the column you picked has no values. Choose the column that holds your online/total time (or the Hr + Min columns) before importing."
+                    : "Some required fields still need attention before you can import."}
               </div>
             )}
 
