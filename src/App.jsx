@@ -129,6 +129,11 @@ const BENCHMARK_WINDOW_DAYS = 30;
 // restore the normal free/pro paywalls.
 const BETA_MODE = true;
 const FREE_SCREENSHOT_CREDITS = 10;
+// Per-action credit costs (credit model §0.6). One shared credit pool; different
+// actions spend at different rates. Charged ONLY on a successful, completed
+// result (a saved shift / a completed bulk insert) — never on a failed attempt.
+const CREDIT_COST_SCREENSHOT = 1;
+const CREDIT_COST_CSV = 10;
 // One-time top-up packs (credits added to the running balance).
 const SCREENSHOT_PACKS = [
   { id: "pack20", credits: 20, price: 2.99, label: "20 credits" },
@@ -957,7 +962,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.129";
+const CURRENT_VERSION = "ALPHA 0.14.130";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -6161,7 +6166,10 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
 }
 
 // ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
-function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, isPro = false, onUpgrade, screenshotsRemaining }) {
+function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, onCsvImport, isPro = false, onUpgrade, screenshotsRemaining }) {
+  // CSV bulk import spends CREDIT_COST_CSV credits (charged only on a successful
+  // insert). Show whether the user currently has enough to run one.
+  const csvAffordable = screenshotsRemaining == null || screenshotsRemaining >= CREDIT_COST_CSV;
   return (
     <div className="view active">
       <div className="topbar">
@@ -6217,6 +6225,30 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, i
             <div className="log-entry-text">
               <div className="log-entry-title">Enter shift details</div>
               <div className="log-entry-desc">Fill in earnings, time, and KMs yourself. Takes about 30 seconds.</div>
+            </div>
+            <div className="log-entry-arrow">›</div>
+          </div>
+
+          {/* 4 — Bulk import (CSV / Excel) */}
+          <div className="log-entry-card" onClick={onCsvImport}>
+            <div className="log-entry-icon" style={{background:"rgba(59,130,246,.14)",color:"var(--blue)"}}>
+              <span style={{fontSize:"22px"}}>📄</span>
+            </div>
+            <div className="log-entry-text">
+              <div className="log-entry-title">
+                Bulk import from a file
+                {screenshotsRemaining != null && (
+                  <span style={{
+                    marginLeft:"8px",fontSize:"10px",fontWeight:"700",
+                    background: csvAffordable ? "var(--green-dim)" : "var(--red-dim)",
+                    color: csvAffordable ? "var(--green)" : "var(--red)",
+                    padding:"2px 7px",borderRadius:"5px",letterSpacing:".04em",
+                  }}>
+                    {CREDIT_COST_CSV} CREDITS
+                  </span>
+                )}
+              </div>
+              <div className="log-entry-desc">Upload a spreadsheet (CSV or Excel) of past shifts — we'll map the columns and add them all at once.</div>
             </div>
             <div className="log-entry-arrow">›</div>
           </div>
@@ -9589,7 +9621,7 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, onTestCatchupUber, onTestCatchupDoorDash, onCsvImport, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, onTestCatchupUber, onTestCatchupDoorDash, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -9969,13 +10001,6 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                     <div className="settings-item-left">
                       <div className="settings-item-label">🧪 Preview catch-up (DoorDash mock)</div>
                       <div className="settings-item-sub">Test-only — weekly catch-up flow</div>
-                    </div>
-                    <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-                  </div>
-                  <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}} onClick={onCsvImport}>
-                    <div className="settings-item-left">
-                      <div className="settings-item-label">🧪 Bulk import (CSV/Excel) — Stage 1</div>
-                      <div className="settings-item-sub">Test-only — parse & map, no insert yet</div>
                     </div>
                     <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
                   </div>
@@ -11382,6 +11407,20 @@ export default function GigTrack() {
             }
             setScreen("screenshotimport");
           }}
+          onCsvImport={() => {
+            // Bulk import costs CREDIT_COST_CSV credits (charged on successful
+            // insert). Gate ENTRY on being able to afford it, mirroring the
+            // screenshot gate: short on credits → open the top-up modal.
+            if (screenshotsRemaining() < CREDIT_COST_CSV) {
+              if (BETA_MODE) {
+                setBetaCreditsOpen(true);
+              } else {
+                gateToPaywall(`Bulk import uses ${CREDIT_COST_CSV} credits. Top up to continue.`);
+              }
+              return;
+            }
+            setScreen("csvimport");
+          }}
           onUpgrade={() => BETA_MODE ? setBetaCreditsOpen(true) : setScreen("paywall")}
         />
       )}
@@ -11558,7 +11597,6 @@ export default function GigTrack() {
           onInstallHelp={() => setScreen("installhelp")}
           onTestCatchupUber={() => openCatchup(MOCK_CATCHUP_UBER)}
           onTestCatchupDoorDash={() => openCatchup(MOCK_CATCHUP_DOORDASH)}
-          onCsvImport={() => setScreen("csvimport")}
           screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
@@ -11620,13 +11658,14 @@ export default function GigTrack() {
       )}
       {screen === "csvimport" && (
         <CsvImportScreen
-          onBack={() => setScreen("settings")}
+          onBack={() => setScreen("logshift")}
           onImport={({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform, fileName }) => {
-            // STAGE 2a — real batch insert of clean rows. Dupes and incomplete
-            // rows are just COUNTED for now (reported to the user); routing them
-            // to a review queue comes with the permanent Tasks screen (Needs
-            // #5/#6). The 10-credit charge also lands then. Clean rows import for
-            // real here, via the same record shape as manual entry.
+            // Real batch insert of clean rows. Dupes and incomplete rows are
+            // COUNTED for now (reported to the user); routing them to a review
+            // queue comes with the permanent Tasks screen (Needs #5/#6). Clean
+            // rows import via the same record shape as manual entry.
+            // CREDITS: a successful import charges CREDIT_COST_CSV, ONCE, after
+            // the insert lands — never when nothing imports (see empty path).
             const deps = {
               mapping, odoMode, odoCols, timeUnit, splitCols, filePlatform: platform, headers,
               region: region ?? null, owner: authUser?.id || null,
@@ -11654,10 +11693,17 @@ export default function GigTrack() {
             });
 
             if (toAdd.length === 0) {
+              // Nothing imported → NO credit charge (charge only on a real result).
               showToast(`No new shifts imported — ${dupes} duplicate(s), ${incomplete} need attention`);
-              setScreen("settings");
+              setScreen("logshift");
               return;
             }
+
+            // Successful import → charge CREDIT_COST_CSV credits, server-side.
+            // Cloud-authoritative: the browser never sets the counter itself.
+            incrementScreenshotImportsUsed(CREDIT_COST_CSV).then(newCount => {
+              if (newCount != null) setScreenshotImportsUsed(newCount);
+            });
 
             // ONE batched state update + persist (not per-row handleSaved).
             const updated = [...trips, ...toAdd];

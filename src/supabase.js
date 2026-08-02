@@ -196,13 +196,14 @@ export const fetchProfile = async () => {
   }
 };
 
-// Atomically increments screenshot_imports_used and returns the new total.
-// Server-side, so it can't be tampered with by the client.
+// Atomically increments screenshot_imports_used by `amount` (default 1) and
+// returns the new total. Server-side, so it can't be tampered with by the
+// client. Screenshots spend 1; a CSV bulk import spends 10 (credit model §0.6).
 // Returns the new count, or null on failure.
-export const incrementScreenshotImportsUsed = async () => {
-  console.log("[GigTrack] incrementScreenshotImportsUsed called");
+export const incrementScreenshotImportsUsed = async (amount = 1) => {
+  console.log("[GigTrack] incrementScreenshotImportsUsed called, amount:", amount);
   try {
-    const { data, error } = await supabase.rpc("increment_screenshot_imports");
+    const { data, error } = await supabase.rpc("increment_screenshot_imports", { p_amount: amount });
     if (error) {
       console.warn("[GigTrack] incrementScreenshotImportsUsed error:", error.message);
       return null;
