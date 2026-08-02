@@ -24,17 +24,14 @@ const corsHeaders = {
 // Server-side pack catalog — the ONLY source of truth for price + credits.
 // Keep in sync with SCREENSHOT_PACKS in App.jsx (same ids, same credits).
 //
-// PRICES UPDATED (credit model §0.6): 20/$2.99 · 50/$5.99 · 100/$9.99.
-// A Stripe Price amount is immutable, so new prices = NEW Price objects with
-// NEW price_... ids. Create three new Prices in the Stripe dashboard (in the
-// SAME mode you deploy to) at 299 / 599 / 999 AUD cents, then paste their ids
-// below in place of the REPLACE_ME_* placeholders. amountCents is already the
-// new value — it feeds the pending-purchase row / receipt, so it MUST match the
-// Price amount you set in Stripe.
+// Prices (credit model §0.6): 20/$2.99 · 50/$5.99 · 100/$9.99. A Stripe Price
+// amount is immutable, so these are NEW Price objects created in the dashboard;
+// amountCents must match the Price amount (it feeds the pending-purchase row /
+// receipt). The previous 249/399/599 prices were archived.
 const PACKS: Record<string, { priceId: string; credits: number; amountCents: number }> = {
-  pack20:  { priceId: "REPLACE_ME_price_20_299",  credits: 20,  amountCents: 299 },
-  pack50:  { priceId: "REPLACE_ME_price_50_599",  credits: 50,  amountCents: 599 },
-  pack100: { priceId: "REPLACE_ME_price_100_999", credits: 100, amountCents: 999 },
+  pack20:  { priceId: "price_1TzvfGDVwzbt4ggwSaqKQBv3", credits: 20,  amountCents: 299 },
+  pack50:  { priceId: "price_1TzvfeDVwzbt4ggw3rePsB5I", credits: 50,  amountCents: 599 },
+  pack100: { priceId: "price_1Tzvg2DVwzbt4ggwzgGv51ae", credits: 100, amountCents: 999 },
 };
 
 Deno.serve(async (req) => {
