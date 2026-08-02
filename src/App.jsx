@@ -131,9 +131,9 @@ const BETA_MODE = true;
 const FREE_SCREENSHOT_CREDITS = 10;
 // One-time top-up packs (credits added to the running balance).
 const SCREENSHOT_PACKS = [
-  { id: "pack20", credits: 20, price: 2.49, label: "20 screenshots" },
-  { id: "pack50", credits: 50, price: 3.99, label: "50 screenshots" },
-  { id: "pack100", credits: 100, price: 5.99, label: "100 screenshots", badge: "Best value" },
+  { id: "pack20", credits: 20, price: 2.99, label: "20 credits" },
+  { id: "pack50", credits: 50, price: 5.99, label: "50 credits" },
+  { id: "pack100", credits: 100, price: 9.99, label: "100 credits", badge: "Best value" },
 ];
 
 // ─── CSV/EXCEL BULK IMPORT — field definitions + fuzzy header matching ─────
@@ -957,7 +957,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.128";
+const CURRENT_VERSION = "ALPHA 0.14.129";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -3222,7 +3222,7 @@ function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
           >
             <div style={{textAlign:"left"}}>
               <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                <span style={{fontSize:"15px",fontWeight:"800",color:"var(--text)"}}>{pack.credits} screenshots</span>
+                <span style={{fontSize:"15px",fontWeight:"800",color:"var(--text)"}}>{pack.credits} credits</span>
                 {pack.badge && (
                   <span style={{
                     fontSize:"9px",fontWeight:"800",letterSpacing:".04em",textTransform:"uppercase",
