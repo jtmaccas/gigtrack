@@ -963,7 +963,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.131";
+const CURRENT_VERSION = "ALPHA 0.14.132";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -6175,15 +6175,52 @@ function ScreenshotImportScreen({ onBack, onParsed, onWeeklyDetected }) {
 }
 
 // ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
-function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, onCsvImport, isPro = false, onUpgrade, screenshotsRemaining }) {
-  // CSV bulk import spends CREDIT_COST_CSV credits (charged only on a successful
-  // insert). Show whether the user currently has enough to run one.
-  const csvAffordable = screenshotsRemaining == null || screenshotsRemaining >= CREDIT_COST_CSV;
+// Small badge shown on each Log-a-shift card: either "Free" (green, subtle) or a
+// credit cost (muted; red when the user can't afford it).
+function LogCostBadge({ free = false, label = "", warn = false }) {
+  const base = {
+    marginLeft:"8px",fontSize:"10px",fontWeight:"700",letterSpacing:".04em",
+    padding:"2px 7px",borderRadius:"5px",whiteSpace:"nowrap",verticalAlign:"middle",
+  };
+  if (free) {
+    return <span style={{...base, background:"var(--green-dim)", color:"var(--green)"}}>FREE</span>;
+  }
+  return (
+    <span style={{
+      ...base,
+      background: warn ? "var(--red-dim)" : "var(--elevated)",
+      color: warn ? "var(--red)" : "var(--muted)",
+      border: warn ? "none" : "0.5px solid var(--border)",
+    }}>{label}</span>
+  );
+}
+
+function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, onCsvImport, onBuyCredits, isPro = false, onUpgrade, screenshotsRemaining }) {
+  // Per-card credit costs surfaced up front. Balance shown once in the topbar;
+  // each paid card shows what it costs. Timer + manual entry are free.
+  const hasBalance = screenshotsRemaining != null;
+  const csvAffordable = !hasBalance || screenshotsRemaining >= CREDIT_COST_CSV;
   return (
     <div className="view active">
       <div className="topbar">
         <button className="topbar-back" onClick={onBack}>←</button>
         <div className="topbar-title">Log a shift</div>
+        {hasBalance && (
+          <button
+            onClick={onBuyCredits}
+            aria-label="Credit balance — tap to top up"
+            style={{
+              marginLeft:"auto",display:"flex",alignItems:"center",gap:"5px",
+              background: screenshotsRemaining === 0 ? "var(--red-dim)" : "var(--green-dim)",
+              color: screenshotsRemaining === 0 ? "var(--red)" : "var(--green)",
+              border:"none",borderRadius:"100px",padding:"6px 12px",cursor:"pointer",
+              fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"800",letterSpacing:".02em",
+            }}
+          >
+            <span style={{fontSize:"13px"}}>◈</span>
+            {screenshotsRemaining} credit{screenshotsRemaining === 1 ? "" : "s"}
+          </button>
+        )}
       </div>
       <div className="scroll-area">
         <div className="log-shift-list">
@@ -6194,7 +6231,10 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, o
               <span style={{color:"var(--green)",fontSize:"20px"}}>▶</span>
             </div>
             <div className="log-entry-text">
-              <div className="log-entry-title">Start shift timer</div>
+              <div className="log-entry-title">
+                Start shift timer
+                <LogCostBadge free />
+              </div>
               <div className="log-entry-desc">{TIMER_GPS_ENABLED
                 ? "Tap to start timing your shift live. GPS tracks your KMs automatically."
                 : "Tap to start timing your shift live. You'll add your KMs when you save."}</div>
@@ -6210,18 +6250,9 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, o
             <div className="log-entry-text">
               <div className="log-entry-title">
                 Import from screenshot
-                {screenshotsRemaining != null && (
-                  <span style={{
-                    marginLeft:"8px",fontSize:"10px",fontWeight:"700",
-                    background: screenshotsRemaining === 0 ? "var(--red-dim)" : "var(--green-dim)",
-                    color: screenshotsRemaining === 0 ? "var(--red)" : "var(--green)",
-                    padding:"2px 7px",borderRadius:"5px",letterSpacing:".04em",
-                  }}>
-                    {screenshotsRemaining === 0 ? "0 LEFT" : `${screenshotsRemaining} LEFT`}
-                  </span>
-                )}
+                {hasBalance && <LogCostBadge label={`${CREDIT_COST_SCREENSHOT}–${CREDIT_COST_WEEKLY} credits`} />}
               </div>
-              <div className="log-entry-desc">Upload an Uber Eats or DoorDash summary — we'll read the values for you.</div>
+              <div className="log-entry-desc">Upload an Uber Eats or DoorDash summary — we'll read the values for you. A weekly summary uses {CREDIT_COST_WEEKLY}.</div>
             </div>
             <div className="log-entry-arrow">›</div>
           </div>
@@ -6232,7 +6263,10 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, o
               <span style={{fontSize:"22px"}}>✏️</span>
             </div>
             <div className="log-entry-text">
-              <div className="log-entry-title">Enter shift details</div>
+              <div className="log-entry-title">
+                Enter shift details
+                <LogCostBadge free />
+              </div>
               <div className="log-entry-desc">Fill in earnings, time, and KMs yourself. Takes about 30 seconds.</div>
             </div>
             <div className="log-entry-arrow">›</div>
@@ -6246,16 +6280,7 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, o
             <div className="log-entry-text">
               <div className="log-entry-title">
                 Bulk import from a file
-                {screenshotsRemaining != null && (
-                  <span style={{
-                    marginLeft:"8px",fontSize:"10px",fontWeight:"700",
-                    background: csvAffordable ? "var(--green-dim)" : "var(--red-dim)",
-                    color: csvAffordable ? "var(--green)" : "var(--red)",
-                    padding:"2px 7px",borderRadius:"5px",letterSpacing:".04em",
-                  }}>
-                    {CREDIT_COST_CSV} CREDITS
-                  </span>
-                )}
+                {hasBalance && <LogCostBadge label={`${CREDIT_COST_CSV} credits`} warn={!csvAffordable} />}
               </div>
               <div className="log-entry-desc">Upload a spreadsheet (CSV or Excel) of past shifts — we'll map the columns and add them all at once.</div>
             </div>
@@ -11380,6 +11405,7 @@ export default function GigTrack() {
         <LogShiftScreen
           isPro={unlocked}
           screenshotsRemaining={screenshotsRemaining()}
+          onBuyCredits={() => setBetaCreditsOpen(true)}
           onBack={() => setScreen("home")}
           onStartTimer={() => {
             handleStartTimer();
