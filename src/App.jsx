@@ -957,7 +957,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14";
+const CURRENT_VERSION = "ALPHA 0.14.127";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -8426,7 +8426,7 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
               const CHART_H = 80;
               const LABEL_H = 20;
               return (
-                <div style={{display:"flex",alignItems:"flex-end",gap:"2px",height:`${CHART_H + LABEL_H}px`,paddingTop:"14px"}}>
+                <div style={{display:"flex",alignItems:"flex-end",gap:"2px",height:`${CHART_H + LABEL_H}px`,marginTop:"22px"}}>
                   {chartData.map((bar, i) => {
                     const isToday = bar.isCurrent ?? bar.isToday ?? (period === "week" && i === (new Date().getDay() + 6) % 7);
                     const barH = maxVal > 0 && bar.val > 0
