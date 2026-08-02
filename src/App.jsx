@@ -152,7 +152,7 @@ const CSV_FIELDS = [
   { key: "bonus",      label: "Bonuses",        group: "Earnings", required: false, aliases: ["bonus", "bonuses", "promotion", "promotions", "incentive", "quest"] },
   { key: "totalKm",    label: "Total km",       group: "Distance", required: false, aliases: ["km", "kms", "total km", "distance", "kilometres", "kilometers", "mileage", "total distance"] },
   { key: "activeKm",   label: "Active km",      group: "Distance", required: false, aliases: ["active km", "delivery km", "active distance", "on trip km"] },
-  { key: "totalMin",   label: "Online time",    group: "Time",     required: false, aliases: ["online", "online time", "hours", "time", "duration", "shift time", "online hours", "total time", "hrs"] },
+  { key: "totalMin",   label: "Online time",    group: "Time",     required: true,  aliases: ["online", "online time", "hours", "time", "duration", "shift time", "online hours", "total time", "hrs"] },
   { key: "activeMins", label: "Active time",    group: "Time",     required: false, aliases: ["active", "active time", "delivery time", "on trip time", "active hours"] },
   { key: "dels",       label: "Deliveries",     group: "Details",  required: false, aliases: ["deliveries", "dels", "trips", "orders", "jobs", "completed deliveries", "trip count", "delivery count"] },
   { key: "platform",   label: "Platform",       group: "Details",  required: false, aliases: ["platform", "app", "service", "company", "provider", "source"] },
@@ -311,8 +311,18 @@ const buildTripFromCsvRow = (row, deps) => {
     if (u === "minutes") { const nn = csvNum(cell(mapIdx)); return nn == null ? null : Math.round(nn); }
     return csvTimeToMin(cell(mapIdx)); // hours
   };
-  const totalMin = timeFromCol("totalMin", mapping.totalMin) || 0;
+  const totalMinRaw = timeFromCol("totalMin", mapping.totalMin);
   const activeMin = timeFromCol("activeMins", mapping.activeMins);
+  // Online time is REQUIRED. It's the denominator for hourly rate and the basis
+  // for benchmark eligibility — active time is a different (smaller) measure and
+  // can't stand in without inflating the hourly and polluting the shared pool.
+  // A row with no usable online time goes to "needs attention" rather than
+  // importing as 0 min (which read as a broken 0-minute shift and was silently
+  // excluded from benchmarks). The user can add the online time and re-import.
+  if (totalMinRaw == null || totalMinRaw <= 0) {
+    return { error: "no_online" };
+  }
+  const totalMin = totalMinRaw;
   const dels = mapping.dels != null ? (csvNum(cell(mapping.dels)) || 0) : 0;
   const platform = mapping.platform != null ? csvNormPlatform(cell(mapping.platform), filePlatform) : filePlatform;
   const notesVal = mapping.notes != null ? String(cell(mapping.notes)).trim() : "";
@@ -963,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.133";
+const CURRENT_VERSION = "ALPHA 0.14.134";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -11738,11 +11748,15 @@ export default function GigTrack() {
             const existingKeys = new Set(trips.map(t => keyOf(t.ts, t.platform, t.totalEarned)));
 
             const toAdd = [];
-            let dupes = 0, incomplete = 0;
+            let dupes = 0, incomplete = 0, noOnline = 0;
             const seenInFile = new Set();
             rows.forEach(row => {
               const built = buildTripFromCsvRow(row, deps);
-              if (built.error) { incomplete++; return; }
+              if (built.error) {
+                if (built.error === "no_online") noOnline++;
+                else incomplete++;
+                return;
+              }
               const rec = built.record;
               const k = keyOf(rec.ts, rec.platform, rec.totalEarned);
               if (existingKeys.has(k) || seenInFile.has(k)) { dupes++; return; } // skip dup for now
@@ -11752,7 +11766,11 @@ export default function GigTrack() {
 
             if (toAdd.length === 0) {
               // Nothing imported → NO credit charge (charge only on a real result).
-              showToast(`No new shifts imported — ${dupes} duplicate(s), ${incomplete} need attention`);
+              const bits = [];
+              if (dupes) bits.push(`${dupes} duplicate(s)`);
+              if (noOnline) bits.push(`${noOnline} missing online time`);
+              if (incomplete) bits.push(`${incomplete} need attention`);
+              showToast(`No new shifts imported${bits.length ? " — " + bits.join(", ") : ""}`);
               setScreen("logshift");
               return;
             }
@@ -11783,6 +11801,7 @@ export default function GigTrack() {
 
             const extras = [];
             if (dupes) extras.push(`${dupes} duplicate(s) skipped`);
+            if (noOnline) extras.push(`${noOnline} missing online time`);
             if (incomplete) extras.push(`${incomplete} need attention`);
             showToast(`Imported ${toAdd.length} shift${toAdd.length === 1 ? "" : "s"}${extras.length ? " · " + extras.join(" · ") : ""}`);
             setScreen("home");
