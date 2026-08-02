@@ -957,7 +957,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.127";
+const CURRENT_VERSION = "ALPHA 0.14.128";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -4637,13 +4637,20 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                   <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{view.isReal ? view.shifts : "—"}</div>
                   <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>shifts logged · 30d</div>
                 </div>
-                <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
-                <div style={{ flex: 2 }}>
-                  <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "700", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "4px" }}>$/delivery {scouting ? "there" : "here"}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>Zone avg ${view.perDel}</span>
-                  </div>
-                </div>
+                {/* $/delivery only in non-scout view. While scouting, the hero
+                    stats row already shows a $/delivery square, so repeating it
+                    here is a duplicate (Needs #4). */}
+                {!scouting && (
+                  <>
+                    <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
+                    <div style={{ flex: 2 }}>
+                      <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "700", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "4px" }}>$/delivery here</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>Zone avg ${view.perDel}</span>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
 
               <Footer>{view.isReal ? `Based on ${view.shifts} real shifts logged in ${activeLabel} · last 30 days` : `Sample data for ${activeLabel} — real numbers appear once enough shifts are logged`}</Footer>
