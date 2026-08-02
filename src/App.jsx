@@ -1796,10 +1796,10 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .detail-header{padding:16px 16px 0;background:var(--bg);}
 .detail-date{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:600;}
 .detail-app-name{font-size:28px;font-weight:800;margin-top:3px;color:var(--text);letter-spacing:-.025em;}
-.detail-section{margin:14px 14px 0;}
-.detail-section-title{font-size:11px;color:var(--muted2);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;font-weight:700;}
+.detail-section{margin:14px 14px 0;background:var(--elevated);border:1px solid var(--border);border-radius:16px;padding:15px;}
+.detail-section-title{font-size:10px;color:var(--coral);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px;font-weight:800;}
 .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.detail-item{background:var(--surface);border-radius:14px;padding:13px;box-shadow:var(--shadow-card);}
+.detail-item{background:transparent;border-radius:0;padding:0;box-shadow:none;}
 .detail-item.wide{grid-column:1/-1;}
 .detail-item-label{font-size:10px;color:var(--muted2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;font-weight:500;}
 .detail-item-value{font-size:17px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;font-family:'Geist Mono',monospace;letter-spacing:-.01em;}
@@ -8687,9 +8687,22 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
         <div className="topbar-title">Shift Detail</div>
       </div>
       <div className="scroll-area" id="detail-scroll">
-        <div className="detail-header">
-          <div className="detail-date">{d.toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric",year:"numeric"})}{isDateOnly(d) ? "" : " · " + d.toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})}</div>
-          <div className="detail-app-name">Shift Summary</div>
+        {/* M1 earnings hero */}
+        <div style={{margin:"14px 14px 0",background:"linear-gradient(135deg,#F0562E,#F6863A)",borderRadius:"18px",padding:"18px",color:"#fff"}}>
+          {showScoring && (
+            <div style={{float:"right",background:"rgba(255,255,255,.2)",borderRadius:"12px",padding:"8px 12px",textAlign:"center"}}>
+              <div style={{fontSize:"20px",fontWeight:"800",lineHeight:1}}>{trip.score.toFixed(0)}</div>
+              <div style={{fontSize:"9px",opacity:.9,textTransform:"uppercase",letterSpacing:".05em",marginTop:"2px"}}>score</div>
+            </div>
+          )}
+          <div style={{fontSize:"12px",opacity:.9,fontWeight:600}}>
+            {d.toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric",year:"numeric"})}
+            {trip.platform ? " · " + (trip.platform === "doordash" ? "DoorDash" : trip.platform === "both" ? "Both" : "Uber Eats") : ""}
+          </div>
+          <div style={{fontSize:"30px",fontWeight:"800",letterSpacing:"-.02em",marginTop:"2px"}}>{fmt$(trip.totalEarned)}</div>
+          <div style={{fontSize:"12px",opacity:.92,marginTop:"4px"}}>
+            {trip.totalHrs>0 ? fmt$(trip.hourly)+"/hr" : ""}{trip.totalHrs>0 && trip.dels>0 ? " · " : ""}{trip.dels>0 ? fmt$(trip.perDel)+" per delivery" : ""}
+          </div>
         </div>
 
         {showScoring && (
@@ -8821,9 +8834,9 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
 function SettingsSectionCard({ children, style }) {
   return (
     <div style={{
-      background:"var(--surface)",
+      background:"var(--elevated)",
+      border:"1px solid var(--border)",
       borderRadius:"16px",overflow:"hidden",margin:"0 14px",
-      boxShadow:"var(--shadow-card)",
       ...style,
     }}>
       {children}
@@ -9616,7 +9629,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Account card ── */}
           <div>
-            <div style={{fontSize:"11px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 18px 8px"}}>Account</div>
+            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 18px 8px"}}>Account</div>
             <SettingsSectionCard>
               {/* Avatar + name row */}
               <div style={{display:"flex",alignItems:"center",gap:"14px",padding:"16px",borderBottom:"0.5px solid var(--border)"}}>
@@ -9704,7 +9717,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Preferences ── */}
           <div>
-            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Preferences</div>
+            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Preferences</div>
             <SettingsSectionCard>
               {/* Default Platform */}
               <div style={{padding:"13px 15px",borderBottom:"0.5px solid var(--border)"}}>
@@ -9799,7 +9812,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Tools & Export ── */}
           <div>
-            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools & Export</div>
+            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools & Export</div>
             <SettingsSectionCard>
               {/* Screenshot credits — buy top-up packs (beta) */}
               {isBeta && (
@@ -9891,7 +9904,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Feedback (beta) ── */}
           <div>
-            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Feedback</div>
+            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Feedback</div>
             <SettingsSectionCard>
               {/* Add to home screen — install instructions per platform */}
               <div
@@ -9974,7 +9987,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Data & Security ── */}
           <div>
-            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data & Security</div>
+            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data & Security</div>
             <SettingsSectionCard>
               {/* Account — always signed in, just shows email + sign-out */}
               {authUser && (
@@ -10064,7 +10077,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Advanced ── */}
           <div>
-            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Advanced</div>
+            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Advanced</div>
             <SettingsSectionCard>
               {/* Toggle row */}
               <div
