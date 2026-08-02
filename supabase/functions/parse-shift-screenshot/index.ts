@@ -20,17 +20,40 @@ const corsHeaders = {
 
 // The prompt that tells Claude what to extract.
 // Strict JSON output, with null for missing fields so the app can show "Not found".
+//
+// TWO MODES. The screenshot is EITHER a single-shift summary OR a whole-week
+// summary. First CLASSIFY which, then return the matching shape. The "type"
+// field is the discriminator the app branches on. Single-shift behaviour is
+// unchanged from before (same fields) — weekly is the added mode.
 const SYSTEM_PROMPT = `You are a data extraction assistant for a gig delivery driver app.
 
-The user uploads a screenshot of a shift-summary screen from Uber Eats or DoorDash
-(the screen shown to drivers at the end of a session, summarizing earnings).
+The user uploads a screenshot from Uber Eats or DoorDash. It is ONE of:
+  (A) a SINGLE-SHIFT summary — one session/day's earnings, OR
+  (B) a WEEKLY summary — a whole week at once, typically a bar chart of 7 days
+      with a week total, and NO single day selected/highlighted.
 
-Extract the following fields. If a field is not visible or unclear, return null.
-Do not guess. Do not infer. Only return what is clearly shown.
+STEP 1 — CLASSIFY. Decide if this is a single shift or a whole week.
+  * WEEKLY signals: a week date-range header (e.g. "5 Jan - 12 Jan"); a row of
+    ~7 bars, none darker/selected than the others; a total labelled as a week/
+    "This week"; a per-day list covering multiple dates.
+  * SINGLE signals: exactly ONE day's figures; on a UE bar chart, ONE bar is
+    DARK/SOLID blue (selected) and the totals refer to that selected day; a
+    DoorDash single-dash summary.
+  * If a UE weekly screen has ONE dark-blue selected bar, that is a SINGLE shift
+    for the selected day (existing behaviour) — NOT a weekly. A weekly is when
+    NO single day is selected and the figures are week aggregates.
 
-Required output format — strict JSON, no markdown, no commentary:
+STEP 2 — EXTRACT the matching shape.
+
+Do not guess. Do not infer. Only return what is clearly shown. Return null for
+anything not clearly visible. Return ONLY the JSON object — no markdown, no
+commentary.
+
+────────────────────────────────────────────────────────────────────────────
+SHAPE A — SINGLE SHIFT (use when type is "single"):
 
 {
+  "type": "single",
   "total_earned": <number or null>,    // total dollars earned this shift
   "tips": <number or null>,             // tips dollar amount (if shown separately)
   "bonuses": <number or null>,          // promotions/quests/bonuses (if shown separately)
@@ -44,8 +67,47 @@ Required output format — strict JSON, no markdown, no commentary:
   "start_time": <string or null>        // shift START time in 24-hour HH:MM if clearly shown; null if not visible
 }
 
-Field-specific notes:
-- SCOPE CONSISTENCY (important): all numeric fields must describe the SAME period. On UE weekly screens a single day is usually selected (one dark-blue bar) and the big total, Stats (Online/Active/Trips) and Breakdown (Net fare/Promotions) shown all refer to that SELECTED DAY — extract those day figures, paired with that day's "shift_date". If instead the screen is clearly showing a whole-week total with NO single day selected, that is a week summary: still extract the totals, but return "shift_date": null (a week total can't be pinned to one day). Never mix a single day's date with week-aggregate numbers.
+────────────────────────────────────────────────────────────────────────────
+SHAPE B — WEEKLY SUMMARY (use when type is "weekly"):
+
+{
+  "type": "weekly",
+  "platform": <"uber_eats" | "doordash" | "both" | null>,
+  "week_start": <string or null>,   // ISO YYYY-MM-DD, first day of the week range
+  "week_end": <string or null>,     // ISO YYYY-MM-DD, last day of the week range
+  "days": [                          // ONE entry per day that has ANY activity that week
+    { "date": <string YYYY-MM-DD>, "earned": <number or null> }
+  ],
+  "week_totals": {
+    "earned": <number or null>,       // week total dollars
+    "deliveries": <integer or null>,  // week total deliveries/trips (DoorDash: deliveries; UE: trips)
+    "online_hrs": <string or null>,   // week online time as shown, e.g. "44h39m"
+    "active_hrs": <string or null>    // week active time as shown, e.g. "43h22m"
+  }
+}
+
+WEEKLY EXTRACTION RULES (read carefully — the two platforms differ):
+- "week_start"/"week_end": read the week date-range header (e.g. "20 Jul - 26 Jul")
+  and convert BOTH ends to ISO YYYY-MM-DD using the YEAR rule below. Watch month
+  boundaries when the range spans two months (e.g. "28 Dec - 4 Jan").
+- "days": include a day ONLY if the screenshot shows that day had activity —
+  a non-zero bar, or a listed dash/entry for that date. Skip days with no bar /
+  no activity (a driver's day off is not a day to catch up).
+  * DOORDASH: the weekly view usually LISTS each dash with its date and dollar
+    amount. For each date shown, SUM all that date's amounts into ONE day entry
+    and put the total in "earned". (e.g. two dashes on Mar 26 of 11.97 + 19.58 →
+    { "date": "2026-03-26", "earned": 31.55 }.)
+  * UBER EATS: the weekly bar chart does NOT print per-day dollar amounts — only
+    bar heights. So for UE, list each day that has a (non-zero) bar with
+    "earned": null. Derive each day's date from the bar's day-number + the week
+    range (same month-boundary logic as week_start/week_end). Do NOT invent
+    dollar amounts from bar heights — "earned" is null for every UE day.
+- "week_totals": extract the week aggregate figures shown (total earned, total
+  trips/deliveries, total online/active time). Leave any not shown as null.
+- Order "days" chronologically (earliest date first).
+
+Field-specific notes (SHAPE A — single shift — unless noted otherwise):
+- SCOPE CONSISTENCY (important): in a single-shift extraction, all numeric fields must describe the SAME period. On a UE screen with ONE dark-blue SELECTED bar, the big total, Stats (Online/Active/Trips) and Breakdown (Net fare/Promotions) all refer to that SELECTED DAY — extract those day figures, paired with that day's "shift_date". (If NO day is selected and the figures are week aggregates, that's SHAPE B weekly, not this.) Never mix a single day's date with week-aggregate numbers.
 - All currency values: numbers only, no $ signs (e.g. 55.20 not "$55.20")
 - "online_minutes" and "active_minutes": convert hours/minutes formats to total minutes (e.g. "1h 25m" → 85)
 - "distance_km" is total/online distance; "active_km" is just the active delivery distance. UE sometimes shows both.
@@ -60,9 +122,9 @@ Field-specific notes:
     5. Combine that day number with the correct month from the week range. WATCH MONTH BOUNDARIES: if the week range spans two months (e.g. "28 Dec - 4 Jan") then low day numbers (1-4) belong to the LATER month (Jan) and high numbers (28-31) to the EARLIER month (Dec). For "5 Jan - 12 Jan" all days are January.
     6. Example: week "5 Jan - 12 Jan", dark-blue bar is above "11" (Sun) → 11 January → "2026-01-11".
     * If NO bar is dark-blue/selected, or you cannot confidently identify the selected day, return null. Do not guess a day.
-  * YEAR: UE/DoorDash screens rarely show a year, so infer it from TODAY'S DATE (given below). Rule: the shift happened in the MOST RECENT occurrence of that month/day on or before today — a shift screenshot is always in the past, never the future. Reason like this: "Today is 2026-06-15. The screenshot shows 11 January. When did 11 January most recently occur on or before today? January 2026 already passed this year, so it's 2026-01-11. But if the screenshot showed 11 September, September 2026 hasn't happened yet this year, so the most recent September was 2025 → 2025-09-11." So: if the month/day is LATER in the year than today, use LAST year; if it's EARLIER than or equal to today, use THIS year. Never return a future date. If genuinely unsure, still return your best YYYY-MM-DD rather than null.
-- "start_time": the time the shift/dash STARTED, in 24-hour HH:MM (e.g. "5:30 PM" → "17:30", "9:05 AM" → "09:05"). DoorDash often shows a dash start time or a time range like "5:30 PM - 9:45 PM" — use the FIRST/start time. If only an end time or no time is shown, return null. Do not guess.
-- If the screenshot is NOT a gig delivery shift summary, return all fields as null.
+  * YEAR (applies to ALL dates — single shift_date AND weekly week_start/week_end/days): UE/DoorDash screens rarely show a year, so infer it from TODAY'S DATE (given below). Rule: the shift happened in the MOST RECENT occurrence of that month/day on or before today — a shift screenshot is always in the past, never the future. Reason like this: "Today is 2026-06-15. The screenshot shows 11 January. When did 11 January most recently occur on or before today? January 2026 already passed this year, so it's 2026-01-11. But if the screenshot showed 11 September, September 2026 hasn't happened yet this year, so the most recent September was 2025 → 2025-09-11." So: if the month/day is LATER in the year than today, use LAST year; if it's EARLIER than or equal to today, use THIS year. Never return a future date. If genuinely unsure, still return your best YYYY-MM-DD rather than null.
+- "start_time" (single only): the time the shift/dash STARTED, in 24-hour HH:MM (e.g. "5:30 PM" → "17:30", "9:05 AM" → "09:05"). DoorDash often shows a dash start time or a time range like "5:30 PM - 9:45 PM" — use the FIRST/start time. If only an end time or no time is shown, return null. Do not guess.
+- If the screenshot is NOT a gig delivery shift/earnings summary at all, return {"type":"single"} with all other fields null.
 
 Return ONLY the JSON object. No explanation. No markdown fences.`;
 

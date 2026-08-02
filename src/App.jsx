@@ -133,6 +133,7 @@ const FREE_SCREENSHOT_CREDITS = 10;
 // actions spend at different rates. Charged ONLY on a successful, completed
 // result (a saved shift / a completed bulk insert) — never on a failed attempt.
 const CREDIT_COST_SCREENSHOT = 1;
+const CREDIT_COST_WEEKLY = 2;
 const CREDIT_COST_CSV = 10;
 // One-time top-up packs (credits added to the running balance).
 const SCREENSHOT_PACKS = [
@@ -962,7 +963,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.130";
+const CURRENT_VERSION = "ALPHA 0.14.131";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -5790,7 +5791,7 @@ function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, on
 // Stage 1: pick — user selects an image file
 // Stage 2: progress — uploading + AI parsing (animated %)
 // Stage 3: preview — per-field green/red indicators + confirm
-function ScreenshotImportScreen({ onBack, onParsed }) {
+function ScreenshotImportScreen({ onBack, onParsed, onWeeklyDetected }) {
   const [stage, setStage] = useState("pick"); // pick | progress | preview | merge | error
   const [pickedFile, setPickedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -5900,6 +5901,14 @@ function ScreenshotImportScreen({ onBack, onParsed }) {
       setProgressPct(100);
       setProgressStep("Done");
       setTimeout(() => {
+        // WEEKLY branch: the Edge Function classified this as a whole-week
+        // summary. Hand it up to the app (accept-confirm + credit charge +
+        // catch-up flow) instead of the single-shift preview. Single-shift
+        // (type !== "weekly", incl. legacy responses with no type) is unchanged.
+        if (result.parsed && result.parsed.type === "weekly" && onWeeklyDetected) {
+          onWeeklyDetected(result.parsed, previewUrl);
+          return;
+        }
         setParsed(result.parsed);
         setStage("preview");
       }, 350);
@@ -9621,7 +9630,7 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, onTestCatchupUber, onTestCatchupDoorDash, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -9986,26 +9995,6 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
               </div>
-
-              {/* TEMP (Stage 2 test) — preview the weekly catch-up flow with mock data. Remove when Edge Function is wired. */}
-              {isBeta && (
-                <>
-                  <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}} onClick={onTestCatchupUber}>
-                    <div className="settings-item-left">
-                      <div className="settings-item-label">🧪 Preview catch-up (Uber mock)</div>
-                      <div className="settings-item-sub">Test-only — weekly catch-up flow</div>
-                    </div>
-                    <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-                  </div>
-                  <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}} onClick={onTestCatchupDoorDash}>
-                    <div className="settings-item-left">
-                      <div className="settings-item-label">🧪 Preview catch-up (DoorDash mock)</div>
-                      <div className="settings-item-sub">Test-only — weekly catch-up flow</div>
-                    </div>
-                    <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-                  </div>
-                </>
-              )}
 
               {/* What's new — reopen the current version's changelog anytime */}
               <div
@@ -10490,8 +10479,12 @@ export default function GigTrack() {
   // and shows as a resumable "task" on the Home screen until the week is done.
   const [catchup, setCatchup] = useState(() => DB.get("gt_catchup_task") || null);
   const [catchupSaved, setCatchupSaved] = useState([]);
-  // MOCK detection results — remove when the Edge Function is wired (Stage 3).
-  // Toggle between these to preview both platforms.
+  // Reference weekly-detection shapes (was: mock buttons in Settings, now
+  // removed — weekly is auto-detected from a real screenshot import). Kept as
+  // the canonical example of the Edge Function's `type:"weekly"` output that
+  // openCatchup expects. Not referenced in the UI anymore; safe to delete if
+  // you don't want the reference. Note the platform asymmetry: UE days carry
+  // earned:null (bar chart, no per-day $), DoorDash days carry summed earned.
   const MOCK_CATCHUP_UBER = {
     type: "weekly", platform: "uber_eats",
     week_start: "2026-07-20", week_end: "2026-07-26",
@@ -11427,6 +11420,37 @@ export default function GigTrack() {
       {screen === "screenshotimport" && (
         <ScreenshotImportScreen
           onBack={() => setScreen("logshift")}
+          onWeeklyDetected={(detection, previewUrl) => {
+            // The screenshot was a WHOLE-WEEK summary. Confirm intent, then
+            // (on accept) charge CREDIT_COST_WEEKLY and open the catch-up flow.
+            // The single-shift 1-credit charge is NOT run for this path.
+            const dayCount = Array.isArray(detection.days) ? detection.days.length : 0;
+            const platLabel = detection.platform === "doordash" ? "DoorDash" : "Uber";
+            // Guard: weekly costs 2 credits. If the user can't afford 2 (they may
+            // have started with just 1), send them to top up instead of charging.
+            if (screenshotsRemaining() < CREDIT_COST_WEEKLY) {
+              if (BETA_MODE) setBetaCreditsOpen(true);
+              else gateToPaywall(`A weekly import uses ${CREDIT_COST_WEEKLY} credits. Top up to continue.`);
+              setScreen("logshift");
+              return;
+            }
+            setConfirm({
+              title: "Catch up the week?",
+              sub: `This looks like a ${platLabel} weekly summary${dayCount ? ` with ${dayCount} day${dayCount === 1 ? "" : "s"} to log` : ""}. We'll set up a task so you can fill in each day. This uses ${CREDIT_COST_WEEKLY} credits.`,
+              confirmLabel: `Yes, catch up (${CREDIT_COST_WEEKLY} credits)`,
+              cancelLabel: "Not now",
+              onConfirm: () => {
+                setConfirm(null);
+                // Charge the 2 credits ONCE, server-side, at accept.
+                incrementScreenshotImportsUsed(CREDIT_COST_WEEKLY).then(newCount => {
+                  if (newCount != null) setScreenshotImportsUsed(newCount);
+                });
+                // Attach the screenshot for the catch-up thumbnail, then open.
+                openCatchup({ ...detection, screenshotUrl: previewUrl || null });
+              },
+              onCancel: () => { setConfirm(null); setScreen("logshift"); },
+            });
+          }}
           onParsed={(finalValues) => {
             // finalValues comes from the editable preview with keys:
             // earned, tips, bonus, dels, mins, activeMin, km, activeKm, platform, shiftDate, notes
@@ -11595,8 +11619,6 @@ export default function GigTrack() {
           onBuyCredits={() => setBetaCreditsOpen(true)}
           onPurchaseHistory={() => setScreen("purchasehistory")}
           onInstallHelp={() => setScreen("installhelp")}
-          onTestCatchupUber={() => openCatchup(MOCK_CATCHUP_UBER)}
-          onTestCatchupDoorDash={() => openCatchup(MOCK_CATCHUP_DOORDASH)}
           screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
