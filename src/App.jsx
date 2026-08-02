@@ -6563,6 +6563,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
         <div style={{padding:"4px 14px 0"}}>
 
           {/* ── EARNINGS ── */}
+          <ManualCard>
           <ManualGroupHeader>Earnings</ManualGroupHeader>
           <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
             <ManualFieldRow
@@ -6586,7 +6587,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
           {(n(totalEarned) > 0 || n(tip) > 0 || n(bonus) > 0) && (
             <div style={{
               marginTop:"6px",padding:"8px 13px",
-              background:"var(--elevated)",
+              background:"var(--bg)",
               borderRadius:"9px",
               fontSize:"11px",color:"var(--muted)",
               display:"flex",justifyContent:"space-between",alignItems:"center",
@@ -6595,8 +6596,10 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
               <strong style={{color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>{fmt$(derivedBase)}</strong>
             </div>
           )}
+          </ManualCard>
 
           {/* ── TIME ── */}
+          <ManualCard>
           <ManualGroupHeader>Time</ManualGroupHeader>
           <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
 
@@ -6703,8 +6706,10 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
               </strong>
             </div>
           )}
+          </ManualCard>
 
           {/* ── DISTANCE ── */}
+          <ManualCard>
           <ManualGroupHeader>Distance</ManualGroupHeader>
 
           {/* Km mode toggle */}
@@ -6771,8 +6776,10 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
               type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
             />
           </div>
+          </ManualCard>
 
           {/* ── SHIFT DETAILS ── */}
+          <ManualCard>
           <ManualGroupHeader>Shift details</ManualGroupHeader>
           <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
             <ManualFieldRow
@@ -6832,6 +6839,8 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
           </div>
 
           {/* ── OTHER ── */}
+          </ManualCard>
+          <ManualCard>
           <ManualGroupHeader>Other</ManualGroupHeader>
           <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
             <ManualFieldRow
@@ -6869,6 +6878,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
             </div>
 
           </div>
+          </ManualCard>
 
         </div>
 {/* ─── END COMPACT FORM ─── */}
@@ -7039,82 +7049,98 @@ function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPre
       </div>
       <div className="scroll-area">
 
-        {/* Captured summary banner */}
-        <div className="import-banner">
-          <div className="import-banner-icon">⏱️</div>
-          <div className="import-banner-text">
-            <div className="import-banner-title">Shift captured</div>
-            {startTime ? `Started ${startTime} · ` : ""}{Math.floor(derivedTotalMin/60)}h {derivedTotalMin%60}m
-            {derivedTotalKm > 0 ? ` · ${derivedTotalKm.toFixed(1)} km` : ""}. Add your earnings to finish.
+        <div style={{padding:"14px 14px 0"}}>
+          {/* Captured automatically — green M1 card */}
+          <div style={{background:"var(--pos-dim, rgba(30,158,104,.08))",border:"1px solid rgba(30,158,104,.25)",borderRadius:"16px",padding:"15px",marginBottom:"14px"}}>
+            <div style={{fontSize:"10px",fontWeight:"800",letterSpacing:".08em",textTransform:"uppercase",color:"var(--pos, #1E9E68)",marginBottom:"11px"}}>Captured automatically</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 0",borderBottom:"1px solid rgba(30,158,104,.15)"}}>
+              <span style={{fontSize:"13px",color:"var(--muted)"}}>Online time</span>
+              <span style={{fontSize:"14px",fontWeight:"800"}}>{Math.floor(derivedTotalMin/60)}h {derivedTotalMin%60}m</span>
+            </div>
+            {startTime && (
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 0",borderBottom:derivedTotalKm>0?"1px solid rgba(30,158,104,.15)":"none"}}>
+                <span style={{fontSize:"13px",color:"var(--muted)"}}>Started</span>
+                <span style={{fontSize:"14px",fontWeight:"800"}}>{startTime}</span>
+              </div>
+            )}
+            {derivedTotalKm > 0 && (
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 0"}}>
+                <span style={{fontSize:"13px",color:"var(--muted)"}}>Distance (GPS)</span>
+                <span style={{fontSize:"14px",fontWeight:"800"}}>{derivedTotalKm.toFixed(1)} km</span>
+              </div>
+            )}
           </div>
-        </div>
-
-        <div style={{padding:"4px 14px 0"}}>
 
           {/* ── EARNINGS ── */}
-          <ManualGroupHeader>Earnings</ManualGroupHeader>
-          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-            <ManualFieldRow
-              status={saveAttempted && !totalEarned.trim() ? "error" : (totalEarned.trim() && !isNaN(parseFloat(totalEarned)) ? "ok" : null)}
-              label="Total earned" sublabel="required"
-              value={totalEarned} onChange={setTotalEarned}
-              type="number" min="0" step="0.01" placeholder="0.00" prefix="$"
-            />
-            <ManualFieldRow
-              label="Tips" sublabel="included in total"
-              value={tip} onChange={setTip}
-              type="number" min="0" step="0.01" placeholder="0.00" prefix="$"
-            />
-            <ManualFieldRow
-              label="Deliveries"
-              value={dels} onChange={setDels}
-              type="number" min="0" step="1" placeholder="0"
-            />
-          </div>
+          <ManualCard>
+            <ManualGroupHeader>Earnings</ManualGroupHeader>
+            <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+              <ManualFieldRow
+                status={saveAttempted && !totalEarned.trim() ? "error" : (totalEarned.trim() && !isNaN(parseFloat(totalEarned)) ? "ok" : null)}
+                label="Total earned" sublabel="required"
+                value={totalEarned} onChange={setTotalEarned}
+                type="number" min="0" step="0.01" placeholder="0.00" prefix="$"
+              />
+              <ManualFieldRow
+                label="Tips" sublabel="included in total"
+                value={tip} onChange={setTip}
+                type="number" min="0" step="0.01" placeholder="0.00" prefix="$"
+              />
+              <ManualFieldRow
+                label="Deliveries"
+                value={dels} onChange={setDels}
+                type="number" min="0" step="1" placeholder="0"
+              />
+            </div>
+          </ManualCard>
 
           {/* ── TIME & DISTANCE (pre-filled, editable) ── */}
-          <ManualGroupHeader>Time & distance</ManualGroupHeader>
-          <div style={{display:"flex",alignItems:"center",gap:"10px",padding:"10px 14px",borderRadius:"10px",border:"0.5px solid var(--border)",background:"var(--surface)"}}>
-            <div style={{minWidth:"95px"}}>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Online time</div>
+          <ManualCard>
+            <ManualGroupHeader>Time & distance</ManualGroupHeader>
+            <div style={{display:"flex",alignItems:"center",gap:"10px",padding:"10px 14px",borderRadius:"10px",border:"0.5px solid var(--border)",background:"var(--surface)"}}>
+              <div style={{minWidth:"95px"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Online time</div>
+              </div>
+              <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"flex-end",gap:"6px"}}>
+                <input
+                  type="number" inputMode="decimal" min="0" max="23"
+                  value={onlineHrs} onChange={(e) => setOnlineHrs(e.target.value)} placeholder="0"
+                  style={{width:"42px",background:"transparent",border:"none",outline:"none",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0}}
+                />
+                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>h</span>
+                <input
+                  type="number" inputMode="decimal" min="0" max="59"
+                  value={onlineMins} onChange={(e) => setOnlineMins(e.target.value)} placeholder="0"
+                  style={{width:"42px",background:"transparent",border:"none",outline:"none",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0}}
+                />
+                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
+              </div>
             </div>
-            <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"flex-end",gap:"6px"}}>
-              <input
-                type="number" inputMode="decimal" min="0" max="23"
-                value={onlineHrs} onChange={(e) => setOnlineHrs(e.target.value)} placeholder="0"
-                style={{width:"42px",background:"transparent",border:"none",outline:"none",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0}}
+            <div style={{marginTop:"6px"}}>
+              <ManualFieldRow
+                label="Total KM" sublabel={initKm ? "from GPS — edit if needed" : null}
+                value={totalKmInput} onChange={setTotalKmInput}
+                type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
               />
-              <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>h</span>
-              <input
-                type="number" inputMode="decimal" min="0" max="59"
-                value={onlineMins} onChange={(e) => setOnlineMins(e.target.value)} placeholder="0"
-                style={{width:"42px",background:"transparent",border:"none",outline:"none",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0}}
-              />
-              <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
             </div>
-          </div>
-          <div style={{marginTop:"6px"}}>
-            <ManualFieldRow
-              label="Total KM" sublabel={initKm ? "from GPS — edit if needed" : null}
-              value={totalKmInput} onChange={setTotalKmInput}
-              type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
-            />
-          </div>
+          </ManualCard>
 
           {/* ── PLATFORM ── */}
-          <ManualGroupHeader>Platform</ManualGroupHeader>
-          <button
-            onClick={() => setPlatformOpen(true)}
-            style={{
-              width:"100%", textAlign:"left", padding:"12px 14px", borderRadius:"10px",
-              border:`0.5px solid ${saveAttempted && !platform ? "var(--red)" : "var(--border)"}`,
-              background:"var(--surface)",
-              color: platform ? "var(--text)" : "var(--muted2)", fontSize:"14px", cursor:"pointer",
-            }}
-          >{platformLabel}</button>
-          {saveAttempted && !platform && (
-            <div style={{fontSize:"11px",color:"var(--red)",fontWeight:"600",marginTop:"5px",paddingLeft:"2px"}}>Please select a platform</div>
-          )}
+          <ManualCard>
+            <ManualGroupHeader>Platform</ManualGroupHeader>
+            <button
+              onClick={() => setPlatformOpen(true)}
+              style={{
+                width:"100%", textAlign:"left", padding:"12px 14px", borderRadius:"10px",
+                border:`0.5px solid ${saveAttempted && !platform ? "var(--red)" : "var(--border)"}`,
+                background:"var(--surface)",
+                color: platform ? "var(--text)" : "var(--muted2)", fontSize:"14px", cursor:"pointer",
+              }}
+            >{platformLabel}</button>
+            {saveAttempted && !platform && (
+              <div style={{fontSize:"11px",color:"var(--red)",fontWeight:"600",marginTop:"5px",paddingLeft:"2px"}}>Please select a platform</div>
+            )}
+          </ManualCard>
 
           {/* ── LIVE PREVIEW ── */}
           {totalEarned.trim() && !isNaN(parseFloat(totalEarned)) && (
