@@ -963,7 +963,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.132";
+const CURRENT_VERSION = "ALPHA 0.14.133";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -10664,6 +10664,14 @@ export default function GigTrack() {
             setWeeklyGoal(800);
             setActiveShift(null);
             setLiveStatus(null);
+            // Reset credit state to the clean default. Cloud is authoritative and
+            // will re-hydrate the new account's real balance — but a first-time
+            // signup routes to onboarding BEFORE that hydration runs, so without
+            // this reset the previous account's balance would show on the new
+            // account until its profile loaded. (Bug: new account showed the old
+            // account's credits.)
+            setScreenshotCredits(FREE_SCREENSHOT_CREDITS);
+            setScreenshotImportsUsed(0);
             reconciledRef.current = false;
           }
           DB.set("gt_last_user_id", newUser.id);
@@ -10741,6 +10749,8 @@ export default function GigTrack() {
           setKmPref("active");
           setWeeklyGoal(800);
           setShowScoring(true);
+          setScreenshotCredits(FREE_SCREENSHOT_CREDITS);
+          setScreenshotImportsUsed(0);
           wipeUserData();
           reconciledRef.current = false;
           setScreen("welcome");
