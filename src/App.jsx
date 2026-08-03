@@ -1,438 +1,15 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, startCreditCheckout, fetchPurchaseHistory, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
-import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
-import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
-import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─────────────────────────────────────────────
 // ATO CONFIGURATION
-//
-// Rates are per FINANCIAL YEAR (1 July – 30 June) and attach to the DATE OF THE
-// SHIFT — a shift driven in June 2026 is deductible at that year's rate even if
-// you view it in 2027. So never apply "the current rate" to historical shifts.
-//
-// TO ADD A NEW YEAR: add one entry to ATO_RATES with the FY start year as the
-// key. Everything else (labels, calcs, reports) derives from this table.
-//
-// Sources:
-//   2026-27: 91c/km — LI 2026/19. NOTE: this is a base rate of 89c PLUS a
-//            temporary one-off 2c uplift for 2026-27 only. Future years index
-//            off the 89c BASE, not 91c — so 2027-28 may be LOWER than 91c.
-//            Do not assume the rate only ever rises.
-//   2025-26: 88c/km (held flat from 2024-25)
-//   2024-25: 88c/km
-//   ato.gov.au → cents per kilometre method
-const ATO_RATES = {
-  2026: 0.91, // FY 2026-27, from 1 July 2026
-  2025: 0.88, // FY 2025-26
-  2024: 0.88, // FY 2024-25
-};
-// Used for anything older than the table (and as a floor for odd dates).
-const ATO_RATE_FALLBACK = 0.88;
-
-// The FY start year for a given date: 1 Jul 2026 → 2026; 30 Jun 2026 → 2025.
-function atoFyStartYear(date) {
-  const d = date ? new Date(date) : new Date();
-  if (isNaN(d.getTime())) return new Date().getFullYear();
-  // Months are 0-indexed: June = 5, July = 6.
-  return d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1;
-}
-
-// The ATO cents-per-km rate that applies to a shift on this date.
-function atoRateForDate(date) {
-  const fy = atoFyStartYear(date);
-  if (ATO_RATES[fy] != null) return ATO_RATES[fy];
-  // Newer than the table (rate not published yet) → use the most recent known.
-  const known = Object.keys(ATO_RATES).map(Number).sort((a, b) => b - a);
-  if (fy > known[0]) return ATO_RATES[known[0]];
-  return ATO_RATE_FALLBACK;
-}
-
-// "2026–27" style label for a given date's financial year.
-function atoFyLabel(date) {
-  const y = atoFyStartYear(date);
-  return `${y}–${String(y + 1).slice(2)}`;
-}
-
-// Current-year conveniences (used for defaults, settings, and the FY view).
-const ATO_RATE_PER_KM = atoRateForDate(new Date());
+// UPDATE THIS RATE EACH NEW FINANCIAL YEAR
+// Current rate: 2025-2026 @ 88c/km
+// Source: ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/deductions-you-can-claim/vehicle-and-travel-expenses/car-expenses
+const ATO_RATE_PER_KM = 0.88;
 const ATO_KM_CAP = 5000;
 const ATO_KM_WARNING = 4500;
-const ATO_FY_LABEL = atoFyLabel(new Date());
+const ATO_FY_LABEL = "2025–26";
 // ─────────────────────────────────────────────
-
-// Live driver card only renders its COUNT TILES when a bucket has at least this
-// many live drivers (the card + go-online button always render). Lower/remove
-// as the network grows.
-const LIVE_DRIVER_MIN = 3;
-
-// ─── LIVE DRIVERS: OFF FOR BETA ───────────────────────────────────────────
-// Live driver counts need people online in the SAME zone at the SAME time.
-// With a nationally-spread beta (~50 testers across every state), that density
-// doesn't exist — nearly every driver would just see "Be the first online here",
-// which broadcasts emptiness instead of making the app feel alive.
-//
-// So the whole feature is hidden for beta: no card, no go-online button, no
-// presence heartbeat, no presence writes to the DB.
-//
-// POST-BETA: flip this back to `true` to restore it in one line. Everything
-// underneath (LiveDriverCard, presence heartbeat, presenceBucket grouping,
-// updatePresence/fetchZonePresence, the presence table) is left intact and
-// working — only the flag gates it. Turn it on once a city has real density;
-// it then becomes a genuine launch moment rather than a permanently dead card.
-const LIVE_DRIVERS_ENABLED = false;
-
-// ─── TIMER GPS: OFF FOR BETA ──────────────────────────────────────────────
-// A PWA can't sample GPS in the background — the moment the driver switches to
-// Maps / Uber / DoorDash (i.e. the entire shift), watchPosition stops firing.
-// The result isn't "slightly low", it's arbitrarily low, and it feeds straight
-// into the ATO deduction. A silently wrong km figure is worse than no figure:
-// the driver has no signal it's wrong and may under-claim on their tax return.
-//
-// So for beta the timer captures TIME ONLY and km is entered manually on the
-// confirm screen (which already has a km field and the 0-km warning).
-//
-// POST-BETA: flip back to `true` once wrapped with Capacitor, where background
-// location actually works. Everything underneath (the watchPosition loop, the
-// Haversine accumulator, the permission banner, the KMs tile) is left intact.
-const TIMER_GPS_ENABLED = false;
-
-// Auto-expire a forgotten online session after this much idle time (no ping).
-// Protects beta live-driver data from drivers who finished work but never tapped
-// "Go offline" — opening the app later won't resurrect a stale session. 3 hours.
-const LIVE_SESSION_MAX_IDLE_MS = 3 * 60 * 60 * 1000;
-
-// ─── Beta zone bucketing for live-driver counts ───────────────────────────
-// During beta the driver pool is tiny, so granular zones (28 in Brisbane) would
-// almost never reach LIVE_DRIVER_MIN. We GROUP granular zones into bigger
-// "buckets" for COUNTING ONLY — the real granular zone taxonomy is untouched
-// (shifts + benchmarks still use the precise zone). Flip BETA_ZONE_BUCKETS off
-// post-beta to count by exact zone again. Fully reversible, no data migration.
-const BETA_ZONE_BUCKETS = true;
-// Minimum shifts a bucket needs (within the 10-day window) before real benchmark
-// numbers replace the sample data. Lowered to 2 for alpha so data shows while
-// testing; raise to ~5 before real beta so early numbers aren't noise.
-const BENCHMARK_MIN_SHIFTS = 2;
-// Rolling window (days) for all benchmark aggregations. 30 gives a steadier read
-// with more shifts per zone; tighten later (e.g. 14) once data volume is high
-// and recency matters more.
-const BENCHMARK_WINDOW_DAYS = 30;
-
-// ── BETA PLAN ──
-// While BETA_MODE is on: every new signup is placed on the "beta" plan (no
-// free/paid choice, no paywalls shown), and ALL premium features are unlocked
-// EXCEPT screenshot import — the one feature with a real per-use cost (Claude
-// vision API). Screenshots run on a credit balance: FREE_SCREENSHOT_CREDITS to
-// start, topped up by one-time purchases. Flip BETA_MODE off at go-live to
-// restore the normal free/pro paywalls.
-const BETA_MODE = true;
-const FREE_SCREENSHOT_CREDITS = 10;
-// Per-action credit costs (credit model §0.6). One shared credit pool; different
-// actions spend at different rates. Charged ONLY on a successful, completed
-// result (a saved shift / a completed bulk insert) — never on a failed attempt.
-const CREDIT_COST_SCREENSHOT = 1;
-const CREDIT_COST_WEEKLY = 2;
-const CREDIT_COST_CSV = 10;
-// One-time top-up packs (credits added to the running balance).
-const SCREENSHOT_PACKS = [
-  { id: "pack20", credits: 20, price: 2.99, label: "20 credits" },
-  { id: "pack50", credits: 50, price: 5.99, label: "50 credits" },
-  { id: "pack100", credits: 100, price: 9.99, label: "100 credits", badge: "Best value" },
-];
-
-// ─── CSV/EXCEL BULK IMPORT — field definitions + fuzzy header matching ─────
-// The GigTrack shift fields a spreadsheet column can map to. `key` is internal,
-// `label` is shown, `required` gates import, `aliases` drive fuzzy matching.
-const CSV_FIELDS = [
-  { key: "date",       label: "Shift date",     group: "Date",     required: true,  aliases: ["date", "shift date", "start date", "day", "shift day", "work date", "trip date"] },
-  { key: "earned",     label: "Total earned",   group: "Earnings", required: true,  aliases: ["earned", "total earned", "total", "earnings", "net fare", "net earnings", "pay", "payout", "income", "amount", "total pay", "gross"] },
-  { key: "tip",        label: "Tips",           group: "Earnings", required: false, aliases: ["tip", "tips", "gratuity", "customer tip"] },
-  { key: "bonus",      label: "Bonuses",        group: "Earnings", required: false, aliases: ["bonus", "bonuses", "promotion", "promotions", "incentive", "quest"] },
-  { key: "totalKm",    label: "Total km",       group: "Distance", required: false, aliases: ["km", "kms", "total km", "distance", "kilometres", "kilometers", "mileage", "total distance"] },
-  { key: "activeKm",   label: "Active km",      group: "Distance", required: false, aliases: ["active km", "delivery km", "active distance", "on trip km"] },
-  { key: "totalMin",   label: "Online time",    group: "Time",     required: true,  aliases: ["online", "online time", "hours", "time", "duration", "shift time", "online hours", "total time", "hrs"] },
-  { key: "activeMins", label: "Active time",    group: "Time",     required: false, aliases: ["active", "active time", "delivery time", "on trip time", "active hours"] },
-  { key: "dels",       label: "Deliveries",     group: "Details",  required: false, aliases: ["deliveries", "dels", "trips", "orders", "jobs", "completed deliveries", "trip count", "delivery count"] },
-  { key: "platform",   label: "Platform",       group: "Details",  required: false, aliases: ["platform", "app", "service", "company", "provider", "source"] },
-  { key: "notes",      label: "Notes",          group: "Details",  required: false, aliases: ["notes", "note", "comment", "comments", "memo"] },
-];
-// Section order for the mapping screen.
-const CSV_GROUPS = ["Date", "Earnings", "Distance", "Time", "Details"];
-
-// Parse a spreadsheet cell into a number: strips $, commas, spaces, units.
-// Returns null if not a number (so callers can distinguish "0" from "blank").
-const csvNum = (v) => {
-  if (v == null) return null;
-  const s = String(v).replace(/[^0-9.\-]/g, "").trim();
-  if (s === "" || s === "-" || s === ".") return null;
-  const n = parseFloat(s);
-  return isNaN(n) ? null : n;
-};
-
-// Parse a time cell into MINUTES. Handles "90", "1h 30m", "1:30", "1.5h", "5h".
-// Parse a time cell into MINUTES. Handles "90", "1h 30m", "1:30", "1.5h", "5h",
-// and — critically — decimal hours like "4.2" (= 4.2 HOURS = 252 min, NOT 4.2
-// minutes). `unitHint` comes from the mapped column's header: "hours"/"hrs" →
-// treat bare numbers as hours; "min" → minutes; otherwise a heuristic (a value
-// with a decimal point, or a small whole number, is hours; a large one is
-// minutes — nobody logs "4.2 minutes", and "90 hours" isn't a shift).
-// Parse a single time column into MINUTES. Per the import model, a single time
-// column is ALWAYS hours (the user picks "separate Hr & Min columns" mode if
-// their data is split). So "4.2" = 4.2 hours = 252 min, "1.5" = 90 min, "8" =
-// 480 min. Explicit in-value units are still honoured ("1h 30m", "1:30", "45m")
-// since those are unambiguous. Column NAME is deliberately ignored.
-const csvTimeToMin = (v) => {
-  if (v == null) return null;
-  const s = String(v).trim().toLowerCase();
-  if (s === "") return null;
-  // "1:30" style (h:mm)
-  const colon = s.match(/^(\d+):(\d{1,2})$/);
-  if (colon) return parseInt(colon[1], 10) * 60 + parseInt(colon[2], 10);
-  // explicit units in the value: "1h 30m" / "5h" / "45m" / "1.5h"
-  const hm = s.match(/(\d+(?:\.\d+)?)\s*h(?:ours?|rs?)?/);
-  const mm = s.match(/(\d+)\s*m(?:in)?/);
-  if (hm || mm) {
-    const h = hm ? parseFloat(hm[1]) : 0;
-    const m = mm ? parseInt(mm[1], 10) : 0;
-    return Math.round(h * 60 + m);
-  }
-  // bare number → HOURS (single-column rule)
-  const n = csvNum(s);
-  if (n == null) return null;
-  return Math.round(n * 60);
-};
-
-// Parse a date cell to a local Date at midnight, timezone-safe. Handles common
-// spreadsheet formats: ISO (2026-07-24), DD/MM/YYYY, D/M/YY, "24 Jul 2026", and
-// Excel serial numbers. Returns null if unparseable. Ambiguous D/M vs M/D is
-// resolved as DAY-FIRST (Australian audience).
-const csvParseDate = (v) => {
-  if (v == null || String(v).trim() === "") return null;
-  const s = String(v).trim();
-  // Excel serial (a plain number, typically > 30000 for modern dates)
-  if (/^\d{4,6}$/.test(s)) {
-    const serial = parseInt(s, 10);
-    if (serial > 20000 && serial < 80000) {
-      // Excel epoch 1899-12-30
-      const d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
-      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    }
-  }
-  // ISO YYYY-MM-DD
-  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return new Date(parseInt(m[1],10), parseInt(m[2],10)-1, parseInt(m[3],10));
-  // DD/MM/YYYY or DD-MM-YYYY (day-first for AU audience). Reject impossible
-  // day/month rather than letting JS Date silently roll over into a wrong date.
-  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
-  if (m) {
-    let [_, d1, mo, yr] = m;
-    let day = parseInt(d1, 10), month = parseInt(mo, 10);
-    let year = parseInt(yr, 10); if (year < 100) year += 2000;
-    // If the first number can't be a day but the second can, it's likely US
-    // M/D order — swap so we still parse it correctly rather than fail.
-    if (day > 31 && month <= 12) return null;
-    if (day > 12 && month > 12) return null; // both impossible as day → give up
-    if (month > 12 && day <= 12) { const t = day; day = month; month = t; }
-    if (day < 1 || day > 31 || month < 1 || month > 12) return null;
-    return new Date(year, month - 1, day);
-  }
-  // "24 Jul 2026" / "Jul 24, 2026" — let Date try, then strip time
-  const parsed = new Date(s);
-  if (!isNaN(parsed.getTime())) return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
-  return null;
-};
-
-// Normalise a per-row platform value to the app's internal ids.
-const csvNormPlatform = (v, fallback = null) => {
-  const s = String(v || "").toLowerCase().replace(/[^a-z]/g, "");
-  if (!s) return fallback;
-  if (s.includes("uber") || s === "ue" || s === "ueats") return "uber_eats";
-  if (s.includes("doordash") || s === "dd" || s.includes("dash")) return "doordash";
-  if (s.includes("both") || s.includes("all")) return "both";
-  return fallback;
-};
-
-// Build a full shift record from a mapped CSV row, or return { error } if the
-// row is missing required fields (date + earnings) or has a bad odometer diff.
-// `deps` supplies { mapping, odoMode, odoCols, filePlatform, region, owner,
-// atoRateForDate, computeTrip }. Produces the SAME shape as manual entry so all
-// derived fields (score, ratios, deduction) are computed identically.
-const buildTripFromCsvRow = (row, deps) => {
-  const { mapping, odoMode, odoCols, timeUnit, splitCols, filePlatform, region, owner, computeTrip: ct, rateForDate, headers } = deps;
-  const cell = (idx) => idx == null ? "" : (row[idx] ?? "");
-
-  // Required: date + earnings
-  const date = csvParseDate(cell(mapping.date));
-  if (!date) return { error: "no_date" };
-  const earned = csvNum(cell(mapping.earned));
-  if (earned == null) return { error: "no_earned" };
-
-  // Earnings split (if tip/bonus columns mapped, base = earned - tip - bonus)
-  const tip = mapping.tip != null ? (csvNum(cell(mapping.tip)) || 0) : 0;
-  const bonus = mapping.bonus != null ? (csvNum(cell(mapping.bonus)) || 0) : 0;
-  const base = Math.max(0, earned - tip - bonus);
-
-  // Distance — odometer mode computes finish - start
-  let totalKm = 0;
-  if (odoMode?.totalKm) {
-    const s = csvNum(cell(odoCols.totalKm.start));
-    const f = csvNum(cell(odoCols.totalKm.finish));
-    if (s == null || f == null) return { error: "odo_incomplete" };
-    const diff = f - s;
-    if (diff < 0) return { error: "odo_negative" };
-    totalKm = diff;
-  } else {
-    totalKm = mapping.totalKm != null ? (csvNum(cell(mapping.totalKm)) || 0) : 0;
-  }
-  let activeKm = null;
-  if (odoMode?.activeKm) {
-    const s = csvNum(cell(odoCols.activeKm.start));
-    const f = csvNum(cell(odoCols.activeKm.finish));
-    if (s != null && f != null && (f - s) >= 0) activeKm = f - s;
-  } else if (mapping.activeKm != null) {
-    activeKm = csvNum(cell(mapping.activeKm));
-  }
-
-  // Time — unit-aware. "split" reads two columns; "minutes" reads the column
-  // as-is; "hours" (default) multiplies by 60. csvTimeToMin still honours any
-  // explicit in-value units like "1h 30m".
-  const splitToMin = (cfg) => {
-    const h = cfg?.hr != null ? (csvNum(cell(cfg.hr)) || 0) : 0;
-    const m = cfg?.min != null ? (csvNum(cell(cfg.min)) || 0) : 0;
-    if (cfg?.hr == null && cfg?.min == null) return null;
-    return Math.round(h * 60 + m);
-  };
-  const timeFromCol = (fieldKey, mapIdx) => {
-    const u = timeUnit?.[fieldKey] || "hours";
-    if (u === "split") return splitToMin(splitCols[fieldKey]);
-    if (mapIdx == null) return null;
-    if (u === "minutes") { const nn = csvNum(cell(mapIdx)); return nn == null ? null : Math.round(nn); }
-    return csvTimeToMin(cell(mapIdx)); // hours
-  };
-  const totalMinRaw = timeFromCol("totalMin", mapping.totalMin);
-  const activeMin = timeFromCol("activeMins", mapping.activeMins);
-  // Online time is REQUIRED. It's the denominator for hourly rate and the basis
-  // for benchmark eligibility — active time is a different (smaller) measure and
-  // can't stand in without inflating the hourly and polluting the shared pool.
-  // A row with no usable online time goes to "needs attention" rather than
-  // importing as 0 min (which read as a broken 0-minute shift and was silently
-  // excluded from benchmarks). The user can add the online time and re-import.
-  if (totalMinRaw == null || totalMinRaw <= 0) {
-    return { error: "no_online" };
-  }
-  const totalMin = totalMinRaw;
-  const dels = mapping.dels != null ? (csvNum(cell(mapping.dels)) || 0) : 0;
-  const platform = mapping.platform != null ? csvNormPlatform(cell(mapping.platform), filePlatform) : filePlatform;
-  const notesVal = mapping.notes != null ? String(cell(mapping.notes)).trim() : "";
-
-  const inputs = { base, tip, bonus, tDel: totalMin, tWait: 0, activeMin: activeMin || null, activeKmInput: activeKm != null && activeKm !== "" ? activeKm : null, kmDel: totalKm, kmWait: 0, dels, expenses: 0 };
-  const c = ct(inputs);
-  const effectiveRate = rateForDate(date);
-  const tsLocalMidnight = new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString();
-
-  return {
-    record: {
-      id: Date.now() + Math.floor(Math.random() * 100000), // unique across a bulk
-      ts: tsLocalMidnight,
-      region: region ?? null,
-      _owner: owner ?? null,
-      activeMins: activeMin || null,
-      activeKm: activeKm != null ? activeKm : null,
-      platform: platform || null,
-      notes: notesVal || null,
-      ...inputs, ...c, deduction: totalKm * effectiveRate,
-      _csvImport: true, // provenance flag
-    }
-  };
-};
-
-// Normalise a header for comparison: lowercase, strip non-alphanumerics.
-const csvNormHeader = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
-// Score similarity between a header and an alias (0..1). Exact match = 1;
-// contains/contained = high; token overlap = partial. Simple + dependency-free.
-const csvScore = (header, alias) => {
-  const h = csvNormHeader(header), a = csvNormHeader(alias);
-  if (!h || !a) return 0;
-  if (h === a) return 1;
-  if (h === a + "s" || a === h + "s") return 0.97; // simple plural
-  if (h.includes(a) || a.includes(h)) return 0.85;
-  const ht = new Set(h.split(" ")), at = a.split(" ");
-  const overlap = at.filter(t => ht.has(t)).length;
-  if (overlap > 0) return 0.5 + 0.3 * (overlap / Math.max(ht.size, at.length));
-  return 0;
-};
-
-// Auto-map headers → fields. Returns { mapping: {fieldKey: headerIndex|null},
-// unmapizedRequired: [fieldKey], confidence: {fieldKey: score} }. A field only
-// auto-maps if its best header scores >= threshold and that header isn't already
-// taken by a higher-scoring field.
-const csvAutoMap = (headers, threshold = 0.6) => {
-  const pairs = [];
-  CSV_FIELDS.forEach(f => {
-    headers.forEach((h, i) => {
-      const best = Math.max(...f.aliases.map(a => csvScore(h, a)));
-      if (best >= threshold) pairs.push({ field: f.key, headerIdx: i, score: best });
-    });
-  });
-  pairs.sort((a, b) => b.score - a.score); // greedily assign best first
-  const mapping = {}; const usedHeaders = new Set(); const confidence = {};
-  CSV_FIELDS.forEach(f => { mapping[f.key] = null; });
-  pairs.forEach(p => {
-    if (mapping[p.field] == null && !usedHeaders.has(p.headerIdx)) {
-      mapping[p.field] = p.headerIdx; usedHeaders.add(p.headerIdx); confidence[p.field] = p.score;
-    }
-  });
-  const unmappedRequired = CSV_FIELDS.filter(f => f.required && mapping[f.key] == null).map(f => f.key);
-  return { mapping, unmappedRequired, confidence };
-};
-
-// Map a granular zone id to its beta bucket (subarea-level, e.g. "qld-bne-n").
-// Rules: default = first 3 id segments. Some cities over-split at 3 segments
-// (Darwin/Hobart) so we collapse those to 2. Canberra's zones are spread
-// across 2- and 3-segment ids, so it's grouped explicitly. 2-segment ids
-// (e.g. "nsw-newcastle") are already their own bucket.
-const BUCKET_COLLAPSE_TO_CITY = new Set(["nt-darwin", "tas-hob", "qld-ipswich"]);
-// Beta-only: merge whole buckets into another for COUNTING purposes (adjacent
-// areas that are sparse on their own). Real zone IDs, labels, benchmarks and
-// dropdown position are untouched — counting only.
-//   - Ipswich/Springfield → Brisbane West (adjacent to outer west Brisbane)
-//   - Gold Coast Far South (Palm Beach/Coolangatta) → Gold Coast South
-//   - Toowoomba + Regional Central + Regional North → one "QLD Regional" bucket
-//     (Sunshine Coast deliberately kept separate — it's its own populated area)
-const BUCKET_MERGE = {
-  "qld-ipswich":         "qld-bne-w",
-  "qld-gc-fs":           "qld-gc-s",
-  "qld-dd-toowoomba":    "qld-regional",
-  "qld-regional-central":"qld-regional",
-  "qld-regional-north":  "qld-regional",
-};
-const presenceBucket = (zoneId) => {
-  if (!zoneId) return zoneId;
-  if (!BETA_ZONE_BUCKETS) return zoneId; // post-beta: exact zone
-  const parts = zoneId.split("-");
-  // Explicit: all ACT/Canberra zones → one bucket.
-  if (parts[0] === "act") return BUCKET_MERGE["act-canberra"] || "act-canberra";
-  let bucket;
-  if (parts.length <= 2) {
-    bucket = zoneId; // already city-level
-  } else {
-    const cityPrefix = parts.slice(0, 2).join("-");      // e.g. "nt-darwin"
-    bucket = BUCKET_COLLAPSE_TO_CITY.has(cityPrefix)
-      ? cityPrefix
-      : parts.slice(0, 3).join("-");                     // subarea-level, e.g. "qld-bne-n"
-  }
-  return BUCKET_MERGE[bucket] || bucket;
-};
-
-// Local YYYY-MM-DD (device timezone). Avoids toISOString().slice(0,10),
-// which returns the UTC date — wrong by a day for AEST mornings (UTC+10).
-const localDateStr = (date = new Date()) => {
-  const pad = n => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`;
-};
 
 // ─────────────────────────────────────────────
 // SCORING TARGETS — defaults
@@ -490,8 +67,8 @@ const REGIONS = [
   { id: "qld-gc-s-broadbeach",       label: "Broadbeach & Mermaid Beach",     state: "QLD", group: "Gold Coast South" },
   { id: "qld-gc-s-burleigh",         label: "Burleigh Heads & Miami",         state: "QLD", group: "Gold Coast South" },
   { id: "qld-gc-s-robina",           label: "Robina & Varsity Lakes",         state: "QLD", group: "Gold Coast South" },
-  // (Palm Beach/Coolangatta — grouped under Gold Coast South)
-  { id: "qld-gc-fs-palmbeach",       label: "Palm Beach & Coolangatta",       state: "QLD", group: "Gold Coast South" },
+  // Gold Coast Far South
+  { id: "qld-gc-fs-palmbeach",       label: "Palm Beach & Coolangatta",       state: "QLD", group: "Gold Coast Far South" },
   // Darling Downs
   { id: "qld-dd-toowoomba",          label: "Toowoomba & Surrounds",          state: "QLD", group: "Darling Downs" },
   // Other QLD (kept for now until rezoned)
@@ -651,54 +228,7 @@ const REGIONS = [
   { id: "nt-alice-springs",          label: "Alice Springs",                   state: "NT" },
 ];
 
-// Beta bucket helpers (depend on REGIONS, so defined after it).
-// During beta the benchmark Local view + Compare picker operate at bucket level
-// (e.g. "Greater Brisbane South") instead of granular suburb, so real data
-// accumulates faster. Reverts automatically when BETA_ZONE_BUCKETS is off.
-//
-// A bucket's display label = the `group` (verbatim) of any region in it.
-const bucketLabelFor = (zoneId) => {
-  if (!zoneId) return null;
-  const bucketId = presenceBucket(zoneId);
-  // Find a region whose own bucket matches this one, and use its group name.
-  const member = REGIONS.find(r => presenceBucket(r.id) === bucketId);
-  return member?.group || REGIONS.find(r => r.id === zoneId)?.label || zoneId;
-};
-// The state a bucket belongs to (from any member region).
-const bucketState = (zoneId) => {
-  const bucketId = presenceBucket(zoneId);
-  const member = REGIONS.find(r => presenceBucket(r.id) === bucketId);
-  return member?.state || REGIONS.find(r => r.id === zoneId)?.state || null;
-};
-// All granular region ids that belong to the same bucket as a given zone/bucket
-// id. Passed to the benchmark RPC so the SQL stays simple.
-const regionsInBucket = (idOrBucket) => {
-  if (!idOrBucket) return [];
-  // idOrBucket may be a granular region id or an already-computed bucket id.
-  const targetBucket = presenceBucket(idOrBucket) === idOrBucket && !REGIONS.find(r => r.id === idOrBucket)
-    ? idOrBucket                       // looks like a bucket id already
-    : presenceBucket(idOrBucket);      // granular id → its bucket
-  return REGIONS.filter(r => presenceBucket(r.id) === targetBucket).map(r => r.id);
-};
-
-// Distinct buckets grouped by state, for the Compare-a-region picker.
-// Each entry: { bucketId, label, state }. One row per bucket (deduped).
-const bucketOptionsByState = () => {
-  const seen = new Map(); // bucketId → {bucketId,label,state}
-  for (const r of REGIONS) {
-    const bucketId = presenceBucket(r.id);
-    if (!seen.has(bucketId)) {
-      seen.set(bucketId, { bucketId, label: r.group || r.label, state: r.state });
-    }
-  }
-  const byState = {};
-  for (const opt of seen.values()) {
-    (byState[opt.state] = byState[opt.state] || []).push(opt);
-  }
-  // Sort labels within each state for a tidy dropdown.
-  for (const st of Object.keys(byState)) byState[st].sort((a, b) => a.label.localeCompare(b.label));
-  return byState;
-};
+// ─── Benchmark base data — seeded realistic values per zone ───────────────
 // Hourly rates reflect typical Uber Eats / DoorDash earnings in each area.
 // Scores reflect zone density, order frequency, and typical driver efficiency.
 // When Firebase connects, replace getRegionBenchmark() with live Firestore aggregates.
@@ -739,7 +269,7 @@ const REGION_BASE = {
   "qld-gc-s-broadbeach":       { hourly: 31.8, perDel: 12.9, score: 102 },
   "qld-gc-s-burleigh":         { hourly: 30.5, perDel: 12.4, score: 98  },
   "qld-gc-s-robina":           { hourly: 29.2, perDel: 11.9, score: 95  },
-  // (Palm Beach/Coolangatta — grouped under Gold Coast South)
+  // Gold Coast Far South
   "qld-gc-fs-palmbeach":       { hourly: 28.7, perDel: 11.7, score: 92  },
   // Darling Downs
   "qld-dd-toowoomba":          { hourly: 25.4, perDel: 10.7, score: 84  },
@@ -918,8 +448,6 @@ const REGION_BASE = {
 // ─────────────────────────────────────────────────────────────────────────────
 const BENCHMARK_MIN_ONLINE_MINS = 60;
 
-// ⚠️ UNUSED — replaced by real benchmarks (fetchZoneBenchmark → get_zone_benchmark
-// DB function). Kept only for reference; nothing calls this anymore. Safe to delete.
 function getRegionBenchmark(regionId) {
   const base = REGION_BASE[regionId];
   if (!base) return null;
@@ -949,179 +477,10 @@ const DB = {
   remove: (key) => localStorage.removeItem(key),
 };
 
-// Wipe ALL GigTrack local data by prefix. Used on user-switch and "delete my
-// data" so no per-user key can survive into another account. Enumerating live
-// keys (rather than a hand-kept list) structurally prevents the "forgot a key"
-// leak class — any gt_* key added in future is wiped automatically. `keep`
-// lists device-level, non-user keys that should persist (e.g. theme). Note:
-// gt_supabase_auth is Supabase's own session token — wiped here too, since a
-// user-switch/delete must not leave the prior session behind.
-const GT_WIPE_KEEP = new Set(["gt_theme"]);
-const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
-  try {
-    const keys = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith("gt_") && !keep.has(k)) keys.push(k);
-    }
-    keys.forEach(k => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
-  } catch { /* localStorage unavailable — nothing to wipe */ }
-};
-
-// ─── APP VERSION & CHANGELOG ───
-// Bump CURRENT_VERSION by +0.01 each release and add a matching CHANGELOG entry.
-// After a PWA update reloads the app, the "What's new" modal shows the entry for
-// CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
-// the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.144";
-const CHANGELOG = [
-  {
-    version: "ALPHA 0.15",
-    date: "3/8/26",
-    items: [
-      { tag: "NEW", text: "Weekly catch-up is here: import a weekly earnings screenshot and GigTrack sets up a task to log each day, right from the Log Shift screen." },
-      { tag: "NEW", text: "Bulk import your past shifts from a spreadsheet (CSV or Excel) — map your columns once and add them all at once." },
-      { tag: "NEW", text: "Faster shift entry: the form now shows just the essentials, with an 'Add detail' button for tips, active time, notes and more." },
-      { tag: "FIXED", text: "The bottom menu bar now sits flush on phones with a home-indicator bar — no more gap or overlap at the bottom of the screen." },
-    ],
-  },
-  {
-    version: "ALPHA 0.14",
-    date: "29/7/26",
-    items: [
-      { tag: "NEW", text: "Weekly catch-up (in progress): turn a weekly earnings summary into per-day shift entries, with a resumable task on your home screen to finish the week over time." },
-    ],
-  },
-  {
-    version: "ALPHA 0.13",
-    date: "29/7/26",
-    items: [
-      { tag: "NEW", text: "You can now add GigTrack to your home screen so it opens like a proper app — find step-by-step instructions for iPhone and Android under Settings." },
-    ],
-  },
-  {
-    version: "ALPHA 0.12",
-    date: "29/7/26",
-    items: [
-      { tag: "FIXED", text: "PDF export now saves as a proper file you can keep or share — it no longer gets stuck open on iPhone when added to your home screen." },
-    ],
-  },
-  {
-    version: "ALPHA 0.11",
-    date: "29/7/26",
-    items: [
-      { tag: "NEW", text: "Buy screenshot credit packs right in the app — pick a pack, pay securely, and your credits are added automatically." },
-      { tag: "NEW", text: "Added a smaller 20-credit pack ($2.49) as a lower-cost option alongside the 50 and 100 packs." },
-      { tag: "NEW", text: "Purchase history — see a record of your past credit purchases anytime under Settings." },
-    ],
-  },
-  {
-    version: "ALPHA 0.10",
-    date: "28/7/26",
-    items: [
-      { tag: "IMPROVED", text: "Benchmarks now only ever show your real numbers or an honest 'not enough data yet' — the 'You', percentile and distribution figures are never placeholders." },
-      { tag: "IMPROVED", text: "The State tab's busiest platform now reflects real drivers across your state, not just your own shifts." },
-      { tag: "IMPROVED", text: "Screenshot import handles connection drops and slow responses gracefully, with a clear retry — and never uses a credit on a failed read." },
-      { tag: "IMPROVED", text: "A friendlier welcome screen, and a safer recovery screen if the app ever hits an unexpected error." },
-      { tag: "FIXED", text: "Removed voice entry (it wasn't reliable) and tidied up leftover time-of-day fields now that shifts are tracked by date." },
-    ],
-  },
-  {
-    version: "ALPHA 0.09",
-    date: "27/7/26",
-    items: [
-      { tag: "IMPROVED", text: "Insights now shows real date ranges (e.g. 'Jul 6–12') instead of 'Week 1', and the 'This FY' view correctly starts from July." },
-      { tag: "IMPROVED", text: "The 'best days to drive' chart is easier to read — the gap between your best and quietest days now stands out clearly." },
-      { tag: "IMPROVED", text: "Benchmarks filter out unusual shifts (very short trips, one-off outliers) so the community numbers stay accurate." },
-    ],
-  },
-  {
-    version: "ALPHA 0.08",
-    date: "27/7/26",
-    items: [
-      { tag: "IMPROVED", text: "Exports are cleaner — CSV and PDF no longer include a time column (shifts are tracked by date now), and the PDF drops the confusing tax-savings estimate. The ATO rate shown always matches the current year." },
-      { tag: "FIXED", text: "Your Beta Plan no longer flips to Free after saving settings or reloading the app." },
-      { tag: "FIXED", text: "Editing a shift no longer removes it from your zone benchmarks." },
-    ],
-  },
-  {
-    version: "ALPHA 0.07",
-    date: "27/7/26",
-    items: [
-      { tag: "NEW FEATURE", text: "Everything's free during the beta — all features are unlocked. The only paid extra is screenshot import credits (10 free, top up with one-time packs) since that's the one feature that costs us to run." },
-      { tag: "NEW", text: "Compare a Region now shows your zone's earnings next to the zone you're scouting, so you can see the difference at a glance." },
-      { tag: "IMPROVED", text: "The National tab now runs on real data too — median $/hr, state rankings and the busiest day all come from actual shifts." },
-      { tag: "IMPROVED", text: "Benchmarks now use a 30-day window and only ever show real numbers or an honest 'not enough data yet' — no more placeholder figures." },
-    ],
-  },
-  {
-    version: "ALPHA 0.06",
-    date: "27/7/26",
-    items: [
-      { tag: "NEW FEATURE", text: "Benchmarks now run on real data — your area's median $/hr, how you rank against other drivers, and the top zones in your state all come from actual shifts logged." },
-      { tag: "NEW", text: "'Best days to drive' shows which days of the week pay best in your area, from real shift data." },
-      { tag: "IMPROVED", text: "Shifts are now tracked by date across the whole app — simpler entry, and no more stray '12:00 am' on your shifts." },
-    ],
-  },
-  {
-    version: "ALPHA 0.05",
-    date: "26/7/26",
-    items: [
-      { tag: "IMPROVED", text: "Benchmarks now look at the last 10 days (up from 7) for a steadier read on your area." },
-    ],
-  },
-  {
-    version: "ALPHA 0.04",
-    date: "26/7/26",
-    items: [
-      { tag: "NEW FEATURE", text: "The home-screen app now checks for updates in the background — you'll see the 'Refresh' prompt without having to reload the page yourself." },
-      { tag: "IMPROVED", text: "Local benchmarks now group nearby suburbs into wider areas (e.g. 'Brisbane South'), so comparisons are more useful while we gather data." },
-      { tag: "IMPROVED", text: "You can now set or change your password anytime from Settings." },
-      { tag: "FIXED", text: "The 'Compare a region' toggle now highlights correctly while you're choosing a region." },
-    ],
-  },
-  {
-    version: "ALPHA 0.03",
-    date: "26/7/26",
-    items: [
-      { tag: "NEW FEATURE", text: "Sign in with an email and password — stays inside the app, so no more bouncing out to your browser (great for the home-screen app)." },
-      { tag: "NEW", text: "Prefer passwordless? You can still get a magic link instead from the sign-in screen." },
-      { tag: "IMPROVED", text: "Fixed a display glitch where '&' sometimes showed as '&amp;'." },
-    ],
-  },
-  {
-    version: "ALPHA 0.02",
-    date: "26/7/26",
-    items: [
-      { tag: "NEW FEATURE", text: "Compare a Region — scout any zone from the Benchmarks page to see its best times to drive, $/hr and peak days before you move or travel there." },
-      { tag: "NEW", text: "Submit your feedback straight from Settings — tell us what's working, report a bug, or suggest an idea." },
-      { tag: "IMPROVED", text: "National benchmarks now compare states & territories, with your state highlighted." },
-      { tag: "IMPROVED", text: "Benchmarks now match your own state, and show shifts logged over the last 7 days." },
-    ],
-  },
-  {
-    version: "ALPHA 0.01",
-    date: "26/7/26",
-    items: [
-      { tag: "NEW", text: "Fresh coral 'Daylight' look across Home, Insights and the new Benchmarks screen." },
-      { tag: "IMPROVED", text: "PDF & CSV exports now live under Tools & Export, with an ATO-ready PDF in the new theme." },
-    ],
-  },
-];
-const currentChangelog = () => CHANGELOG.find(c => c.version === CURRENT_VERSION) || CHANGELOG[0];
-
 // ─── Helpers ───
 const cap = (v, max) => Math.min(v, max);
 const fmt$ = (n) => "$" + (n || 0).toFixed(2);
 const fmtPct = (n) => (n || 0).toFixed(1) + "%";
-// A shift imported without a start time defaults to midnight (00:00). Treat an
-// exact-midnight timestamp as "date only" and omit the noisy "12:00 am".
-const isDateOnly = (d) => d.getHours() === 0 && d.getMinutes() === 0;
-const fmtShiftDateTime = (d, dateOpts) => {
-  const datePart = d.toLocaleDateString("en-AU", dateOpts);
-  if (isDateOnly(d)) return datePart;
-  return `${datePart} · ${d.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}`;
-};
 const scoreColor = (s) => s < 80 ? "var(--red)" : s < 100 ? "var(--amber)" : s < 120 ? "#86efac" : "var(--green)";
 const scoreClass = (s) => s < 80 ? "score-red" : s < 100 ? "score-yellow" : s < 120 ? "score-green" : "score-strong";
 
@@ -1177,87 +536,9 @@ function computeStats(trips, kmPref) {
   const avgScore    = trips.reduce((s, t) => s + t.score, 0) / n;
   const bestScore   = Math.max(...trips.map(t => t.score));
   const deductKm    = totalKm;
-  // Deduction must be worked out PER FINANCIAL YEAR: both the rate and the
-  // 5,000km cap are per-FY. Summing all km and applying one rate would be wrong
-  // for any set of shifts spanning 1 July (and would silently apply this year's
-  // rate to last year's driving).
-  const kmByFy = {};
-  trips.forEach(t => {
-    const fy = atoFyStartYear(t.ts);
-    kmByFy[fy] = (kmByFy[fy] || 0) + (t.totalKm || 0);
-  });
-  const deduction = Object.keys(kmByFy).reduce((sum, fy) => {
-    const rate = ATO_RATES[fy] != null ? ATO_RATES[fy] : atoRateForDate(`${fy}-07-01`);
-    return sum + Math.min(kmByFy[fy], ATO_KM_CAP) * rate;
-  }, 0);
+  const deduction   = Math.min(deductKm, ATO_KM_CAP) * ATO_RATE_PER_KM;
   const daysSet     = new Set(trips.map(t => new Date(t.ts).toDateString()));
   return { n, totalEarned, totalHrs, totalKm, activeKm, totalDels, totalExp, avgScore, bestScore, deductKm, deduction, daysWorked: daysSet.size };
-}
-
-// ─── MERGE TWO SCREENSHOTS (same shift, UE + DoorDash run together) ────────
-// Takes two `parsed`-shaped objects (Edge Function output) and merges into one.
-// Rules (confirmed with Jaden):
-//   earnings/tips/bonuses/deliveries/active_minutes/distance_km/active_km → ADD
-//   online_minutes → take the LONGER (overlapping wall-clock window)
-//   platform → "both"
-//   shift_date/start_time → use the EARLIER of the two (handles cross-midnight)
-// Returns { merged, dateConflict, dates } so the UI can warn if dates differ.
-function mergeParsedScreenshots(a, b) {
-  const n = (v) => (v == null ? null : Number(v));
-  const sum = (x, y) => {
-    const xv = n(x), yv = n(y);
-    if (xv == null && yv == null) return null;
-    return (xv || 0) + (yv || 0);
-  };
-  const longer = (x, y) => {
-    const xv = n(x), yv = n(y);
-    if (xv == null && yv == null) return null;
-    return Math.max(xv || 0, yv || 0);
-  };
-
-  // Determine earlier start (date + time). Build comparable timestamps; missing
-  // time treated as 00:00. If a date is missing, fall back to the other.
-  const toStamp = (date, time) => {
-    if (!date) return null;
-    const [y, mo, d] = String(date).split("-").map(Number);
-    const [hh, mm] = (time || "00:00").split(":").map(Number);
-    return new Date(y, (mo || 1) - 1, d || 1, hh || 0, mm || 0, 0).getTime();
-  };
-  const sa = toStamp(a.shift_date, a.start_time);
-  const sb = toStamp(b.shift_date, b.start_time);
-
-  let earlierDate, earlierTime;
-  if (sa != null && sb != null) {
-    const aEarlier = sa <= sb;
-    earlierDate = aEarlier ? a.shift_date : b.shift_date;
-    earlierTime = aEarlier ? a.start_time : b.start_time;
-  } else {
-    earlierDate = a.shift_date || b.shift_date || null;
-    earlierTime = a.start_time || b.start_time || null;
-  }
-
-  // Date conflict = both have a date AND they differ.
-  const dateConflict = !!a.shift_date && !!b.shift_date && a.shift_date !== b.shift_date;
-
-  const merged = {
-    total_earned:   sum(a.total_earned, b.total_earned),
-    tips:           sum(a.tips, b.tips),
-    bonuses:        sum(a.bonuses, b.bonuses),
-    deliveries:     sum(a.deliveries, b.deliveries),
-    online_minutes: longer(a.online_minutes, b.online_minutes),
-    active_minutes: sum(a.active_minutes, b.active_minutes),
-    distance_km:    sum(a.distance_km, b.distance_km),
-    active_km:      sum(a.active_km, b.active_km),
-    platform:       "both",
-    shift_date:     earlierDate,
-    start_time:     earlierTime,
-  };
-
-  return {
-    merged,
-    dateConflict,
-    dates: { a: a.shift_date || null, b: b.shift_date || null },
-  };
 }
 
 function computeTrip(inputs, targets = DEFAULT_TARGETS) {
@@ -1306,7 +587,7 @@ const SEED_SHIFTS = (() => {
       activeKm,
       platform,
       ...inputs, ...c,
-      deduction: totalKm * atoRateForDate(ts),
+      deduction: totalKm * ATO_RATE_PER_KM,
       __seed: true,
     };
   };
@@ -1425,101 +706,81 @@ const css = `
 
 *{box-sizing:border-box;margin:0;padding:0;}
 :root{
-  --bg:#FBF7F1;
+  --bg:#FAFAFA;
   --surface:#FFFFFF;
-  --elevated:#EDE6DC;
-  --border:#F1EBE1;
-  --border2:rgba(27,26,23,.15);
-  --text:#1B1A17;
-  --muted:#8A8071;
-  --muted2:#A69E92;
-  --green:#F0562E;
-  --green-dim:#FDEDE7;
-  --green-border:rgba(240,86,46,.25);
-  --blue:#4F46E5;
-  --blue-dim:#EAE8FB;
-  --blue-border:rgba(79,70,229,.25);
-  --amber:#F6863A;
-  --amber-dim:rgba(246,134,58,.12);
-  --amber-border:rgba(246,134,58,.28);
+  --elevated:#F4F4F6;
+  --border:rgba(0,0,0,.08);
+  --border2:rgba(0,0,0,.15);
+  --text:#000000;
+  --muted:#6E6E73;
+  --muted2:#98989D;
+  --green:#008F44;
+  --green-dim:rgba(0,143,68,.1);
+  --green-border:rgba(0,143,68,.25);
+  --blue:#0A84FF;
+  --blue-dim:rgba(10,132,255,.1);
+  --blue-border:rgba(10,132,255,.25);
+  --amber:#FF9500;
+  --amber-dim:rgba(255,149,0,.1);
+  --amber-border:rgba(255,149,0,.25);
   --red:#FF453A;
   --red-dim:rgba(255,69,58,.1);
   --red-border:rgba(255,69,58,.25);
-  --purple:#4F46E5;
-  --purple-dim:#EAE8FB;
-  --purple-border:rgba(79,70,229,.25);
-  --grad:linear-gradient(120deg,#F0562E,#F6863A);
+  --purple:#AF52DE;
+  --purple-dim:rgba(175,82,222,.1);
+  --purple-border:rgba(175,82,222,.25);
+  --grad:linear-gradient(90deg,#008F44,#0A84FF);
   --r:14px;--rs:10px;--tr:0.18s cubic-bezier(.4,0,.2,1);
   --surface-grad:#FFFFFF;
-  --elev-grad:#EDE6DC;
-  --green-grad:linear-gradient(120deg, #F0562E 0%, #F6863A 100%);
-  --green-arc-grad:linear-gradient(90deg, #F0562E 0%, #F6863A 100%);
+  --elev-grad:#F4F4F6;
+  --green-grad:linear-gradient(180deg, #00A050 0%, #008F44 100%);
+  --green-arc-grad:linear-gradient(90deg, #008F44 0%, #00A050 100%);
   --hl-top:inset 0 1px 0 rgba(255,255,255,.5);
   --hl-top-strong:inset 0 1px 0 rgba(255,255,255,.8);
-  --shadow-soft:0 8px 20px -16px rgba(0,0,0,.3);
-  --shadow-card:0 8px 20px -16px rgba(0,0,0,.3);
-  --shadow-green:0 14px 28px -14px rgba(240,86,46,.65);
-  --nav-bg:rgba(251,247,241,.82);
+  --shadow-soft:0 1px 2px rgba(0,0,0,.04);
+  --shadow-card:0 1px 2px rgba(0,0,0,.04);
+  --shadow-green:0 4px 14px rgba(0,143,68,.3), inset 0 1px 0 rgba(255,255,255,.2);
+  --nav-bg:rgba(250,250,250,.78);
   --picker-option:#FFFFFF;
-  --picker-option-text:#1B1A17;
-  --coral:#F0562E; --coral-hi:#F6863A;
-  --coral-grad:linear-gradient(120deg,#F0562E,#F6863A);
-  --indigo:#4F46E5; --indigo-dim:#EAE8FB;
-  --pos:#1E9E68; --pos-dim:#E7F4EC;
-  --hero-bg:#1B1A17; --hero-ink:#F7F2EA; --hero-muted:#C9C1B4;
-  --hairline:#F1EBE1; --chip:#EDE6DC;
-  --on-coral:#FFFFFF;
-  --coral-press:#D8441F;
-  --coral-border:rgba(240,86,46,.25);
-  --coral-dim:#FDEDE7;
+  --picker-option-text:#000000;
 }
 [data-theme="dark"]{
-  --bg:#1B1815;
-  --surface:#251F1B;
-  --elevated:#2E2721;
+  --bg:#0B0F14;
+  --surface:#161B22;
+  --elevated:#1F242D;
   --border:rgba(255,255,255,.08);
   --border2:rgba(255,255,255,.16);
-  --text:#F7F2EA;
-  --muted:#A69E92;
-  --muted2:#8A8071;
-  --green:#F0562E;
-  --green-dim:rgba(240,86,46,.16);
-  --green-border:rgba(240,86,46,.32);
-  --blue:#9089F2;
-  --blue-dim:rgba(124,116,240,.18);
-  --blue-border:rgba(124,116,240,.34);
-  --amber:#F6863A;
-  --amber-dim:rgba(246,134,58,.16);
-  --amber-border:rgba(246,134,58,.34);
+  --text:#FFFFFF;
+  --muted:#9BA3AF;
+  --muted2:#6B7280;
+  --green:#22C55E;
+  --green-dim:rgba(34,197,94,.14);
+  --green-border:rgba(34,197,94,.32);
+  --blue:#3B82F6;
+  --blue-dim:rgba(59,130,246,.14);
+  --blue-border:rgba(59,130,246,.32);
+  --amber:#F59E0B;
+  --amber-dim:rgba(245,158,11,.14);
+  --amber-border:rgba(245,158,11,.32);
   --red:#EF4444;
   --red-dim:rgba(239,68,68,.14);
   --red-border:rgba(239,68,68,.32);
-  --purple:#9089F2;
-  --purple-dim:rgba(124,116,240,.18);
-  --purple-border:rgba(124,116,240,.34);
-  --grad:linear-gradient(120deg,#F0562E,#F6863A);
-  --surface-grad:#251F1B;
-  --elev-grad:#2E2721;
-  --green-grad:linear-gradient(120deg, #F0562E 0%, #F6863A 100%);
-  --green-arc-grad:linear-gradient(90deg, #F0562E 0%, #F6863A 100%);
+  --purple:#A855F7;
+  --purple-dim:rgba(168,85,247,.14);
+  --purple-border:rgba(168,85,247,.32);
+  --grad:linear-gradient(90deg,#22C55E,#3B82F6);
+  --surface-grad:#161B22;
+  --elev-grad:#1F242D;
+  --green-grad:linear-gradient(180deg, #2DD46E 0%, #22C55E 100%);
+  --green-arc-grad:linear-gradient(90deg, #22C55E 0%, #4ADE80 100%);
   --hl-top:inset 0 1px 0 rgba(255,255,255,.04);
   --hl-top-strong:inset 0 1px 0 rgba(255,255,255,.08);
   --shadow-soft:0 1px 3px rgba(0,0,0,.4);
   --shadow-card:0 1px 2px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.04);
-  --shadow-green:0 14px 28px -14px rgba(240,86,46,.55);
-  --nav-bg:rgba(16,14,12,.82);
-  --picker-option:#2E2721;
-  --picker-option-text:#F7F2EA;
-  --coral:#F0562E; --coral-hi:#F6863A;
-  --coral-grad:linear-gradient(120deg,#F0562E,#F6863A);
-  --indigo:#9089F2; --indigo-dim:rgba(124,116,240,.18);
-  --pos:#3DB47F; --pos-dim:rgba(30,158,104,.18);
-  --hero-bg:#100E0C; --hero-ink:#F7F2EA; --hero-muted:#8A8071;
-  --hairline:rgba(255,255,255,.08); --chip:#2E2721;
-  --on-coral:#FFFFFF;
-  --coral-press:#D8441F;
-  --coral-border:rgba(240,86,46,.25);
-  --coral-dim:rgba(240,86,46,.16);
+  --shadow-green:0 4px 14px rgba(34,197,94,.3), inset 0 1px 0 rgba(255,255,255,.15);
+  --nav-bg:rgba(11,15,20,.78);
+  --picker-option:#1F242D;
+  --picker-option-text:#FFFFFF;
 }
 html,body,#root{background:var(--bg) !important;color:var(--text) !important;transition:background .3s ease, color .3s ease;}
 body{font-family:'Inter',system-ui,sans-serif;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;letter-spacing:-.005em;}
@@ -1548,21 +809,21 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .topbar-back{width:34px;height:34px;border-radius:var(--rs);background:var(--elevated);border:0.5px solid var(--border);color:var(--muted);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all var(--tr);flex-shrink:0;}
 .topbar-back:hover{border-color:var(--green);color:var(--green);}
 .topbar-title{font-size:18px;font-weight:600;color:var(--text);}
-.scroll-area{flex:1;overflow-y:auto;padding-bottom:calc(88px + env(safe-area-inset-bottom));background:var(--bg);}
+.scroll-area{flex:1;overflow-y:auto;padding-bottom:80px;background:var(--bg);}
 
 /* Buttons */
 .btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 22px;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:all var(--tr);}
-.btn-primary{background:var(--green-grad);color:var(--on-coral);box-shadow:var(--shadow-green);}
-.btn-primary:hover{background:var(--coral-press);}
+.btn-primary{background:var(--green-grad);color:#0B0F14;box-shadow:var(--shadow-green);}
+.btn-primary:hover{background:#16a34a;}
 .btn-outline{background:transparent;color:var(--text);border:0.5px solid var(--border2);}
 .btn-outline:hover{border-color:var(--green);color:var(--green);}
 .btn-danger{background:transparent;color:var(--red);border:0.5px solid var(--red-border);}
 .btn-danger:hover{background:var(--red-dim);}
 .btn-edit-style{background:transparent;color:var(--blue);border:0.5px solid var(--blue-border);}
 .btn-edit-style:hover{background:var(--blue-dim);}
-.btn-save{width:100%;padding:16px;background:var(--green-grad);color:var(--on-coral);border:none;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);box-shadow:var(--shadow-green);}
-.btn-save:hover{background:var(--coral-press);}
-.save-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px max(20px, calc(12px + env(safe-area-inset-bottom)));background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
+.btn-save{width:100%;padding:16px;background:var(--green-grad);color:#0B0F14;border:none;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);box-shadow:var(--shadow-green);}
+.btn-save:hover{background:#16a34a;}
+.save-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px 20px;background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
 .val-msg{font-size:12px;color:var(--red);padding:10px 14px;background:var(--red-dim);border:0.5px solid var(--red-border);border-radius:var(--rs);margin-bottom:10px;display:none;}
 .val-msg.show{display:block;}
 
@@ -1570,7 +831,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .gt-logo-wrap{display:flex;align-items:center;gap:9px;}
 .gt-wordmark{font-size:18px;font-weight:700;letter-spacing:-.01em;line-height:1;}
 .gt-wordmark-gig{color:var(--text);}
-.gt-wordmark-track{color:var(--coral);}
+.gt-wordmark-track{color:#22C55E;}
 .gt-logo-sm .gt-wordmark{font-size:14px;}
 
 /* Setup */
@@ -1635,10 +896,10 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .home-cards-2col{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .home-actions{padding:0 12px 16px;display:flex;flex-direction:column;gap:8px;}
 .home-btn-log{background:var(--green-grad);border-radius:12px;padding:16px 18px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:all var(--tr);box-shadow:var(--shadow-green);}
-.home-btn-log:hover{background:var(--coral-press);}
-.home-btn-log-title{font-size:15px;font-weight:700;color:var(--on-coral);}
-.home-btn-log-sub{font-size:11px;color:rgba(255,255,255,.72);margin-top:2px;}
-.home-btn-log-icon{font-size:22px;color:rgba(255,255,255,.55);}
+.home-btn-log:hover{background:#16a34a;}
+.home-btn-log-title{font-size:15px;font-weight:700;color:#0B0F14;}
+.home-btn-log-sub{font-size:11px;color:rgba(11,15,20,.55);margin-top:2px;}
+.home-btn-log-icon{font-size:22px;color:rgba(11,15,20,.4);}
 .home-sec-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .home-btn-sec{background:var(--elevated);border:0.5px solid var(--border);border-radius:10px;padding:13px;font-size:12px;font-weight:600;color:var(--muted);text-align:center;cursor:pointer;transition:all var(--tr);}
 .home-btn-sec:hover{border-color:var(--green);color:var(--green);}
@@ -1741,6 +1002,11 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .empty-title{font-size:16px;font-weight:700;margin-bottom:6px;color:var(--text);}
 .empty-sub{font-size:12px;line-height:1.6;}
 
+/* Fuel modal */
+.fuel-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:300;display:flex;align-items:flex-end;justify-content:center;}
+.fuel-modal{background:var(--surface);border:0.5px solid var(--border);border-radius:16px 16px 0 0;padding:24px 18px 36px;width:100%;max-width:480px;}
+.fuel-modal-title{font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px;}
+.fuel-modal-sub{font-size:12px;color:var(--muted);margin-bottom:20px;line-height:1.5;}
 
 /* Trend card */
 .trend-card{background:var(--surface);border:0.5px solid var(--border);border-radius:12px;padding:16px;margin-bottom:8px;}
@@ -1765,10 +1031,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .benchmark-week{font-size:10px;color:var(--muted2);}
 .benchmark-live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 2s infinite;flex-shrink:0;margin-top:5px;}
 .benchmark-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px;}
-.benchmark-stats.two{grid-template-columns:repeat(2,1fr);}
-.benchmark-group-label{font-size:9px;color:var(--muted2);letter-spacing:.08em;text-transform:uppercase;font-weight:700;margin:0 0 6px 2px;}
 .benchmark-stat{background:var(--elevated);border:0.5px solid var(--border);border-radius:var(--rs);padding:10px 8px;text-align:center;}
-.benchmark-stat.muted .benchmark-stat-value{color:var(--muted);font-weight:600;}
 .benchmark-stat-label{font-size:9px;color:var(--muted2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px;font-weight:500;}
 .benchmark-stat-value{font-size:15px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;}
 .benchmark-footer{font-size:10px;color:var(--muted2);text-align:center;line-height:1.5;}
@@ -1822,10 +1085,10 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .detail-header{padding:16px 16px 0;background:var(--bg);}
 .detail-date{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:600;}
 .detail-app-name{font-size:28px;font-weight:800;margin-top:3px;color:var(--text);letter-spacing:-.025em;}
-.detail-section{margin:14px 14px 0;background:var(--elevated);border:1px solid var(--border);border-radius:16px;padding:15px;}
-.detail-section-title{font-size:10px;color:var(--coral);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px;font-weight:800;}
+.detail-section{margin:14px 14px 0;}
+.detail-section-title{font-size:11px;color:var(--muted2);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;font-weight:700;}
 .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.detail-item{background:transparent;border-radius:0;padding:0;box-shadow:none;}
+.detail-item{background:var(--surface);border-radius:14px;padding:13px;box-shadow:var(--shadow-card);}
 .detail-item.wide{grid-column:1/-1;}
 .detail-item-label{font-size:10px;color:var(--muted2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;font-weight:500;}
 .detail-item-value{font-size:17px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;font-family:'Geist Mono',monospace;letter-spacing:-.01em;}
@@ -1851,9 +1114,9 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .order-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;display:flex;align-items:flex-end;justify-content:center;backdrop-filter:blur(4px);}
 .order-modal{background:var(--surface);border-radius:18px 18px 0 0;padding:24px 18px 36px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 32px rgba(0,0,0,.15);}
 .order-modal-title{font-size:19px;font-weight:800;color:var(--text);margin-bottom:16px;letter-spacing:-.02em;}
-.finish-shift-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px max(20px, calc(12px + env(safe-area-inset-bottom)));background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
-.finish-shift-btn{width:100%;padding:16px;background:var(--green);color:var(--on-coral);border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);}
-.finish-shift-btn:hover{background:var(--coral-press);}
+.finish-shift-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px 20px;background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
+.finish-shift-btn{width:100%;padding:16px;background:var(--green);color:#0B0F14;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);}
+.finish-shift-btn:hover{background:#16a34a;}
 .finish-shift-btn:disabled{background:var(--elevated);color:var(--muted2);cursor:not-allowed;}
 
 /* Import / Export buttons */
@@ -1872,6 +1135,21 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .km-toggle-btn{padding:10px 8px;border-radius:var(--rs);background:var(--elevated);border:1.5px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;transition:all var(--tr);text-align:center;}
 .km-toggle-btn.active{border-color:var(--blue);color:var(--blue);background:var(--blue-dim);}
 
+/* Fuel card */
+.fuel-card{background:var(--amber-dim);border:0.5px solid var(--amber-border);border-radius:var(--rs);padding:14px 16px;margin-top:10px;}
+.fuel-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.fuel-card-title{font-size:10px;color:var(--amber);letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
+.fuel-card-icon{font-size:18px;opacity:.8;}
+.fuel-card-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;}
+.fuel-card-label{font-size:11px;color:var(--muted);}
+.fuel-card-value{font-size:15px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;}
+.fuel-card-net{display:flex;justify-content:space-between;align-items:center;border-top:0.5px solid var(--amber-border);margin-top:8px;padding-top:10px;}
+.fuel-card-net-label{font-size:13px;font-weight:700;color:var(--amber);}
+.fuel-card-net-value{font-size:24px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums;}
+.fuel-prompt{background:var(--elevated);border:0.5px solid var(--border);border-radius:var(--rs);padding:12px 14px;margin-top:10px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:border-color var(--tr);}
+.fuel-prompt:hover{border-color:var(--amber);}
+.fuel-prompt-text{font-size:11px;color:var(--muted);line-height:1.5;}
+.fuel-prompt-text strong{color:var(--amber);display:block;font-size:12px;font-weight:700;margin-bottom:2px;}
 
 /* Active Shift Screen */
 .active-shift-screen{display:flex;flex-direction:column;height:100vh;background:var(--bg);overflow:hidden;}
@@ -1891,8 +1169,8 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .shift-ctrl-btn{padding:13px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;transition:all var(--tr);text-align:center;}
 .shift-ctrl-btn.pause{background:var(--amber-dim);color:var(--amber);border:0.5px solid var(--amber-border);}
 .shift-ctrl-btn.resume{background:var(--green-dim);color:var(--green);border:0.5px solid var(--green-border);}
-.shift-ctrl-btn.end{background:var(--green);color:var(--on-coral);}
-.shift-ctrl-btn.end:hover{background:var(--coral-press);}
+.shift-ctrl-btn.end{background:var(--green);color:#0B0F14;}
+.shift-ctrl-btn.end:hover{background:#16a34a;}
 
 /* Confirm dialog */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:300;display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s ease;}
@@ -1904,7 +1182,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .confirm-btns{display:flex;flex-direction:column;gap:8px;}
 
 /* Toast */
-.toast{position:fixed;bottom:calc(96px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%) translateY(16px);background:var(--surface);border:0.5px solid var(--green-border);color:var(--text);padding:11px 22px;border-radius:30px;font-size:13px;font-weight:600;z-index:400;opacity:0;pointer-events:none;transition:all .28s ease;white-space:nowrap;box-shadow:0 4px 24px rgba(0,0,0,.4);}
+.toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(16px);background:var(--surface);border:0.5px solid var(--green-border);color:var(--text);padding:11px 22px;border-radius:30px;font-size:13px;font-weight:600;z-index:400;opacity:0;pointer-events:none;transition:all .28s ease;white-space:nowrap;box-shadow:0 4px 24px rgba(0,0,0,.4);}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 
 /* Timer card */
@@ -1917,7 +1195,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .timer-btns{display:flex;gap:8px;}
 .timer-btn{flex:1;padding:12px 8px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;border:none;transition:all var(--tr);}
 .timer-btn-pause{background:var(--amber-dim);color:var(--amber);border:0.5px solid var(--amber-border);}
-.timer-btn-end{background:var(--green);color:var(--on-coral);}
+.timer-btn-end{background:var(--green);color:#0B0F14;}
 .timer-btn-start{background:var(--green-dim);color:var(--green);border:0.5px solid var(--green-border);}
 
 /* Settings */
@@ -1951,9 +1229,9 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 /* Paywall */
 .paywall-billing-toggle{display:flex;background:var(--elevated);border:0.5px solid var(--border);border-radius:10px;padding:4px;margin-bottom:20px;gap:4px;}
 .paywall-billing-btn{flex:1;padding:10px;border-radius:var(--rs);border:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:13px;font-weight:600;transition:all .2s ease;position:relative;}
-.paywall-billing-btn.active{background:var(--green);color:var(--on-coral);}
+.paywall-billing-btn.active{background:var(--green);color:#0B0F14;}
 .paywall-billing-btn.inactive{background:transparent;color:var(--muted);}
-.paywall-save-badge{position:absolute;top:-8px;right:6px;font-size:8px;background:var(--amber);color:var(--on-coral);padding:2px 5px;border-radius:6px;font-weight:800;letter-spacing:.04em;}
+.paywall-save-badge{position:absolute;top:-8px;right:6px;font-size:8px;background:var(--amber);color:#0B0F14;padding:2px 5px;border-radius:6px;font-weight:800;letter-spacing:.04em;}
 .paywall-price-card{text-align:center;padding:22px;background:var(--green-dim);border:1.5px solid var(--green-border);border-radius:14px;margin-bottom:20px;}
 .paywall-amount{font-size:48px;font-weight:700;color:var(--text);line-height:1;font-variant-numeric:tabular-nums;}
 .paywall-trial-badge{font-size:11px;font-weight:700;color:var(--blue);letter-spacing:.08em;text-transform:uppercase;margin-top:10px;}
@@ -1962,18 +1240,12 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .bottom-nav{
   position:fixed;bottom:0;left:0;right:0;
   height:76px;
-  /* Extend the nav's own height into the home-indicator safe area so it fills to
-     the physical screen edge (viewport-fit=cover means content runs edge-to-edge).
-     Without this the nav pins to bottom:0 but the OS home indicator leaves a gap
-     below it / overlaps the labels. max() keeps the original 8px on devices with
-     no inset. box-sizing:content-box so the inset ADDS to the 76px, not eats it. */
-  box-sizing:content-box;
   background:var(--nav-bg);
   -webkit-backdrop-filter:saturate(180%) blur(20px);
   backdrop-filter:saturate(180%) blur(20px);
   border-top:0.5px solid var(--border);
   display:flex;align-items:stretch;z-index:200;
-  padding-bottom:max(8px, env(safe-area-inset-bottom));
+  padding-bottom:8px;
 }
 .bottom-nav-item{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1994,7 +1266,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 }
 .bottom-nav-center-icon{
   width:46px;height:46px;
-  background:var(--coral-grad);
+  background:linear-gradient(180deg,#00A050 0%,#008F44 100%);
   border-radius:14px;
   display:flex;align-items:center;justify-content:center;
   margin-top:-20px;
@@ -2022,7 +1294,7 @@ function BottomNav({ active, onHome, onLogShift, onLog, onInsights, onSettings }
     </svg>
   );
   const IconLogShift = () => (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--on-coral)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0B0F14" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="9" />
       <path d="M8.5 12.5l2.5 2.5 4.5-5" />
     </svg>
@@ -2053,7 +1325,7 @@ function BottomNav({ active, onHome, onLogShift, onLog, onInsights, onSettings }
     </svg>
   );
 
-  const activeColor   = "var(--coral)";
+  const activeColor   = "#22C55E";
   const inactiveColor = "#6B7888";
 
   return (
@@ -2087,32 +1359,20 @@ function BottomNav({ active, onHome, onLogShift, onLog, onInsights, onSettings }
 const GT_LOGO_SRC = "data:image/png;base64,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pITjuABssQ6wcV0s5dSOlHLhRI3vLba4F97uODo7cuSg9u4JhioqBnGGaRUT1VKNFAufRxHBsuV0R7pGrm5BBERYLTQ1NRljDDU3NztKqYW//vWvLzvk0EO3u/yXv/jZQw899BVb69T2668qKitca61dU0OLiolXqcV45efpfJb29kq1pj5Lfp1KHMumUAQDgXFdF0opY42lhFPxJgC0tbXJxS2IgAirZ01LJpOutZb8tN+5l152WfMB++8/6fJfXn7hQw899NHSJUud/v37q4qKCgPAeFrCJavEe7LAFpttEuXWKXwf4a6leFZC0YU94v2Wem+lmijGnS5JRLDWsiIy1RWVVmtd+cgjjyy869//fpSZye/YLAjdRtq5C90SEgDEM2YodcwxX1xyySWXAZh+6qmnnrb33nt/Y8qUKdttttlmAICOjg7jui6R788J6irCYiLFFs1SKcBh8YO4bVfCXtN7zp5N8OOC9xenCLDYey/mnspPDPB/uLKy0lZVVWkw9Esvvoi2WbMe/uct/zzv1VdffbulpUUhr+OAIIiACKtVSKipyQCg5uZmfckllyy5+eabr7z55pt/t++++x5++OGHHzNp60mHTt5mckX//v2RyWSsMYatMYqUolKLeljFencslGIL9io/QMbmhISKiGNcQSsmhoxcyrFJJBJcUVHhpNNp/cQTTyx+4okn7rntttv+8NJLLz0deB7E+hBEQIQ+ZZE0NzfrSy+91H344Ydve/jhh2+rra2d8P3vfveYSZMmnzxlypRx48aNAxQhlUqZTCbjGySemBQLMherc4hbf1K4iw+d1Z6/ppOXymutxZIlS3p2gLgzoTeOpdTlWOTJT2hrewKYLTs6YSorKrRSSn/xxRd47rnnPnruuef+dMkll/wJwCf+46mlpUVcV4IIiNB3haSxsVHNmDEDRPTWz3/xi58B+E3jEUc07L7nnt+YNGnyflttvfXAoUOHgplhrHGz2Sy5rqu01hQmCMXqPspxbRWLk+QshV4sJCz0EJVTs5K7fxCPyXusZYY1hrXWtipRAe042hjjvPrqq5gzZ86DDz300F1//etf/wVgsf8auqWlhYnIorc6RQqCCIiwKoQkaBvf3NysttpqKzr22GPbW++8877WO++8D8AGp59y+sHbbDvpuMmTJu+29TaTE0OGDIG1Ful02riuC2tt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";
 
 function GTLogo({ size = 32 }) {
-  // Daylight brand mark: coral rounded-square tile + white upward
-  // zig-zag "earnings line" polyline. Radius scales with size (~size/2.9).
-  const r = Math.round(size / 2.9);
-  const sw = Math.max(2, size * 0.085);
   return (
-    <div
-      aria-label="GigTrack"
+    <img
+      src={GT_LOGO_SRC}
+      width={size}
+      height={size}
+      alt="GigTrack"
       style={{
         width: size,
         height: size,
-        borderRadius: r,
-        background: "var(--coral-grad)",
-        boxShadow: "var(--shadow-green)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
+        objectFit: "contain",
+        display: "block",
         flexShrink: 0,
       }}
-    >
-      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 24 24" fill="none"
-        stroke="#fff" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
-        {/* rising earnings line: low-left → dip → high-right, with an arrow tip */}
-        <path d="M4 16l4-4 3 3 5-7" />
-        <path d="M13 8h4v4" />
-      </svg>
-    </div>
+    />
   );
 }
 
@@ -2135,17 +1395,15 @@ function GTBrand({ size = 30, fontSize = 18 }) {
   );
 }
 
-function ConfirmDialog({ show, title, sub, onConfirm, onCancel, confirmLabel, cancelLabel }) {
-  const confirmText = confirmLabel || (title.includes("Delete") ? "🗑 Yes, Delete" : "Confirm");
-  const cancelText = cancelLabel || "Cancel";
+function ConfirmDialog({ show, title, sub, onConfirm, onCancel }) {
   return (
     <div className={`overlay${show ? " show" : ""}`} onClick={(e) => e.target.className.includes("overlay") && onCancel()}>
       <div className="confirm-box">
         <div className="confirm-title">{title}</div>
         <div className="confirm-sub">{sub}</div>
         <div className="confirm-btns">
-          <button className="btn btn-danger" style={{width:"100%",padding:"16px"}} onClick={onConfirm}>{confirmText}</button>
-          <button className="btn btn-outline" style={{width:"100%",padding:"16px"}} onClick={onCancel}>{cancelText}</button>
+          <button className="btn btn-danger" style={{width:"100%",padding:"16px"}} onClick={onConfirm}>{title.includes("Delete") ? "🗑 Yes, Delete" : "Confirm"}</button>
+          <button className="btn btn-outline" style={{width:"100%",padding:"16px"}} onClick={onCancel}>Cancel</button>
         </div>
       </div>
     </div>
@@ -2168,20 +1426,19 @@ function RatioBar({ ratio, label }) {
 // ─── SETUP FLOW ───
 // ─── PREMIUM FEATURES DEFINITION ─────────────────
 const PREMIUM_FEATURES = [
-  { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. You get 10 free imports, then top up any time with one-time credit packs — no subscription." },
-  { icon:"📍", title:"Local Benchmarks & Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
-  { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
-  { icon:"📊", title:"PDF & CSV Export",     desc:"Export an ATO-ready PDF report of your shifts, or raw CSV data perfect for sending to your accountant. Both are Pro." },
-  { icon:"⚡", title:"Custom Scoring Targets",          desc:"Dial in your own hourly rate, $/delivery, and active time targets so your shift score reflects your personal benchmarks." },
+  { icon:"📍", title:"Local Benchmarks",          desc:"See how you stack up against real GigTrack drivers in your region — weekly averages for hourly rate, $ per delivery, and shift score." },
+  { icon:"🧾", title:"ATO PDF Export",             desc:"One-tap export of your full shift log as a print-ready ATO tax report. Includes deductions, totals, and every shift detail." },
+  { icon:"🎯", title:"Weekly Earnings Goal",       desc:"Set a weekly earnings target and track your progress live on the home screen with a visual goal bar." },
+  { icon:"⚡", title:"Custom Scoring Targets",     desc:"Dial in your own hourly rate, $/delivery, and active time targets so your shift score reflects your personal benchmarks." },
 ];
 
 // ─── PREMIUM PAYWALL SCREEN ────────────────────────
 // Used both during onboarding and from Settings → Go Premium
 function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
   const [billing, setBilling] = useState("monthly"); // "monthly" | "annual"
-  const monthlyPrice = 7.99;
-  const annualTotal  = 69.99;
-  const annualPrice  = annualTotal / 12; // ≈ $5.83/mo
+  const monthlyPrice = 4.99;
+  const annualTotal  = 44.99;
+  const annualPrice  = annualTotal / 12; // ≈ $3.75/mo
   const saving = Math.round((1 - annualPrice / monthlyPrice) * 100);
 
   return (
@@ -2215,7 +1472,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
               onClick={() => setBilling(k)}
               style={{flex:1,padding:"11px",borderRadius:"9px",border:"none",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",transition:"all .2s ease",
                 background: billing===k ? "var(--green)" : "transparent",
-                color: billing===k ? "var(--on-coral)" : "var(--muted2)",
+                color: billing===k ? "#0B0F14" : "var(--muted2)",
                 position:"relative",
                 letterSpacing:".01em",
               }}
@@ -2225,8 +1482,8 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
                 <span style={{
                   position:"absolute",top:"-8px",right:"6px",
                   fontFamily:"'Inter',sans-serif",fontSize:"9px",
-                  background: billing==="annual" ? "var(--hero-bg)" : "var(--green)",
-                  color: billing==="annual" ? "var(--green)" : "var(--on-coral)",
+                  background: billing==="annual" ? "#0B0F14" : "var(--green)",
+                  color: billing==="annual" ? "var(--green)" : "#0B0F14",
                   padding:"2px 7px",borderRadius:"6px",
                   fontWeight:"800",letterSpacing:".04em",
                 }}>SAVE {saving}%</span>
@@ -2243,6 +1500,14 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
           borderRadius:"16px",
           position:"relative",
         }}>
+          <div style={{
+            position:"absolute",top:"-9px",left:"50%",transform:"translateX(-50%)",
+            fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",
+            letterSpacing:".08em",textTransform:"uppercase",
+            background:"var(--green)",color:"#0B0F14",
+            padding:"3px 10px",borderRadius:"6px",
+          }}>7-day free trial</div>
+
           <div style={{fontFamily:"'Inter',sans-serif",fontSize:"42px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.03em",lineHeight:"1",fontVariantNumeric:"tabular-nums",marginTop:"6px"}}>
             ${billing==="annual" ? annualPrice.toFixed(2) : monthlyPrice.toFixed(2)}
             <span style={{fontSize:"16px",color:"var(--muted)",fontWeight:"500"}}>/mo</span>
@@ -2290,7 +1555,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
               borderRadius:"12px",
             }}>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",color:"var(--muted)",marginBottom:"10px",letterSpacing:".01em"}}>Plus everything in Free:</div>
-              {["Shift timer & manual logging","KM tracking & ATO deduction calc","Shift scoring","Lifetime stats & charts"].map(f => (
+              {["Shift timer & manual logging","KM tracking & ATO deduction calc","Shift scoring","Fuel cost estimator","Lifetime stats & charts"].map(f => (
                 <div key={f} style={{display:"flex",alignItems:"center",gap:"9px",padding:"3px 0",fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"#D1D5DB"}}>
                   <span style={{color:"var(--green)",fontWeight:"700",fontSize:"12px"}}>✓</span> {f}
                 </div>
@@ -2315,7 +1580,7 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
         {/* Fine print */}
         <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",lineHeight:"1.7",textAlign:"center"}}>
           Subscription auto-renews. Cancel anytime in settings before trial ends.<br/>
-          By subscribing you agree to our Terms & Privacy Policy.
+          By subscribing you agree to our Terms &amp; Privacy Policy.
         </div>
       </div>
 
@@ -2325,13 +1590,13 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
           onClick={() => onSubscribe(billing)}
           style={{
             width:"100%",padding:"17px",
-            background:"var(--green)",color:"var(--on-coral)",
+            background:"var(--green)",color:"#0B0F14",
             border:"none",borderRadius:"14px",
             fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",
             cursor:"pointer",letterSpacing:".01em",
           }}
         >
-          Upgrade to Pro →
+          Start 7-day free trial →
         </button>
         {fromOnboarding && (
           <button
@@ -2352,100 +1617,12 @@ function PremiumPaywallScreen({ onBack, onSubscribe, fromOnboarding = false }) {
   );
 }
 
-// ─── WELCOME SCREEN ─── Forced sign-in gateway. Both new and returning users come through here.
-function WelcomeScreen({ onSignIn }) {
-  // Value proof points shown above the sign-in CTA. Icon tiles all use
-  // --coral-dim so they read as one family (not a rainbow). Copy stays short.
-  const proofPoints = [
-    {
-      title: "Track every shift",
-      sub: "Timer or manual — earnings, km, scoring",
-      // rising earnings line + arrow (echoes the brand mark)
-      path: <><path d="M3 17l6-6 4 4 8-8" /><path d="M17 7h4v4" /></>,
-    },
-    {
-      title: "Maximise your tax deductions",
-      sub: "Automatic ATO cents-per-km, every trip",
-      // check-in-circle
-      path: <><path d="M9 12l2 2 4-4" /><path d="M12 3a9 9 0 100 18 9 9 0 000-18z" /></>,
-    },
-    {
-      title: "See how your area compares",
-      sub: "Real benchmarks from drivers near you",
-      // bar chart
-      path: <path d="M3 20v-6M9 20V8M15 20v-9M21 20V4" />,
-    },
-  ];
-
-  return (
-    <div className="setup-wrap">
-      <GTBrand size={40} fontSize={24} />
-      <div className="setup-sub" style={{marginBottom:"30px"}}>Your gig earnings, your ATO deductions — all in one place.</div>
-
-      {/* Value proof points */}
-      <div style={{width:"100%",maxWidth:"360px",display:"flex",flexDirection:"column",gap:"14px",marginBottom:"30px"}}>
-        {proofPoints.map(p => (
-          <div key={p.title} style={{display:"flex",alignItems:"center",gap:"14px"}}>
-            <div style={{
-              width:"38px",height:"38px",borderRadius:"11px",flexShrink:0,
-              background:"var(--coral-dim)",
-              display:"flex",alignItems:"center",justifyContent:"center",
-            }}>
-              <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
-                stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                {p.path}
-              </svg>
-            </div>
-            <div>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13.5px",fontWeight:"700",color:"var(--text)"}}>{p.title}</div>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11.5px",color:"var(--muted)",lineHeight:"1.4"}}>{p.sub}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{width:"100%",maxWidth:"360px",display:"flex",flexDirection:"column",gap:"10px"}}>
-
-        {/* Primary CTA — single sign-in button */}
-        <button
-          onClick={onSignIn}
-          style={{
-            width:"100%",padding:"16px",
-            background:"var(--green)",color:"var(--on-coral)",
-            border:"none",borderRadius:"13px",cursor:"pointer",
-            fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",
-            letterSpacing:".01em",
-          }}
-        >Sign in with email →</button>
-
-      </div>
-
-      <div style={{
-        marginTop:"16px",fontFamily:"'Inter',sans-serif",
-        fontSize:"12px",color:"var(--muted)",
-        textAlign:"center",maxWidth:"320px",lineHeight:"1.5",
-      }}>
-        New here? We'll create an account when you sign in.
-      </div>
-
-      <div style={{
-        marginTop:"36px",fontFamily:"'Inter',sans-serif",
-        fontSize:"11px",color:"var(--muted2)",
-        textAlign:"center",maxWidth:"300px",lineHeight:"1.5",
-      }}>
-        Designed for Australian Uber Eats & DoorDash drivers.
-      </div>
-    </div>
-  );
-}
-
 // ─── SETUP FLOW ───
 function SetupScreen({ onComplete }) {
   // mode: "choose" | "paywall" | "name"
-  // plan: "free" | "pro" | "beta"
-  // In beta, skip the plan chooser/paywall entirely — go straight to name/region.
-  const [mode, setMode]   = useState(BETA_MODE ? "name" : "choose");
-  const [plan, setPlan]   = useState(BETA_MODE ? "beta" : null);
+  // plan: "free" | "pro"
+  const [mode, setMode]   = useState("choose");
+  const [plan, setPlan]   = useState(null);
   const [name, setName]   = useState("");
   const [selectedRegion, setSelectedRegion] = useState("");
   const [err, setErr]     = useState("");
@@ -2488,17 +1665,14 @@ function SetupScreen({ onComplete }) {
   );
 
   const finish = (chosenPlan) => {
-    const betaPlan = BETA_MODE;
     onComplete({
       name: name.trim(),
       email: null,
       startOdo: 0,
       kmPref: "active",
       region: selectedRegion || null,
-      plan: betaPlan ? "beta" : chosenPlan,
-      isBeta: betaPlan,
-      isGuest: betaPlan ? false : chosenPlan !== "pro",
-      isPro: betaPlan ? false : chosenPlan === "pro",
+      isGuest: chosenPlan !== "pro",
+      isPro: chosenPlan === "pro",
     });
   };
 
@@ -2545,6 +1719,7 @@ function SetupScreen({ onComplete }) {
                 ["Shift logging", "timer + manual"],
                 ["ATO km deductions", "automatic"],
                 ["Shift scoring", "& lifetime stats"],
+                ["Fuel cost estimator", null],
               ].map(([title, sub]) => (
                 <div key={title} style={{display:"flex",alignItems:"center",gap:"9px",padding:"4px 0"}}>
                   <span style={{color:"var(--green)",fontWeight:"700",fontSize:"13px",flexShrink:0}}>✓</span>
@@ -2575,10 +1750,18 @@ function SetupScreen({ onComplete }) {
               borderRadius:"16px",padding:"18px",cursor:"pointer",position:"relative",
             }}
           >
+            <div style={{
+              position:"absolute",top:"-9px",right:"14px",
+              fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",
+              letterSpacing:".08em",textTransform:"uppercase",
+              background:"var(--green)",color:"#0B0F14",
+              padding:"3px 9px",borderRadius:"6px",
+            }}>7-day free trial</div>
+
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"6px"}}>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"17px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.01em"}}>Pro</div>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",fontVariantNumeric:"tabular-nums"}}>
-                $7.99<span style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"500"}}>/mo</span>
+                $4.99<span style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"500"}}>/mo</span>
               </div>
             </div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginBottom:"12px"}}>
@@ -2596,12 +1779,12 @@ function SetupScreen({ onComplete }) {
             </div>
             <div style={{
               width:"100%",padding:"13px",
-              background:"var(--green)",color:"var(--on-coral)",
+              background:"var(--green)",color:"#0B0F14",
               border:"none",borderRadius:"11px",
               fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
               textAlign:"center",letterSpacing:".01em",
             }}>
-              See Pro features →
+              Start free trial →
             </div>
           </div>
 
@@ -2668,7 +1851,7 @@ function SetupScreen({ onComplete }) {
         <div className="setup-btns-row">
           <button className="btn btn-outline" style={{flex:1}} onClick={() => { setErr(""); nameStep === 0 ? setMode("choose") : setNameStep(0); }}>Back</button>
           <button className="btn btn-primary" style={{flex:2}} onClick={handleNameNext}>
-            {nameStep === 1 ? "Let's Go" : "Continue →"}
+            {nameStep === 1 ? "Let's Go 🚀" : "Continue →"}
           </button>
         </div>
       </div>
@@ -2725,8 +1908,56 @@ function LiveTimer({ activeShift, onEndShift, onPauseShift, onResumeShift }) {
   );
 }
 
+// ─── FUEL CARD ───
+function FuelCard({ totalKm, totalEarned, fuelEfficiency, fuelPrice, onSetFuel }) {
+  const hasFuelSettings = fuelEfficiency > 0 && fuelPrice > 0;
+
+  if (!hasFuelSettings) {
+    return (
+      <div className="fuel-prompt" onClick={onSetFuel}>
+        <div style={{fontSize:"24px",flexShrink:0}}>⛽</div>
+        <div className="fuel-prompt-text">
+          <strong>Add fuel cost estimator</strong>
+          Tap to enter your L/100km and fuel price — stays right here on this form.
+        </div>
+        <div style={{color:"var(--muted2)",fontSize:"18px",flexShrink:0}}>›</div>
+      </div>
+    );
+  }
+
+  const fuelCost  = totalKm > 0 ? (totalKm / 100) * fuelEfficiency * fuelPrice : 0;
+  const netEarned = totalEarned - fuelCost;
+
+  return (
+    <div className="fuel-card">
+      <div className="fuel-card-header">
+        <div className="fuel-card-title">⛽ Fuel Cost Estimator</div>
+        <div className="fuel-card-icon" style={{cursor:"pointer"}} onClick={onSetFuel} title="Edit fuel settings">✏️</div>
+      </div>
+      <div className="fuel-card-row">
+        <div className="fuel-card-label">Distance</div>
+        <div className="fuel-card-value">{totalKm.toFixed(1)} km</div>
+      </div>
+      <div className="fuel-card-row">
+        <div className="fuel-card-label">Fuel used (~{fuelEfficiency}L/100km)</div>
+        <div className="fuel-card-value">{((totalKm / 100) * fuelEfficiency).toFixed(1)} L</div>
+      </div>
+      <div className="fuel-card-row">
+        <div className="fuel-card-label">Fuel cost (${fuelPrice.toFixed(2)}/L)</div>
+        <div className="fuel-card-value" style={{color:"var(--red)"}}>−${fuelCost.toFixed(2)}</div>
+      </div>
+      <div className="fuel-card-net">
+        <div className="fuel-card-net-label">Net Earnings (after fuel)</div>
+        <div className="fuel-card-net-value" style={{color: netEarned >= 0 ? "var(--green)" : "var(--red)"}}>
+          ${netEarned.toFixed(2)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── ACTIVE SHIFT SCREEN — simple timer, no GPS ───────────────────────────
-function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
+function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd }) {
   const [elapsed, setElapsed] = useState(0);
   const [gpsKm, setGpsKm] = useState(0);
   const [gpsStatus, setGpsStatus] = useState("asking"); // asking | granted | denied | unsupported
@@ -2748,7 +1979,6 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
 
   // GPS tracking — Haversine distance accumulator
   useEffect(() => {
-    if (!TIMER_GPS_ENABLED) return; // beta: no GPS, no permission prompt, no battery drain
     if (!activeShift) return;
     if (activeShift.paused) return; // don't track while paused
     if (!("geolocation" in navigator)) { setGpsStatus("unsupported"); return; }
@@ -2841,7 +2071,7 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
 
       {/* Topbar */}
       <div className="topbar">
-        <button className="topbar-back" onClick={onBack} aria-label="Back to home">←</button>
+        <div style={{width:"34px"}} />
         <div className="topbar-title">Active Shift</div>
         <div style={{width:"34px"}} />
       </div>
@@ -2898,7 +2128,7 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
         </div>
 
         {/* GPS status banner — denied/unsupported */}
-        {TIMER_GPS_ENABLED && (gpsStatus === "denied" || gpsStatus === "unsupported") && (
+        {(gpsStatus === "denied" || gpsStatus === "unsupported") && (
           <div style={{
             background: "var(--amber-dim)",
             borderRadius: "10px",
@@ -2916,34 +2146,18 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
           </div>
         )}
 
-        {/* Beta: GPS is off, so tell the driver where km comes from */}
-        {!TIMER_GPS_ENABLED && (
-          <div style={{
-            fontSize: "11px",
-            color: "var(--muted2)",
-            textAlign: "center",
-            maxWidth: "320px",
-            width: "100%",
-            lineHeight: "1.5",
-          }}>
-            Timing your shift — you'll add your KMs when you save.
-          </div>
-        )}
-
         {/* Stat tiles */}
         <div style={{
           display: "grid",
-          gridTemplateColumns: TIMER_GPS_ENABLED ? "1fr 1fr 1fr" : "1fr 1fr",
+          gridTemplateColumns: "1fr 1fr 1fr",
           gap: "8px",
           width: "100%",
           maxWidth: "320px",
         }}>
           {[
-            ["Hours", String(h)],
-            ["Minutes", pad(m)],
-            ...(TIMER_GPS_ENABLED
-              ? [["KMs", gpsStatus === "granted" || gpsKm > 0 ? gpsKm.toFixed(1) : "—"]]
-              : []),
+            ["Hours", h > 0 ? `${h}h ${pad(m)}m` : `${m}m`],
+            ["Minutes", String(Math.floor(totalSecs / 60))],
+            ["KMs", gpsStatus === "granted" || gpsKm > 0 ? gpsKm.toFixed(1) : "—"],
           ].map(([label, value]) => (
             <div key={label} style={{
               background: "var(--surface)",
@@ -2983,7 +2197,7 @@ function ActiveShiftScreen({ activeShift, onPause, onResume, onEnd, onBack }) {
             onClick={handleEnd}
             style={{
               flex: 2, padding: "15px",
-              background: "var(--coral-grad)",
+              background: "linear-gradient(180deg, #00A050 0%, #008F44 100%)",
               border: "none", borderRadius: "14px",
               color: "#fff",
               fontSize: "14px", fontWeight: "700",
@@ -3155,7 +2369,7 @@ function getMockDriverCount(zoneId) {
   return { total, ue, dd };
 }
 
-function PlatformPickerModal({ open, onPick, onClose, title = "Going online", subtitle = "Which platform are you driving for right now? Other drivers in your zone will see you." }) {
+function PlatformPickerModal({ open, onPick, onClose }) {
   if (!open) return null;
   const options = [
     { id: "uber_eats", label: "Uber Eats",      sub: "UE only" },
@@ -3174,9 +2388,9 @@ function PlatformPickerModal({ open, onPick, onClose, title = "Going online", su
         boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
       }}>
         <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"4px"}}>{title}</div>
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"4px"}}>Going online</div>
         <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",lineHeight:"1.5"}}>
-          {subtitle}
+          Which platform are you driving for right now? Other drivers in your zone will see you.
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
           {options.map(o => (
@@ -3212,454 +2426,12 @@ function PlatformPickerModal({ open, onPick, onClose, title = "Going online", su
   );
 }
 
-// ─── BETA CREDITS MODAL ─── Buy one-time screenshot credit packs (beta).
-function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
-  const [busy, setBusy] = useState(null); // pack id being "purchased"
-  if (!open) return null;
-  const handleBuy = async (pack) => {
-    setBusy(pack.id);
-    await onBuy(pack);          // success → redirects to Stripe (page leaves).
-    // If we're still here, checkout failed (onBuy returned without navigating).
-    // Clear busy and keep the modal open so the user can retry.
-    setBusy(null);
-  };
-  return (
-    <div onClick={onClose} style={{
-      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
-      display:"flex",alignItems:"flex-end",justifyContent:"center",
-      zIndex:1000,backdropFilter:"blur(4px)",
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background:"var(--surface)",borderTopLeftRadius:"20px",borderTopRightRadius:"20px",
-        width:"100%",maxWidth:"480px",padding:"20px 18px 28px",boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
-      }}>
-        <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Screenshot credits</div>
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",lineHeight:"1.5"}}>
-          You have <strong style={{color: remaining === 0 ? "var(--red)" : "var(--pos)"}}>{remaining}</strong> screenshot import{remaining === 1 ? "" : "s"} left. Top up with a one-time pack — no subscription, credits never expire.
-        </div>
-
-        {SCREENSHOT_PACKS.map(pack => (
-          <button
-            key={pack.id}
-            onClick={() => handleBuy(pack)}
-            disabled={busy != null}
-            style={{
-              width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",
-              padding:"16px",marginBottom:"10px",cursor:busy != null ? "default" : "pointer",
-              background:"var(--elevated)",
-              border:pack.badge ? "1.5px solid var(--coral)" : "1px solid var(--coral-border)",
-              borderRadius:"14px",
-            }}
-          >
-            <div style={{textAlign:"left"}}>
-              <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                <span style={{fontSize:"15px",fontWeight:"800",color:"var(--text)"}}>{pack.credits} credits</span>
-                {pack.badge && (
-                  <span style={{
-                    fontSize:"9px",fontWeight:"800",letterSpacing:".04em",textTransform:"uppercase",
-                    color:"var(--on-coral)",background:"var(--coral)",
-                    padding:"2px 7px",borderRadius:"100px",
-                  }}>{pack.badge}</span>
-                )}
-              </div>
-              <div style={{fontSize:"11px",color:"var(--muted)",fontWeight:"500",marginTop:"2px"}}>{(pack.price / pack.credits * 100).toFixed(1)}c each · one-time</div>
-            </div>
-            <div style={{
-              fontSize:"15px",fontWeight:"800",color:"var(--on-coral)",
-              background:"var(--coral)",padding:"8px 16px",borderRadius:"100px",
-            }}>{busy === pack.id ? "…" : `$${pack.price.toFixed(2)}`}</div>
-          </button>
-        ))}
-
-        <button onClick={onClose} style={{
-          width:"100%",marginTop:"8px",padding:"13px",background:"transparent",border:"none",cursor:"pointer",
-          color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
-        }}>Maybe later</button>
-
-        <div style={{fontSize:"10px",color:"var(--muted2)",textAlign:"center",marginTop:"6px",lineHeight:"1.5"}}>
-          Everything else is free during beta. Screenshots use AI to read your summaries, which has a small cost — that's all we charge for.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── CHANGE PASSWORD MODAL ─── For signed-in users to set/update a password.
-function ChangePasswordModal({ open, onSave, onClose }) {
-  const [pw, setPw] = useState("");
-  const [pw2, setPw2] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | saving | done | error
-  const [errMsg, setErrMsg] = useState("");
-
-  if (!open) return null;
-
-  const handleSave = async () => {
-    if (pw.length < 6) { setErrMsg("Password must be at least 6 characters"); setStatus("error"); return; }
-    if (pw !== pw2) { setErrMsg("Passwords don't match"); setStatus("error"); return; }
-    setStatus("saving"); setErrMsg("");
-    const result = await onSave(pw);
-    if (result?.ok) { setStatus("done"); setPw(""); setPw2(""); }
-    else { setErrMsg(result?.error?.message || "Couldn't update password. Try again."); setStatus("error"); }
-  };
-
-  const inputStyle = {
-    width:"100%",padding:"13px 14px",background:"var(--elevated)",
-    border:"0.5px solid var(--border)",borderRadius:"11px",color:"var(--text)",
-    fontFamily:"'Inter',sans-serif",fontSize:"15px",outline:"none",marginBottom:"10px",
-  };
-
-  return (
-    <div onClick={onClose} style={{
-      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
-      display:"flex",alignItems:"flex-end",justifyContent:"center",
-      zIndex:1000,backdropFilter:"blur(4px)",
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background:"var(--surface)",borderTopLeftRadius:"20px",borderTopRightRadius:"20px",
-        width:"100%",maxWidth:"480px",padding:"20px 18px 28px",boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
-      }}>
-        <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
-
-        {status === "done" ? (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px",textAlign:"center"}}>Password updated</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"20px",lineHeight:"1.5",textAlign:"center"}}>
-              You can now sign in with your email and this password.
-            </div>
-            <button onClick={onClose} style={{
-              width:"100%",padding:"14px",background:"var(--coral)",color:"var(--on-coral)",
-              border:"none",borderRadius:"12px",cursor:"pointer",
-              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-            }}>Done</button>
-          </>
-        ) : (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Change password</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"16px",lineHeight:"1.5"}}>
-              Set a new password for signing in. If you've only used magic links before, this gives you a password too.
-            </div>
-
-            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>New password</div>
-            <input
-              type="password" autoComplete="new-password" placeholder="At least 6 characters"
-              value={pw}
-              onChange={e => { setPw(e.target.value); if (status === "error") setStatus("idle"); }}
-              disabled={status === "saving"}
-              style={inputStyle}
-            />
-            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>Confirm password</div>
-            <input
-              type="password" autoComplete="new-password" placeholder="Re-enter password"
-              value={pw2}
-              onChange={e => { setPw2(e.target.value); if (status === "error") setStatus("idle"); }}
-              onKeyDown={e => { if (e.key === "Enter") handleSave(); }}
-              disabled={status === "saving"}
-              style={inputStyle}
-            />
-
-            {status === "error" && <div style={{fontSize:"11px",color:"var(--red)",marginBottom:"10px",fontFamily:"'Inter',sans-serif"}}>{errMsg}</div>}
-
-            <button onClick={handleSave} disabled={status === "saving"} style={{
-              width:"100%",padding:"14px",marginTop:"4px",
-              background: status==="saving" ? "var(--muted2)" : "var(--coral)",
-              color:"var(--on-coral)",border:"none",borderRadius:"12px",
-              cursor: status==="saving" ? "default" : "pointer",
-              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-            }}>{status === "saving" ? "Saving…" : "Save password"}</button>
-
-            <button onClick={onClose} style={{
-              width:"100%",marginTop:"10px",padding:"13px",background:"transparent",border:"none",cursor:"pointer",
-              color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
-            }}>Cancel</button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── WHAT'S NEW MODAL ─── Shown once after an update reveals a new version.
-function WhatsNewModal({ open, onClose }) {
-  if (!open) return null;
-  const log = currentChangelog();
-  const tagColor = (tag) =>
-    tag === "NEW FEATURE" ? "var(--coral)" :
-    tag === "NEW" ? "var(--indigo)" :
-    tag === "FIXED" ? "var(--muted2)" :
-    "var(--pos)";
-  return (
-    <div onClick={onClose} style={{
-      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
-      display:"flex",alignItems:"center",justifyContent:"center",
-      zIndex:1100,backdropFilter:"blur(4px)",padding:"20px",
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background:"var(--surface)",borderRadius:"24px",
-        width:"100%",maxWidth:"420px",overflow:"hidden",
-        boxShadow:"0 24px 48px -16px rgba(0,0,0,.5)",
-      }}>
-        {/* Coral header */}
-        <div style={{
-          background:"var(--coral-grad)",padding:"22px 20px 18px",position:"relative",overflow:"hidden",
-        }}>
-          <div style={{position:"absolute",top:"-30px",right:"-20px",width:"140px",height:"140px",
-            background:"radial-gradient(circle, rgba(255,255,255,.25), transparent 70%)",pointerEvents:"none"}}/>
-          <div style={{position:"relative"}}>
-            <div style={{display:"inline-flex",alignItems:"center",gap:"7px",marginBottom:"10px"}}>
-              <GTLogo size={26} />
-              <span style={{fontSize:"11px",fontWeight:"800",color:"#fff",letterSpacing:".08em",background:"rgba(255,255,255,.2)",padding:"3px 9px",borderRadius:"100px"}}>{log.version}</span>
-            </div>
-            <div style={{fontSize:"22px",fontWeight:"800",color:"#fff",letterSpacing:"-.02em"}}>What's new</div>
-            <div style={{fontSize:"11px",fontWeight:"600",color:"rgba(255,255,255,.85)",marginTop:"2px"}}>Updated {log.date}</div>
-          </div>
-        </div>
-
-        {/* Items */}
-        <div style={{padding:"18px 20px 8px",maxHeight:"46vh",overflowY:"auto"}}>
-          {log.items.map((it, i) => (
-            <div key={i} style={{display:"flex",gap:"10px",marginBottom:"16px",alignItems:"flex-start"}}>
-              <div style={{flexShrink:0,width:"66px",marginTop:"1px",display:"flex"}}>
-                <span style={{
-                  fontSize:"8px",fontWeight:"800",letterSpacing:".03em",
-                  color:"var(--on-coral)",background:tagColor(it.tag),
-                  padding:"3px 6px",borderRadius:"100px",
-                  whiteSpace:"nowrap",textAlign:"center",lineHeight:"1.3",
-                }}>{it.tag}</span>
-              </div>
-              <span style={{flex:1,fontSize:"13px",color:"var(--text)",lineHeight:"1.5",fontWeight:"500"}}>{it.text}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* CTA */}
-        <div style={{padding:"6px 20px 20px"}}>
-          <button onClick={onClose} style={{
-            width:"100%",padding:"14px",border:"none",cursor:"pointer",
-            background:"var(--coral)",color:"var(--on-coral)",
-            borderRadius:"14px",fontSize:"14px",fontWeight:"700",
-          }}>Got it</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── SIGN-IN MODAL ─── Sends a magic link to the user's email.
-function SignInModal({ open, onSendLink, onPasswordSignIn, onPasswordSignUp, onPasswordReset, onClose }) {
-  const [method, setMethod] = useState("password"); // 'password' | 'link'
-  const [mode, setMode] = useState("signin");        // 'signin' | 'signup' (password only)
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | sending | sent | error
-  const [errMsg, setErrMsg] = useState("");
-  const [notice, setNotice] = useState("");
-
-  if (!open) return null;
-
-  const validEmail = (e) => e.trim() && e.includes("@");
-
-  const handleSendLink = async () => {
-    if (!validEmail(email)) { setErrMsg("Enter a valid email address"); setStatus("error"); return; }
-    setStatus("sending"); setErrMsg("");
-    const result = await onSendLink(email.trim());
-    if (result?.ok) setStatus("sent");
-    else { setErrMsg(result?.error?.message || "Couldn't send the link. Check your connection and try again."); setStatus("error"); }
-  };
-
-  const handlePassword = async () => {
-    if (!validEmail(email)) { setErrMsg("Enter a valid email address"); setStatus("error"); return; }
-    if (password.length < 6) { setErrMsg("Password must be at least 6 characters"); setStatus("error"); return; }
-    setStatus("sending"); setErrMsg(""); setNotice("");
-    const result = mode === "signup"
-      ? await onPasswordSignUp(email.trim(), password)
-      : await onPasswordSignIn(email.trim(), password);
-    if (result?.ok) {
-      if (mode === "signup" && result.needsConfirmation) {
-        setStatus("sent"); // confirmation email required
-      } else {
-        setStatus("idle");
-        onClose(); // signed in — session is live, app will react
-      }
-    } else {
-      const msg = result?.error?.message || "";
-      // Friendlier common-case messages
-      if (/invalid login credentials/i.test(msg)) setErrMsg("Wrong email or password.");
-      else if (/already registered/i.test(msg)) { setErrMsg("That email already has an account — try signing in."); setMode("signin"); }
-      else setErrMsg(msg || "Something went wrong. Try again.");
-      setStatus("error");
-    }
-  };
-
-  const handleReset = async () => {
-    if (!validEmail(email)) { setErrMsg("Enter your email first, then tap reset"); setStatus("error"); return; }
-    setErrMsg(""); setNotice("");
-    const result = await onPasswordReset(email.trim());
-    if (result?.ok) setNotice("Password reset email sent — check your inbox.");
-    else setErrMsg(result?.error?.message || "Couldn't send reset email.");
-  };
-
-  const inputStyle = (isErr) => ({
-    width:"100%",padding:"13px 14px",
-    background:"var(--elevated)",border:`0.5px solid ${isErr?"var(--red-border)":"var(--border)"}`,
-    borderRadius:"11px",color:"var(--text)",
-    fontFamily:"'Inter',sans-serif",fontSize:"15px",outline:"none",
-  });
-
-  return (
-    <div onClick={onClose} style={{
-      position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
-      display:"flex",alignItems:"flex-end",justifyContent:"center",
-      zIndex:1000,backdropFilter:"blur(4px)",
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background:"var(--surface)",borderTopLeftRadius:"20px",borderTopRightRadius:"20px",
-        width:"100%",maxWidth:"480px",padding:"20px 18px 28px",
-        boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
-      }}>
-        <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
-
-        {status === "sent" ? (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px",textAlign:"center"}}>Check your email</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"22px",lineHeight:"1.5",textAlign:"center"}}>
-              {method === "link"
-                ? <>We sent a sign-in link to <strong style={{color:"var(--text)"}}>{email.trim()}</strong>. Open it to finish signing in.</>
-                : <>We sent a confirmation link to <strong style={{color:"var(--text)"}}>{email.trim()}</strong>. Confirm it, then come back and sign in.</>}
-            </div>
-            <button onClick={onClose} style={{
-              width:"100%",padding:"14px",background:"var(--coral)",color:"var(--on-coral)",
-              border:"none",borderRadius:"12px",cursor:"pointer",
-              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-            }}>Done</button>
-          </>
-        ) : (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>
-              {method === "link" ? "Sign in with a link" : mode === "signup" ? "Create your account" : "Sign in to save your data"}
-            </div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"16px",lineHeight:"1.5"}}>
-              {method === "link"
-                ? "We'll email you a magic link — no password needed. (Note: on an installed app the link opens in your browser.)"
-                : mode === "signup"
-                  ? "Pick an email and password. Your shifts will be linked to your account."
-                  : "Enter your email and password. Your shifts will be linked to your account."}
-            </div>
-
-            {/* Email */}
-            <div style={{marginBottom:"12px"}}>
-              <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>Email address</div>
-              <input
-                type="email" inputMode="email" autoComplete="email" placeholder="you@example.com"
-                value={email}
-                onChange={e => { setEmail(e.target.value); if (status === "error") setStatus("idle"); }}
-                onKeyDown={e => { if (e.key === "Enter") (method==="link"?handleSendLink():handlePassword()); }}
-                disabled={status === "sending"}
-                style={inputStyle(status==="error" && !validEmail(email))}
-              />
-            </div>
-
-            {/* Password (hidden only in link mode) */}
-            {method === "password" && (
-              <div style={{marginBottom:"12px"}}>
-                <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>Password</div>
-                <input
-                  type="password"
-                  autoComplete={mode==="signup" ? "new-password" : "current-password"}
-                  placeholder={mode==="signup" ? "At least 6 characters" : "Your password"}
-                  value={password}
-                  onChange={e => { setPassword(e.target.value); if (status === "error") setStatus("idle"); }}
-                  onKeyDown={e => { if (e.key === "Enter") handlePassword(); }}
-                  disabled={status === "sending"}
-                  style={inputStyle(false)}
-                />
-              </div>
-            )}
-
-            {status === "error" && <div style={{fontSize:"11px",color:"var(--red)",marginBottom:"10px",fontFamily:"'Inter',sans-serif"}}>{errMsg}</div>}
-            {notice && <div style={{fontSize:"11px",color:"var(--pos)",marginBottom:"10px",fontFamily:"'Inter',sans-serif"}}>{notice}</div>}
-
-            {/* Primary action */}
-            <button
-              onClick={method === "link" ? handleSendLink : handlePassword}
-              disabled={status === "sending"}
-              style={{
-                width:"100%",padding:"14px",
-                background: status==="sending" ? "var(--muted2)" : "var(--coral)",
-                color:"var(--on-coral)",border:"none",borderRadius:"12px",
-                cursor: status==="sending" ? "default" : "pointer",
-                fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-              }}
-            >
-              {status === "sending"
-                ? "Please wait…"
-                : method === "link"
-                  ? "Send magic link →"
-                  : mode === "signup" ? "Create account" : "Sign in"}
-            </button>
-
-            {/* Secondary links (password mode) */}
-            {method === "password" && (
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"12px"}}>
-                <button onClick={() => { setMode(mode==="signup"?"signin":"signup"); setStatus("idle"); setErrMsg(""); }} style={{
-                  background:"transparent",border:"none",cursor:"pointer",padding:"4px 0",
-                  color:"var(--coral)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",
-                }}>{mode==="signup" ? "Have an account? Sign in" : "New here? Create account"}</button>
-                {mode === "signin" && (
-                  <button onClick={handleReset} style={{
-                    background:"transparent",border:"none",cursor:"pointer",padding:"4px 0",
-                    color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"500",
-                  }}>Forgot password?</button>
-                )}
-              </div>
-            )}
-
-            {/* Switch between password and magic-link */}
-            <div style={{borderTop:"0.5px solid var(--border)",marginTop:"16px",paddingTop:"14px",textAlign:"center"}}>
-              <button onClick={() => { setMethod(method==="link"?"password":"link"); setStatus("idle"); setErrMsg(""); setNotice(""); }} style={{
-                background:"transparent",border:"none",cursor:"pointer",padding:"4px 0",
-                color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",
-              }}>
-                {method === "link" ? "← Use email & password instead" : "Email me a magic link instead"}
-              </button>
-            </div>
-
-            <button onClick={onClose} style={{
-              width:"100%",marginTop:"8px",padding:"13px",
-              background:"transparent",border:"none",cursor:"pointer",
-              color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
-            }}>Cancel</button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOffline }) {
-  const [count, setCount] = useState(null); // {total, ue, dd} | null (loading/none)
-  const isOnline = liveStatus?.online === true;
-
-  // Poll real zone presence every 60s (and immediately on region/online change,
-  // and whenever the app returns to foreground so a returning driver sees a fresh
-  // count right away rather than waiting up to 60s).
+  const [tick, setTick] = useState(0); // refresh every 5 min
   useEffect(() => {
-    if (!region) { setCount(null); return; }
-    let cancelled = false;
-    const load = async () => {
-      const c = await fetchZonePresence(presenceBucket(region));
-      if (!cancelled) setCount(c);
-    };
-    load();
-    const id = setInterval(load, 60 * 1000);
-    const onVisible = () => { if (document.visibilityState === "visible") load(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [region, isOnline]); // re-fetch when the user toggles online so their own row reflects fast
+    const id = setInterval(() => setTick(t => t + 1), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   if (!region) {
     return (
@@ -3678,17 +2450,15 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
     );
   }
 
-  // Show real counts only once a zone has enough live drivers (avoids a dead
-  // "0 drivers" during early beta). BUT the card itself — and crucially the
-  // go-online/offline control — must ALWAYS render, or no one could ever go
-  // online to build the network in the first place.
-  const hasEnough = count && count.total >= LIVE_DRIVER_MIN;
-
+  const count = getMockDriverCount(region);
   const regionInfo = REGIONS.find(r => r.id === region);
+  const isOnline = liveStatus?.online === true;
   const myPlatform = liveStatus?.platform;
-  const displayTotal = count?.total ?? 0;
-  const displayUE = count?.ue ?? 0;
-  const displayDD = count?.dd ?? 0;
+
+  // If user is online, bump the displayed totals by 1
+  const displayTotal = count.total + (isOnline ? 1 : 0);
+  const displayUE = count.ue + (isOnline && (myPlatform === "uber_eats" || myPlatform === "both") ? 1 : 0);
+  const displayDD = count.dd + (isOnline && (myPlatform === "doordash"  || myPlatform === "both") ? 1 : 0);
 
   return (
     <div style={{
@@ -3715,56 +2485,39 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
             {regionInfo?.label || region}
           </div>
         </div>
-        {hasEnough && (
-          <div style={{
-            fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"600",
-            color:"var(--muted2)",letterSpacing:".06em",textTransform:"uppercase",
-            padding:"3px 7px",background:"var(--elevated)",borderRadius:"5px",
-            flexShrink:0,marginLeft:"8px",
-          }}>Live · last 10 min</div>
-        )}
+        <div style={{
+          fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"600",
+          color:"var(--muted2)",letterSpacing:".06em",textTransform:"uppercase",
+          padding:"3px 7px",background:"var(--elevated)",borderRadius:"5px",
+          flexShrink:0,marginLeft:"8px",
+        }}>Demo data</div>
       </div>
 
-      {/* Driver count tiles — only once the zone has enough live drivers */}
-      {hasEnough ? (
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"14px"}}>
-          <div style={{
-            background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
-          }}>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayTotal}</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Total online</div>
-          </div>
-          <div style={{
-            background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
-            border: isOnline && (myPlatform === "uber_eats" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
-          }}>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayUE}</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Uber Eats</div>
-          </div>
-          <div style={{
-            background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
-            border: isOnline && (myPlatform === "doordash" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
-          }}>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayDD}</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>DoorDash</div>
-          </div>
-        </div>
-      ) : (
+      {/* Driver count tiles */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"14px"}}>
         <div style={{
-          background:"var(--elevated)",borderRadius:"11px",padding:"14px 12px",marginBottom:"14px",textAlign:"center",
+          background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
         }}>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"3px"}}>
-            {isOnline ? "You're on the map" : "Be the first online here"}
-          </div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",lineHeight:"1.4"}}>
-            {isOnline
-              ? "Live driver counts appear once a few more drivers are online in your zone."
-              : "Go online to start building the live map for your zone. Counts show once a few drivers are active."}
-          </div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayTotal}</div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Total online</div>
         </div>
-      )}
+        <div style={{
+          background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
+          border: isOnline && (myPlatform === "uber_eats" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
+        }}>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayUE}</div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>Uber Eats</div>
+        </div>
+        <div style={{
+          background:"var(--elevated)",borderRadius:"11px",padding:"12px 10px",textAlign:"center",
+          border: isOnline && (myPlatform === "doordash" || myPlatform === "both") ? "1px solid var(--green-border)" : "none",
+        }}>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"22px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",lineHeight:"1",fontVariantNumeric:"tabular-nums"}}>{displayDD}</div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"6px",fontWeight:"500"}}>DoorDash</div>
+        </div>
+      </div>
 
-      {/* CTA — always available so drivers can go online regardless of count */}
+      {/* CTA */}
       {isOnline ? (
         <button
           onClick={onGoOffline}
@@ -3782,7 +2535,7 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
           onClick={onGoOnline}
           style={{
             width:"100%",padding:"13px",
-            background:"var(--green)",color:"var(--on-coral)",
+            background:"var(--green)",color:"#0B0F14",
             border:"none",borderRadius:"11px",
             fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
             cursor:"pointer",letterSpacing:".01em",
@@ -3795,31 +2548,6 @@ function LiveDriverCard({ region, onGoToSettings, liveStatus, onGoOnline, onGoOf
 
 // ─── COMMUNITY BENCHMARK CARD ───
 function BenchmarkCard({ region, onGoToSettings }) {
-  // undefined = loading, null = not enough data, object = data
-  const [benchmark, setBenchmark] = useState(undefined);
-  const [national, setNational]   = useState(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      // National always loads — it's the fallback/context when the local zone is
-      // too quiet, which is the common case with a nationally-spread user base.
-      fetchNationalBenchmark().then(n => { if (!cancelled) setNational(n); });
-      if (region) {
-        fetchZoneBenchmark(region).then(b => { if (!cancelled) setBenchmark(b); });
-      } else {
-        setBenchmark(null);
-      }
-    };
-    setBenchmark(undefined);
-    setNational(undefined);
-    load();
-    // Refresh on foreground return (cheap; numbers only change daily).
-    const onVisible = () => { if (document.visibilityState === "visible") load(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVisible); };
-  }, [region]);
-
   if (!region) {
     return (
       <div className="benchmark-prompt" onClick={onGoToSettings}>
@@ -3834,967 +2562,39 @@ function BenchmarkCard({ region, onGoToSettings }) {
   }
 
   const regionInfo = REGIONS.find(r => r.id === region);
+  const benchmark  = getRegionBenchmark(region);
+  if (!benchmark) return null;
 
-  // Loading state — wait for both queries so the card doesn't visibly reshuffle
-  if (benchmark === undefined || national === undefined) {
-    return (
-      <div className="benchmark-card">
-        <div className="benchmark-header">
-          <div>
-            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
-            <div className="benchmark-region">{regionInfo?.label || region}</div>
-            <div className="benchmark-week">Loading recent data…</div>
-          </div>
-        </div>
-        <div className="benchmark-stats two" style={{opacity:0.4}}>
-          <div className="benchmark-stat"><div className="benchmark-stat-label">Avg/hr</div><div className="benchmark-stat-value">—</div></div>
-          <div className="benchmark-stat"><div className="benchmark-stat-label">Avg/del</div><div className="benchmark-stat-value">—</div></div>
-        </div>
-      </div>
-    );
-  }
+  const now = new Date();
+  const weekLabel = now.toLocaleDateString("en-AU", { day: "2-digit", month: "short" });
 
-  // ── Local zone too quiet → show Australia-wide as CONTEXT (clearly labelled).
-  // Never presented as "your zone" — a national number can't judge local
-  // performance, so it's framed as what's happening across the app.
-  if (!benchmark) {
-    if (!national) {
-      // Neither local nor national has enough data (very early days).
-      return (
-        <div className="benchmark-card">
-          <div className="benchmark-header">
-            <div>
-              <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
-              <div className="benchmark-region">{regionInfo?.label || region}</div>
-              <div className="benchmark-week">Building — not enough shifts yet</div>
-            </div>
-          </div>
-          <div className="benchmark-footer" style={{paddingTop:"4px"}}>
-            We show averages once GigTrack drivers have logged enough shifts. Keep logging — it'll appear soon.
-          </div>
-        </div>
-      );
-    }
-    return (
-      <div className="benchmark-card">
-        <div className="benchmark-header">
-          <div>
-            <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>🇦🇺 Australia-wide</div>
-            <div className="benchmark-region">All GigTrack drivers</div>
-            <div className="benchmark-week">Last 30 days</div>
-          </div>
-          <div className="benchmark-live-dot" />
-        </div>
-        <div className="benchmark-stats two">
-          <div className="benchmark-stat">
-            <div className="benchmark-stat-label">Avg/hr</div>
-            <div className="benchmark-stat-value">{national.hourly != null ? `$${national.hourly}` : "—"}</div>
-          </div>
-          <div className="benchmark-stat">
-            <div className="benchmark-stat-label">Avg/del</div>
-            <div className="benchmark-stat-value">{national.perDel != null ? `$${national.perDel}` : "—"}</div>
-          </div>
-        </div>
-        <div className="benchmark-footer">
-          Your zone ({regionInfo?.label || region}) needs a few more shifts before we can show local averages — these are Australia-wide figures from {national.shifts} shifts in the meantime.
-        </div>
-      </div>
-    );
-  }
-
-  // ── Local data exists → show it side by side with the national figure.
-  // Both are labelled so the driver reads it as "my area vs the country",
-  // not as a verdict on their own performance.
   return (
     <div className="benchmark-card">
       <div className="benchmark-header">
         <div>
-          <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Benchmarks</div>
+          <div style={{fontSize:"10px",color:"var(--purple)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:"4px",fontWeight:"700"}}>📍 Local Benchmarks</div>
           <div className="benchmark-region">{regionInfo?.label || region}</div>
-          <div className="benchmark-week">Last 30 days · GigTrack drivers</div>
+          <div className="benchmark-week">Week of {weekLabel} · GigTrack drivers</div>
         </div>
         <div className="benchmark-live-dot" />
       </div>
-
-      {/* Your zone */}
-      <div className="benchmark-group-label">Your zone</div>
-      <div className="benchmark-stats two">
+      <div className="benchmark-stats">
         <div className="benchmark-stat">
           <div className="benchmark-stat-label">Avg/hr</div>
-          <div className="benchmark-stat-value">{benchmark.hourly != null ? `$${benchmark.hourly}` : "—"}</div>
+          <div className="benchmark-stat-value">${benchmark.hourly}</div>
         </div>
         <div className="benchmark-stat">
           <div className="benchmark-stat-label">Avg/del</div>
-          <div className="benchmark-stat-value">{benchmark.perDel != null ? `$${benchmark.perDel}` : "—"}</div>
+          <div className="benchmark-stat-value">${benchmark.perDel}</div>
+        </div>
+        <div className="benchmark-stat">
+          <div className="benchmark-stat-label">Based on</div>
+          <div className="benchmark-stat-value">{benchmark.shifts} shifts</div>
         </div>
       </div>
-
-      {/* Australia-wide — muted so the local numbers stay the hero */}
-      {national && (
-        <>
-          <div className="benchmark-group-label">🇦🇺 Australia-wide</div>
-          <div className="benchmark-stats two">
-            <div className="benchmark-stat muted">
-              <div className="benchmark-stat-label">Avg/hr</div>
-              <div className="benchmark-stat-value">{national.hourly != null ? `$${national.hourly}` : "—"}</div>
-            </div>
-            <div className="benchmark-stat muted">
-              <div className="benchmark-stat-label">Avg/del</div>
-              <div className="benchmark-stat-value">{national.perDel != null ? `$${national.perDel}` : "—"}</div>
-            </div>
-          </div>
-        </>
-      )}
-
       <div className="benchmark-footer">
-        Anonymised averages · your zone from {benchmark.shifts} shift{benchmark.shifts === 1 ? "" : "s"}
-        {national ? ` · Australia-wide from ${national.shifts}` : ""} · rolling last 30 days
-      </div>
-    </div>
-  );
-}
-
-// ─── BENCHMARKS SCREEN (Local / State / National) ───
-// Presentation recreates mockups 3a/3b/3c. Data is mocked behind a single
-// seam (buildBenchmarkData) that matches the spec copy until the backend
-// provides real Local/State/National payloads. Real seams (fetchZoneBenchmark,
-// fetchZonePresence) are wired where they already exist; the richer shapes
-// (percentiles, histograms, leaderboards, city bars, trend) are placeholder.
-
-// Small reusable heatmap (7 day-cols × 4 time-rows) with a coral opacity ramp.
-function BenchHeatmap({ grid: gridProp, peakLabel } = {}) {
-  const rows = ["Brekky", "Lunch", "Arvo", "Dinner", "Late"];
-  const cols = ["M", "T", "W", "T", "F", "S", "S"];
-  // Intensity grid 0..1 — peaks Fri/Sat dinner. Mock, spec-shaped.
-  // Brekky = early-morning coffee/breakfast runs: quieter midweek, stronger
-  // on the weekend brunch trade (Sat/Sun). Callers can pass a per-region grid.
-  const grid = gridProp || [
-    [0.24, 0.22, 0.26, 0.28, 0.34, 0.58, 0.62], // Brekky
-    [0.30, 0.28, 0.32, 0.40, 0.55, 0.62, 0.48], // Lunch
-    [0.22, 0.20, 0.24, 0.30, 0.42, 0.50, 0.38], // Arvo
-    [0.55, 0.52, 0.58, 0.70, 0.95, 1.00, 0.80], // Dinner
-    [0.30, 0.28, 0.34, 0.44, 0.66, 0.72, 0.50], // Late
-  ];
-  return (
-    <div>
-      <div style={{ display: "flex", gap: "4px", marginBottom: "4px" }}>
-        <div style={{ width: "34px", flexShrink: 0 }} />
-        {cols.map((c, i) => (
-          <div key={i} style={{ flex: 1, textAlign: "center", fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>{c}</div>
-        ))}
-      </div>
-      {grid.map((row, ri) => (
-        <div key={ri} style={{ display: "flex", gap: "4px", marginBottom: "4px", alignItems: "center" }}>
-          <div style={{ width: "34px", flexShrink: 0, fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>{rows[ri]}</div>
-          {row.map((v, ci) => (
-            <div key={ci} style={{
-              flex: 1, aspectRatio: "1", borderRadius: "6px",
-              background: `rgba(240,86,46,${Math.max(0.14, v)})`,
-              transition: "background .4s ease",
-            }} />
-          ))}
-        </div>
-      ))}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
-        <span style={{ fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>Quiet</span>
-        <div style={{ flex: 1, height: "6px", borderRadius: "100px", background: "linear-gradient(90deg, rgba(240,86,46,.14), #F0562E)" }} />
-        <span style={{ fontSize: "9px", color: "var(--muted2)", fontWeight: "600" }}>Peak $</span>
-      </div>
-    </div>
-  );
-}
-
-// Day-of-week "best days to drive" strip — 7 bars (Mon..Sun) sized by median
-// $/hr. `data` is a Mon-first array of { median, shifts } (real), or null (mock).
-function BenchDayStrip({ data }) {
-  const days = ["M", "T", "W", "T", "F", "S", "S"];
-  const dayFull = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-  // Mock fallback: a believable weekend-lean shape.
-  const mock = [0.42, 0.40, 0.46, 0.55, 0.78, 1.0, 0.88].map(v => ({ rel: v, median: null, shifts: 0 }));
-  const isReal = Array.isArray(data) && data.some(d => d.median != null);
-  let bars;
-  if (isReal) {
-    // Scale across the min→max RANGE (not zero→max) so the difference between the
-    // best and worst day is visually obvious. When $/hr values are close together
-    // (e.g. $19–$33), a zero-based scale makes every bar look ~the same height;
-    // stretching the range to [0.30, 1.0] exaggerates the real spread.
-    const vals = data.filter(d => d.median != null).map(d => d.median);
-    const max = Math.max(...vals);
-    const min = Math.min(...vals);
-    const span = max - min || 1;
-    bars = data.map(d => ({
-      rel: d.median != null ? 0.30 + 0.70 * ((d.median - min) / span) : 0,
-      median: d.median,
-      shifts: d.shifts,
-    }));
-  } else {
-    bars = mock;
-  }
-  // Best day = highest median (real) or highest rel (mock).
-  const bestIdx = bars.reduce((best, b, i) => (b.rel > bars[best].rel ? i : best), 0);
-  return (
-    <div>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: "5px", height: "80px" }}>
-        {bars.map((b, i) => {
-          const isBest = i === bestIdx && b.rel > 0;
-          return (
-            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
-              {isReal && b.median != null && (
-                <div style={{ fontSize: "8px", fontWeight: "700", color: isBest ? "var(--coral-hi)" : "var(--hero-muted)", marginBottom: "3px" }}>${Math.round(b.median)}</div>
-              )}
-              <div style={{
-                width: "100%", height: `${Math.round(b.rel * 100)}%`, minHeight: "6px",
-                borderRadius: "5px 5px 0 0",
-                background: isBest ? "var(--coral)" : "rgba(255,255,255,.14)",
-                transition: "height .5s cubic-bezier(.4,0,.2,1)",
-              }} />
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ display: "flex", gap: "5px", marginTop: "6px" }}>
-        {days.map((d, i) => (
-          <div key={i} style={{ flex: 1, textAlign: "center", fontSize: "9px", color: i === bestIdx ? "var(--coral-hi)" : "var(--hero-muted)", fontWeight: i === bestIdx ? "800" : "600" }}>{d}</div>
-        ))}
-      </div>
-      <div style={{ textAlign: "center", fontSize: "9.5px", color: "var(--hero-muted)", fontWeight: "600", marginTop: "8px" }}>
-        {isReal ? `${dayFull[bestIdx]} pays best here` : "Sample — log a few shifts to see your real best days"}
-      </div>
-    </div>
-  );
-}
-
-// Distribution histogram (bell-ish) with the user's bar highlighted + "YOU".
-function BenchHistogram({ youIndex = 7, axisLo = "$18/hr", axisHi = "$40/hr", highlightLabel = "YOU" }) {
-  const bars = [0.18, 0.34, 0.52, 0.72, 0.88, 1.0, 0.94, 0.78, 0.6, 0.4];
-  return (
-    <div>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: "3px", height: "62px" }}>
-        {bars.map((h, i) => {
-          const isYou = i === youIndex;
-          return (
-            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", position: "relative" }}>
-              {isYou && highlightLabel && (
-                <div style={{ fontSize: "8px", fontWeight: "800", color: "var(--coral-hi)", marginBottom: "3px", letterSpacing: ".08em" }}>{highlightLabel}</div>
-              )}
-              <div style={{
-                width: "100%", height: `${Math.round(h * 100)}%`, minHeight: "4px",
-                borderRadius: "3px 3px 0 0",
-                background: isYou ? "var(--coral)" : "rgba(255,255,255,.14)",
-              }} />
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "6px", fontSize: "8.5px", color: "var(--hero-muted)", fontWeight: "500" }}>
-        <span>{axisLo}</span><span>zone spread</span><span>{axisHi}</span>
-      </div>
-    </div>
-  );
-}
-
-// Mini 12-week trend area line (coral-hi), SVG.
-function BenchTrendLine() {
-  const pts = [20.1, 20.8, 21.2, 20.9, 21.6, 22.0, 21.7, 22.3, 22.5, 22.4, 22.8, 22.9];
-  const W = 260, H = 54, lo = 19, hi = 24;
-  const x = i => (i / (pts.length - 1)) * W;
-  const y = v => H - ((v - lo) / (hi - lo)) * H;
-  const line = pts.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
-  const area = `${line} L ${W} ${H} L 0 ${H} Z`;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: "block" }}>
-      <defs>
-        <linearGradient id="benchTrendFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="rgba(246,134,58,.30)" />
-          <stop offset="100%" stopColor="rgba(246,134,58,0)" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill="url(#benchTrendFill)" />
-      <path d={line} fill="none" stroke="var(--coral-hi)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-// A white stat card (label + value + sub).
-function BenchStat({ label, value, sub, tone = "coral" }) {
-  const toneColor = tone === "green" ? "var(--pos)" : tone === "indigo" ? "var(--indigo)" : "var(--coral)";
-  return (
-    <div style={{ flex: 1, background: "var(--surface)", borderRadius: "18px", padding: "14px", boxShadow: "var(--shadow-card)" }}>
-      <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".08em", textTransform: "uppercase" }}>{label}</div>
-      <div style={{ fontSize: "20px", fontWeight: "800", color: toneColor, letterSpacing: "-.02em", marginTop: "6px", fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      {sub && <div style={{ fontSize: "10px", color: "var(--muted)", marginTop: "3px", fontWeight: "500" }}>{sub}</div>}
-    </div>
-  );
-}
-
-// A leaderboard / city-bars row.
-function BenchRankRow({ rank, name, value, pct, highlight = false, barTone = "beige" }) {
-  const barBg = highlight ? "var(--coral)" : barTone === "beige" ? "#E4B9A6" : "var(--indigo)";
-  return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: "10px", padding: "8px 10px", borderRadius: "12px",
-      background: highlight ? "var(--coral-dim, #FDEDE7)" : "transparent",
-    }}>
-      {rank != null && (
-        <div style={{ width: "16px", fontSize: "12px", fontWeight: "800", color: highlight ? "var(--coral)" : "var(--muted2)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{rank}</div>
-      )}
-      <div style={{ flex: 1, minWidth: 0, fontSize: "12px", fontWeight: highlight ? "800" : "600", color: highlight ? "var(--coral)" : "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
-      <div style={{ width: "72px", height: "8px", borderRadius: "100px", background: "var(--hairline)", overflow: "hidden", flexShrink: 0 }}>
-        <div style={{ height: "100%", width: `${pct}%`, borderRadius: "100px", background: barBg, transition: "width .6s cubic-bezier(.4,0,.2,1)" }} />
-      </div>
-      <div style={{ width: "44px", textAlign: "right", fontSize: "12px", fontWeight: "700", color: highlight ? "var(--coral)" : "var(--text)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-    </div>
-  );
-}
-
-// Deterministic per-region mock benchmark data. Seeded off the region id so a
-// given zone always renders the same believable figures (hourly, median, top
-// 10%, $/delivery, peak day, histogram position, heatmap grid). This is the
-// single seam to replace with real per-region data when the backend provides it.
-function regionBenchData(regionId, label) {
-  let h = 2166136261;
-  const s = String(regionId || label || "zone");
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  const rand = (n) => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return Math.abs((h >>> 0) % n); };
-  const median = 20 + rand(900) / 100;                 // $20.00–$28.99/hr
-  const spread = 4 + rand(500) / 100;                  // top-decile gap
-  const top10  = median + spread + rand(300) / 100;
-  const perDel = 10.5 + rand(450) / 100;               // $10.50–$14.99
-  const days   = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const peakDay = days[5 + rand(2)];                    // Sat or Sun lean
-  const youIdx  = 4 + rand(4);                          // where a typical driver sits (histogram)
-  // Heatmap: base template nudged per-region so grids visibly differ.
-  const base = [
-    [0.24, 0.22, 0.26, 0.28, 0.34, 0.58, 0.62],
-    [0.30, 0.28, 0.32, 0.40, 0.55, 0.62, 0.48],
-    [0.22, 0.20, 0.24, 0.30, 0.42, 0.50, 0.38],
-    [0.55, 0.52, 0.58, 0.70, 0.95, 1.00, 0.80],
-    [0.30, 0.28, 0.34, 0.44, 0.66, 0.72, 0.50],
-  ];
-  const grid = base.map((row, ri) => row.map((v, ci) => {
-    const nudge = ((rand(30) - 15) / 100);
-    return Math.max(0.12, Math.min(1, v + nudge * (ri === 3 ? 0.4 : 1)));
-  }));
-  return {
-    hourly: median.toFixed(2),
-    median: median.toFixed(2),
-    top10: top10.toFixed(2),
-    perDel: perDel.toFixed(2),
-    peakDay,
-    youIdx,
-    grid,
-    axisLo: `$${Math.floor(median - 6)}/hr`,
-    axisHi: `$${Math.ceil(top10 + 3)}/hr`,
-    sample: 60 + rand(180),
-  };
-}
-
-function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialScout = false }) {
-  const [level, setLevel] = useState("local");
-  const regionInfo = REGIONS.find(r => r.id === region);
-  // During beta the Local view operates at bucket level (e.g. "Greater Brisbane
-  // South") so data accrues faster; post-beta (BETA_ZONE_BUCKETS off) it's the
-  // exact zone label. State is resolved the same way either mode.
-  const zoneLabel = BETA_ZONE_BUCKETS
-    ? (bucketLabelFor(region) || "your zone")
-    : (regionInfo?.label || "your zone");
-  const stateLabel = regionInfo?.state || bucketState(region) || "your state";
-
-  // ── Compare a Region (scouting) ──
-  // When a scout region is chosen, the Local tab shows that region's read-only
-  // breakdown instead of the user's own zone — without changing their setting.
-  // During beta the scout target is a BUCKET id; post-beta it's a zone id.
-  const [scoutId, setScoutId] = useState(initialScout && region ? "__pick__" : null);
-  const scouting = scoutId != null && scoutId !== "__pick__";
-  // Whether the "Compare a region" side is selected — true while picking
-  // (__pick__) or after a region is chosen. Drives the toggle highlight so it
-  // doesn't fall back to "Your zone" during the pick step.
-  const compareActive = scoutId != null;
-  // The region/bucket whose data the Local tab renders (own zone, or scouted).
-  const activeId = scouting ? scoutId : (BETA_ZONE_BUCKETS ? presenceBucket(region) : region);
-  const scoutLabel = scouting
-    ? (BETA_ZONE_BUCKETS ? (bucketLabelFor(scoutId) || "region") : (REGIONS.find(r => r.id === scoutId)?.label || "region"))
-    : null;
-  const activeLabel = scouting ? scoutLabel : zoneLabel;
-  // Seed benchmark data off the active bucket/zone id so all suburbs in a bucket
-  // share one figure that matches the label shown.
-  const bd = regionBenchData(activeId, activeLabel);
-
-  // Scout picker options: buckets (beta) or granular zones (post-beta),
-  // grouped by state. Excludes the user's own bucket/zone.
-  const ownActive = BETA_ZONE_BUCKETS ? presenceBucket(region) : region;
-  const scoutOptionsByState = BETA_ZONE_BUCKETS
-    ? bucketOptionsByState()
-    : REGIONS.reduce((acc, r) => { (acc[r.state] = acc[r.state] || []).push({ bucketId: r.id, label: r.label, state: r.state }); return acc; }, {});
-
-  // (State/National "shifts logged" now come from real RPC counts, not the
-  // user's own local trips — see stateShiftTotal and natl.shifts.)
-
-  // Per-state mock leaderboards so the comparison matches the user's actual
-  // state (QLD user sees QLD zones, NSW sees NSW, etc.) until the backend
-  // provides real per-state data. The user's own zone is spliced in at #3.
-  const STATE_ZONES = {
-    QLD: { median: "$23.80/hr", rows: [["Brisbane City","$29.1",100],["Fortitude Valley","$28.0",96],["Southport (GC)","$24.6",84],["Surfers Paradise","$21.7",74],["Maroochydore","$18.9",65]] },
-    NSW: { median: "$24.60/hr", rows: [["Sydney CBD","$30.2",100],["Parramatta","$28.4",95],["Bondi","$25.1",84],["Newcastle","$22.0",74],["Wollongong","$19.4",65]] },
-    VIC: { median: "$23.80/hr", rows: [["Docklands","$29.1",100],["Southbank","$28.0",96],["St Kilda","$24.6",84],["Geelong","$21.7",74],["Ballarat","$18.9",65]] },
-    WA:  { median: "$21.40/hr", rows: [["Perth CBD","$27.3",100],["Fremantle","$25.6",94],["Joondalup","$22.1",81],["Mandurah","$19.8",73],["Rockingham","$17.9",66]] },
-    SA:  { median: "$20.10/hr", rows: [["Adelaide CBD","$26.4",100],["Glenelg","$24.2",92],["Prospect","$21.0",80],["Marion","$18.7",71],["Mount Barker","$16.8",64]] },
-    TAS: { median: "$19.20/hr", rows: [["Hobart CBD","$24.8",100],["Sandy Bay","$22.6",91],["Launceston","$20.3",82],["Devonport","$17.9",72],["Burnie","$16.4",66]] },
-    NT:  { median: "$21.80/hr", rows: [["Darwin City","$26.9",100],["Palmerston","$24.1",90],["Casuarina","$21.7",81],["Alice Springs","$19.2",71],["Nightcliff","$17.6",65]] },
-    ACT: { median: "$23.10/hr", rows: [["Canberra City","$27.6",100],["Braddon","$25.4",92],["Belconnen","$22.3",81],["Woden","$20.1",73],["Gungahlin","$18.2",66]] },
-  };
-  const stateData = STATE_ZONES[stateLabel] || STATE_ZONES.VIC;
-  // Build a 6-row leaderboard: top 2, the user's zone (highlighted #3), then next 3.
-  const leaderboard = [
-    { rank: 1, name: stateData.rows[0][0], value: stateData.rows[0][1], pct: stateData.rows[0][2] },
-    { rank: 2, name: stateData.rows[1][0], value: stateData.rows[1][1], pct: stateData.rows[1][2] },
-    { rank: 3, name: zoneLabel, value: "$27.4", pct: 94, highlight: true },
-    { rank: 4, name: stateData.rows[2][0], value: stateData.rows[2][1], pct: stateData.rows[2][2] },
-    { rank: 5, name: stateData.rows[3][0], value: stateData.rows[3][1], pct: stateData.rows[3][2] },
-    { rank: 6, name: stateData.rows[4][0], value: stateData.rows[4][1], pct: stateData.rows[4][2] },
-  ];
-
-  // National comparison by state/territory (ranked $/hr), with the user's own
-  // state highlighted. Medians reuse the per-state figures above for consistency.
-  const states = [
-    { name: "NSW", value: "$24.6", pct: 100 },
-    { name: "VIC", value: "$23.8", pct: 97 },
-    { name: "ACT", value: "$23.1", pct: 94 },
-    { name: "NT",  value: "$21.8", pct: 89 },
-    { name: "QLD", value: "$23.8", pct: 97 },
-    { name: "WA",  value: "$21.4", pct: 87 },
-    { name: "SA",  value: "$20.1", pct: 82 },
-    { name: "TAS", value: "$19.2", pct: 78 },
-  ].sort((a, b) => parseFloat(b.value.slice(1)) - parseFloat(a.value.slice(1)));
-  const userStateRank = stateLabel ? (states.findIndex(s => s.name === stateLabel) + 1 || null) : null;
-  const STATE_NAMES = { NSW:"New South Wales", VIC:"Victoria", QLD:"Queensland", WA:"Western Australia", SA:"South Australia", ACT:"ACT", TAS:"Tasmania", NT:"Northern Territory" };
-
-  // Real seams wired where they exist (used lightly; richer shapes are mocked).
-  const [live, setLive] = useState(null);
-  useEffect(() => {
-    let cancelled = false;
-    if (region) {
-      fetchZonePresence(presenceBucket(region)).then(c => { if (!cancelled) setLive(c); });
-    }
-    return () => { cancelled = true; };
-  }, [region]);
-
-  // ── Tier 1: real benchmark for the active zone/bucket (or scouted one) ──
-  // real === undefined → still loading; null → gate not met (not enough data);
-  // object → real aggregates. Local view prefers real over the seeded mock.
-  const [real, setReal] = useState(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setReal(undefined);
-    const ids = regionsInBucket(activeId);
-    if (ids.length) {
-      fetchBucketBenchmark(ids, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setReal(r); });
-    } else {
-      setReal(null);
-    }
-    return () => { cancelled = true; };
-  }, [activeId]);
-  const hasReal = real && real.shifts > 0;
-
-  // Home-zone real benchmark — fetched off the USER'S OWN bucket regardless of
-  // scouting, so the scout view can compare "your zone vs here". Only used when
-  // both sides are real (guarded below).
-  const [homeReal, setHomeReal] = useState(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setHomeReal(undefined);
-    const homeIds = regionsInBucket(region);
-    if (homeIds.length) {
-      fetchBucketBenchmark(homeIds, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setHomeReal(r); });
-    } else {
-      setHomeReal(null);
-    }
-    return () => { cancelled = true; };
-  }, [region]);
-  // The scout comparison is only shown when BOTH the home zone and the scouted
-  // zone have real data — never compare a real number against a sample one.
-  const homeMedian = homeReal && homeReal.shifts > 0
-    ? (homeReal.medianHourly != null ? homeReal.medianHourly : homeReal.avgHourly)
-    : null;
-  const scoutMedian = scouting && hasReal
-    ? (real.medianHourly != null ? real.medianHourly : real.avgHourly)
-    : null;
-  const showScoutCompare = scouting && homeMedian != null && scoutMedian != null;
-  const scoutDelta = showScoutCompare ? (scoutMedian - homeMedian) : null;
-  const homeZoneLabel = BETA_ZONE_BUCKETS ? (bucketLabelFor(region) || "your zone") : (regionInfo?.label || "your zone");
-
-  // The user's own median $/hr in the active bucket (from their local shifts).
-  // Feeds the real percentile call and the "You" stat.
-  const bucketRegionIds = regionsInBucket(activeId);
-  const myBucketHourly = (() => {
-    const cutoff = Date.now() - BENCHMARK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-    const rates = trips
-      .filter(t => bucketRegionIds.includes(t.region) && new Date(t.ts).getTime() >= cutoff && t.hourly != null && t.totalHrs > 0)
-      .map(t => Number(t.hourly))
-      .sort((a, b) => a - b);
-    if (!rates.length) return null;
-    const mid = Math.floor(rates.length / 2);
-    return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
-  })();
-
-  // ── Tier 2a: real percentile for the user in their own zone ──
-  // Only meaningful for the user's own zone (not scouting) and when we know
-  // their hourly. null → gate not met → fall back to honest copy.
-  const [pct, setPct] = useState(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setPct(undefined);
-    if (!scouting && bucketRegionIds.length && myBucketHourly != null) {
-      fetchZonePercentile(bucketRegionIds, myBucketHourly, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS)
-        .then(r => { if (!cancelled) setPct(r); });
-    } else {
-      setPct(null);
-    }
-    return () => { cancelled = true; };
-  }, [activeId, scouting, myBucketHourly]);
-
-  // ── Tier 2b: real per-state leaderboard ──
-  const [stateBoard, setStateBoard] = useState(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setStateBoard(undefined);
-    if (stateLabel && stateLabel !== "your state") {
-      fetchStateLeaderboard(stateLabel, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS, 8)
-        .then(rows => { if (!cancelled) setStateBoard(rows); });
-    } else {
-      setStateBoard([]);
-    }
-    return () => { cancelled = true; };
-  }, [stateLabel]);
-
-  // ── Tier 5: real state-wide busiest platform (across all drivers) ──
-  // undefined → loading; null → gate not met (honest empty state);
-  // { label, pct } → real cross-user split.
-  const [statePlatform, setStatePlatform] = useState(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setStatePlatform(undefined);
-    if (stateLabel && stateLabel !== "your state") {
-      fetchStatePlatformSplit(stateLabel, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS)
-        .then(r => { if (!cancelled) setStatePlatform(r); });
-    } else {
-      setStatePlatform(null);
-    }
-    return () => { cancelled = true; };
-  }, [stateLabel]);
-
-  // ── Tier 3: real "best days" day-of-week strip for the active bucket ──
-  const [dow, setDow] = useState(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setDow(undefined);
-    const ids = regionsInBucket(activeId);
-    if (ids.length) {
-      fetchZoneDayOfWeek(ids, BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setDow(r); });
-    } else {
-      setDow(null);
-    }
-    return () => { cancelled = true; };
-  }, [activeId]);
-
-  // ── National: real overview + per-state leaderboard ──
-  const [natl, setNatl] = useState(undefined);
-  const [natlStates, setNatlStates] = useState(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setNatl(undefined); setNatlStates(undefined);
-    fetchNationalOverview(BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(r => { if (!cancelled) setNatl(r); });
-    fetchNationalStates(BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS).then(rows => { if (!cancelled) setNatlStates(rows); });
-    return () => { cancelled = true; };
-  }, []);
-  // Real national state leaderboard (uppercased keys → labels) and the user's rank.
-  const STATE_KEY_NAMES = { nsw:"New South Wales", vic:"Victoria", qld:"Queensland", wa:"Western Australia", sa:"South Australia", act:"ACT", tas:"Tasmania", nt:"Northern Territory" };
-  const hasNatlStates = Array.isArray(natlStates) && natlStates.length > 0;
-  const natlBoard = hasNatlStates
-    ? natlStates.map((s, i) => ({
-        rank: i + 1,
-        key: s.stateKey,
-        name: STATE_KEY_NAMES[s.stateKey] || s.stateKey.toUpperCase(),
-        value: `$${s.median != null ? s.median.toFixed(1) : "—"}`,
-        pct: natlStates[0].median ? Math.round((s.median / natlStates[0].median) * 100) : 100,
-      }))
-    : [];
-  const ownStateKey = (stateLabel || "").toLowerCase();
-  const natlUserRank = hasNatlStates ? (natlBoard.findIndex(s => s.key === ownStateKey) + 1 || null) : null;
-  const DOW_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-
-  // Real leaderboard rows (from stateBoard) when we have them; else the mock.
-  const ownBucketKey = BETA_ZONE_BUCKETS ? presenceBucket(region) : region;
-  const hasRealBoard = Array.isArray(stateBoard) && stateBoard.length > 0;
-  const displayBoard = hasRealBoard
-    ? stateBoard.map((row, i) => ({
-        rank: i + 1,
-        name: bucketLabelFor(row.bucketKey) || row.bucketKey,
-        value: `$${row.median != null ? row.median.toFixed(1) : "—"}`,
-        pct: stateBoard[0].median ? Math.round((row.median / stateBoard[0].median) * 100) : 100,
-        highlight: row.bucketKey === ownBucketKey,
-      }))
-    : leaderboard;
-  // Rank of the user's own bucket in the real board (for the hero line).
-  const realStateRank = hasRealBoard
-    ? (stateBoard.findIndex(r => r.bucketKey === ownBucketKey) + 1 || null)
-    : null;
-  // State-wide shift total across all buckets with data (real, not the user's
-  // personal count) for the "shifts logged" stat on the State tab.
-  const stateShiftTotal = hasRealBoard
-    ? stateBoard.reduce((sum, r) => sum + (r.shifts || 0), 0)
-    : 0;
-
-  // The user's own real median $/hr in this bucket, and their real position on
-  // the distribution (from the Tier-2 percentile RPC). Both null when we don't
-  // have enough of the user's own data or the zone gate isn't met — in that case
-  // the UI shows honest placeholders rather than invented numbers.
-  const youReal = myBucketHourly;
-  // Map percentile (0–100) to a histogram bar index (0–9). null when no real
-  // percentile → no "YOU" marker is drawn.
-  const youIdxReal = (!scouting && pct && pct.percentile != null)
-    ? Math.max(0, Math.min(9, Math.round((pct.percentile / 100) * 9)))
-    : null;
-
-  // Merged view model for the Local tab: prefer real aggregates. Zone-level
-  // numbers (median, per-del, top-10%) fall back to the seeded sample ONLY in
-  // the honest "SAMPLE DATA" state (badge + footer make this explicit). The
-  // user's own "You" value and histogram position are real-or-absent — never
-  // faked — since a fabricated number about the user themselves is the worst
-  // kind of mock-as-real.
-  const view = {
-    median: hasReal && real.medianHourly != null ? real.medianHourly.toFixed(2)
-          : hasReal && real.avgHourly != null ? real.avgHourly.toFixed(2)
-          : bd.median,
-    perDel: hasReal && real.perDel != null ? real.perDel.toFixed(2) : bd.perDel,
-    top10:  hasReal && real.topHourly != null ? real.topHourly.toFixed(2) : bd.top10,
-    shifts: hasReal ? real.shifts : null,
-    youReal:    youReal != null ? youReal.toFixed(2) : null,
-    youIdx:     youIdxReal,   // real percentile position, or null (no marker)
-    axisLo: bd.axisLo, axisHi: bd.axisHi,
-    isReal: hasReal,
-  };
-
-  const levels = [
-    { id: "local", label: "Local" },
-    { id: "state", label: "State" },
-    { id: "national", label: "National" },
-  ];
-
-  const Footer = ({ children }) => (
-    <div style={{ textAlign: "center", fontSize: "10px", color: "var(--muted2)", fontWeight: "500", padding: "16px 8px 4px" }}>{children}</div>
-  );
-
-  const HeroBubble = ({ children }) => (
-    <div style={{ position: "relative", overflow: "hidden", background: "var(--hero-bg)", borderRadius: "24px", padding: "20px 18px", boxShadow: "0 18px 34px -16px rgba(27,26,23,.5)" }}>
-      <div style={{ position: "absolute", top: "-40px", right: "-30px", width: "180px", height: "180px", pointerEvents: "none", background: "radial-gradient(circle, rgba(240,86,46,.45), transparent 70%)" }} />
-      <div style={{ position: "relative" }}>{children}</div>
-    </div>
-  );
-
-  return (
-    <div className="view active">
-      {/* Header */}
-      <div style={{ padding: "14px 16px 6px", display: "flex", alignItems: "center", gap: "12px" }}>
-        <div onClick={onBack} role="button" aria-label="Back" style={{
-          width: "34px", height: "34px", borderRadius: "9px", background: "var(--chip)",
-          display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-          fontSize: "18px", color: "var(--text)", flexShrink: 0,
-        }}>‹</div>
-        <div>
-          <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--text)", letterSpacing: "-.02em" }}>Benchmarks</div>
-          <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--muted)" }}>Anonymised · last 30 days</div>
-        </div>
-      </div>
-
-      {/* Segmented control */}
-      <div style={{ padding: "8px 16px 4px" }}>
-        <div style={{ display: "flex", gap: "0", background: "var(--chip)", borderRadius: "100px", padding: "3px" }}>
-          {levels.map(l => {
-            const active = level === l.id;
-            return (
-              <div key={l.id} onClick={() => setLevel(l.id)} role="button" style={{
-                flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
-                fontSize: "12px", fontWeight: "700",
-                color: active ? "var(--on-coral)" : "var(--muted)",
-                background: active ? "var(--coral)" : "transparent",
-                boxShadow: active ? "var(--shadow-green)" : "none",
-                transition: "background .2s, color .2s",
-              }}>{l.label}</div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="scroll-area">
-        <div style={{ padding: "12px 16px 90px" }}>
-
-          {/* ── LOCAL ── */}
-          {level === "local" && (
-            <>
-              {/* Scout switcher: flip between your zone and another region */}
-              <div style={{ marginBottom: "12px" }}>
-                <div style={{ display: "flex", gap: "6px", background: "var(--chip)", borderRadius: "100px", padding: "3px" }}>
-                  <div onClick={() => setScoutId(null)} role="button" style={{
-                    flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
-                    fontSize: "12px", fontWeight: "700",
-                    color: !compareActive ? "var(--on-coral)" : "var(--muted)",
-                    background: !compareActive ? "var(--coral)" : "transparent",
-                    boxShadow: !compareActive ? "var(--shadow-green)" : "none",
-                  }}>Your zone</div>
-                  <div onClick={() => setScoutId(scouting ? scoutId : "__pick__")} role="button" style={{
-                    flex: 1, textAlign: "center", padding: "8px 0", borderRadius: "100px", cursor: "pointer",
-                    fontSize: "12px", fontWeight: "700",
-                    color: compareActive ? "var(--on-coral)" : "var(--muted)",
-                    background: compareActive ? "var(--coral)" : "transparent",
-                    boxShadow: compareActive ? "var(--shadow-green)" : "none",
-                  }}>Compare a region</div>
-                </div>
-
-                {/* Region picker — shown while scouting (or mid-pick) */}
-                {scoutId != null && (
-                  <div style={{ marginTop: "8px" }}>
-                    <select
-                      className="input-field"
-                      value={scouting ? scoutId : ""}
-                      onChange={e => setScoutId(e.target.value || "__pick__")}
-                      style={{ width: "100%", fontSize: "14px", fontFamily: "'Inter',sans-serif", fontWeight: "600" }}
-                    >
-                      <option value="">— Choose a region to compare —</option>
-                      {Object.entries(scoutOptionsByState).map(([st, opts]) => (
-                        <optgroup key={st} label={st}>
-                          {opts.filter(o => o.bucketId !== ownActive).map(o => (
-                            <option key={o.bucketId} value={o.bucketId}>{o.label}</option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-
-              {/* Scouting banner */}
-              {scouting && (
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "var(--coral-dim)", border: "1px solid var(--coral-border)", borderRadius: "12px", padding: "9px 12px", marginBottom: "10px" }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-                  <span style={{ fontSize: "11px", color: "var(--coral)", fontWeight: "600" }}>
-                    Scouting <strong>{activeLabel}</strong> — what drivers there see. Your zone is unchanged.
-                  </span>
-                </div>
-              )}
-
-              {/* Your zone vs here — only when BOTH sides have real data */}
-              {showScoutCompare && (
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "12px", padding: "11px 14px", marginBottom: "10px", boxShadow: "var(--shadow-card)" }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{homeZoneLabel}</div>
-                    <div style={{ fontSize: "15px", fontWeight: "800", color: "var(--text)" }}>${homeMedian.toFixed(2)}<span style={{ fontSize: "10px", fontWeight: "600", color: "var(--muted)" }}>/hr</span></div>
-                  </div>
-                  <div style={{ flexShrink: 0, textAlign: "center", padding: "0 6px" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "800", color: scoutDelta >= 0 ? "var(--pos)" : "var(--muted)" }}>{scoutDelta >= 0 ? "+" : "−"}${Math.abs(scoutDelta).toFixed(2)}</div>
-                    <div style={{ fontSize: "8px", fontWeight: "600", color: "var(--muted2)", letterSpacing: ".04em" }}>{scoutDelta >= 0 ? "MORE HERE" : "LESS HERE"}</div>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0, textAlign: "right" }}>
-                    <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--coral)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{activeLabel}</div>
-                    <div style={{ fontSize: "15px", fontWeight: "800", color: "var(--coral)" }}>${scoutMedian.toFixed(2)}<span style={{ fontSize: "10px", fontWeight: "600", color: "var(--muted)" }}>/hr</span></div>
-                  </div>
-                </div>
-              )}
-
-              {/* Prompt state: scout mode on but no region chosen yet */}
-              {scoutId === "__pick__" ? (
-                <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "36px 24px", textAlign: "center", boxShadow: "var(--shadow-card)" }}>
-                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "10px" }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-                  <div style={{ fontSize: "14px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>Compare another region</div>
-                  <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>Pick any region above to see its best times to drive, $/hr and peak days — handy if you're moving or travelling.</div>
-                </div>
-              ) : (
-              <>
-              <HeroBubble>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--coral-hi)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></svg>
-                    <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".04em" }}>{activeLabel}</span>
-                  </div>
-                  {/* Honest data-source badge */}
-                  <span style={{
-                    fontSize: "8.5px", fontWeight: "800", letterSpacing: ".05em",
-                    padding: "3px 8px", borderRadius: "100px",
-                    color: view.isReal ? "var(--hero-ink)" : "var(--hero-muted)",
-                    background: view.isReal ? "rgba(30,158,104,.22)" : "rgba(255,255,255,.1)",
-                  }}>{real === undefined ? "LOADING…" : view.isReal ? `LIVE · ${view.shifts} SHIFTS` : "SAMPLE DATA"}</span>
-                </div>
-                {scouting ? (
-                  <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
-                    Drivers here earn a median of <span style={{ color: "var(--coral-hi)" }}>${view.median}/hr</span>
-                  </div>
-                ) : (
-                  <div style={{ fontSize: "22px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.02em", lineHeight: "1.2", marginBottom: "16px" }}>
-                    {pct && pct.percentile != null
-                      ? <>You earn more than <span style={{ color: "var(--coral-hi)" }}>{pct.percentile}% of drivers</span> here</>
-                      : view.isReal
-                        ? <>Your area's median is <span style={{ color: "var(--coral-hi)" }}>${view.median}/hr</span></>
-                        : <>See how you stack up <span style={{ color: "var(--coral-hi)" }}>once there's data</span> here</>}
-                  </div>
-                )}
-                <BenchHistogram youIndex={view.youIdx} axisLo={view.axisLo} axisHi={view.axisHi} highlightLabel={(!scouting && view.youIdx != null) ? "YOU" : ""} />
-              </HeroBubble>
-
-              <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                {scouting ? (
-                  <>
-                    <BenchStat label="Median" value={`$${view.median}`} sub="per hour" tone="coral" />
-                    <BenchStat label="Top 10%" value={`$${view.top10}`} sub="best drivers" tone="green" />
-                    <BenchStat label="$/delivery" value={`$${view.perDel}`} sub="zone avg" tone="indigo" />
-                  </>
-                ) : (
-                  <>
-                    <BenchStat label="You" value={view.youReal != null ? `$${view.youReal}` : "—"} sub={view.youReal != null ? "your median" : "log shifts here"} tone="coral" />
-                    <BenchStat label="Zone median" value={`$${view.median}`} sub={view.isReal ? "your area" : "sample"} tone="green" />
-                    <BenchStat label="Top 10%" value={`$${view.top10}`} sub="reach goal" tone="indigo" />
-                  </>
-                )}
-              </div>
-
-              <div style={{ position: "relative", overflow: "hidden", background: "var(--hero-bg)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "0 14px 28px -14px rgba(27,26,23,.45)" }}>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "16px" }}>
-                  <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--coral-hi)", letterSpacing: ".06em", textTransform: "uppercase" }}>Best days to drive {scouting ? "there" : "here"}</div>
-                  {dow === undefined && <div style={{ fontSize: "9px", color: "var(--hero-muted)", fontWeight: "600" }}>loading…</div>}
-                </div>
-                <BenchDayStrip data={dow} />
-              </div>
-
-              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "16px 18px", marginTop: "10px", boxShadow: "var(--shadow-card)", display: "flex", alignItems: "center" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "20px", fontWeight: "800", color: "var(--pos)", fontVariantNumeric: "tabular-nums" }}>{view.isReal ? view.shifts : "—"}</div>
-                  <div style={{ fontSize: "10px", color: "var(--muted)", fontWeight: "600", marginTop: "2px" }}>shifts logged · 30d</div>
-                </div>
-                {/* $/delivery only in non-scout view. While scouting, the hero
-                    stats row already shows a $/delivery square, so repeating it
-                    here is a duplicate (Needs #4). */}
-                {!scouting && (
-                  <>
-                    <div style={{ width: "1px", alignSelf: "stretch", background: "var(--hairline)", margin: "0 14px" }} />
-                    <div style={{ flex: 2 }}>
-                      <div style={{ fontSize: "10px", color: "var(--muted2)", fontWeight: "700", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "4px" }}>$/delivery here</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>Zone avg ${view.perDel}</span>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <Footer>{view.isReal ? `Based on ${view.shifts} real shifts logged in ${activeLabel} · last 30 days` : `Sample data for ${activeLabel} — real numbers appear once enough shifts are logged`}</Footer>
-              </>
-              )}
-            </>
-          )}
-
-          {/* ── STATE ── */}
-          {level === "state" && (
-            <>
-              <HeroBubble>
-                <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "10px" }}>Your zone rank · {stateLabel}</div>
-                {hasRealBoard && realStateRank ? (
-                  <>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
-                      <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>#{realStateRank} <span style={{ fontSize: "20px", fontWeight: "600", color: "var(--hero-muted)" }}>/ {stateBoard.length}</span></div>
-                    </div>
-                    <div style={{ fontSize: "12px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "12px", lineHeight: "1.5" }}>
-                      {zoneLabel} ranks #{realStateRank} of {stateBoard.length} {stateLabel} {stateBoard.length === 1 ? "zone" : "zones"} with data. Zone median is <span style={{ color: "var(--hero-ink)", fontWeight: "700" }}>${stateBoard[realStateRank - 1].median != null ? stateBoard[realStateRank - 1].median.toFixed(2) : "—"}/hr</span>.
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
-                      <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-muted)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>—</div>
-                    </div>
-                    <div style={{ fontSize: "12px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "12px", lineHeight: "1.5" }}>
-                      Not enough {stateLabel} data yet to rank zones. Rankings appear as drivers log shifts across the state.
-                    </div>
-                  </>
-                )}
-              </HeroBubble>
-
-              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
-                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>Top {stateLabel} zones · $/hr</div>
-                {hasRealBoard ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    {displayBoard.map(r => (
-                      <BenchRankRow key={r.rank} rank={r.rank} name={r.name} value={r.value} pct={r.pct} highlight={r.highlight} />
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ padding: "20px 8px", textAlign: "center" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>No {stateLabel} rankings yet</div>
-                    <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>Zone rankings appear once enough shifts are logged across {stateLabel}.</div>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat
-                  label="Busiest platform"
-                  value={statePlatform ? statePlatform.label : "—"}
-                  sub={statePlatform
-                    ? `${statePlatform.pct}% of ${stateLabel} shifts`
-                    : (statePlatform === undefined ? "loading…" : "not enough data yet")}
-                  tone="coral" />
-                <BenchStat label="Shifts logged" value={stateShiftTotal > 0 ? String(stateShiftTotal) : "—"} sub={`across ${stateLabel} · 30d`} tone="green" />
-              </div>
-
-              <Footer>{hasRealBoard ? `Real GigTrack shifts logged in ${stateLabel} · last 30 days` : `Sample data — real ${stateLabel} rankings appear as shifts are logged`}</Footer>
-            </>
-          )}
-
-          {/* ── NATIONAL ── */}
-          {level === "national" && (
-            <>
-              <HeroBubble>
-                <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--hero-muted)", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "8px" }}>National median · $/hr</div>
-                {natl && natl.median != null ? (
-                  <>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginBottom: "6px" }}>
-                      <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-ink)", letterSpacing: "-.03em", lineHeight: "1", fontVariantNumeric: "tabular-nums" }}>${natl.median.toFixed(2)}</div>
-                      {natlUserRank && <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--coral-hi)" }}>{stateLabel} ranks #{natlUserRank}</div>}
-                    </div>
-                    <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "6px" }}>Based on {natl.shifts} shift{natl.shifts === 1 ? "" : "s"} logged nationwide · last {BENCHMARK_WINDOW_DAYS} days</div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ fontSize: "40px", fontWeight: "800", color: "var(--hero-muted)", letterSpacing: "-.03em", lineHeight: "1" }}>—</div>
-                    <div style={{ fontSize: "11px", color: "var(--hero-muted)", fontWeight: "500", marginTop: "10px", lineHeight: "1.5" }}>Not enough shifts logged nationwide yet. Real figures appear as drivers log shifts.</div>
-                  </>
-                )}
-              </HeroBubble>
-
-              <div style={{ background: "var(--surface)", borderRadius: "18px", padding: "18px", marginTop: "10px", boxShadow: "var(--shadow-card)" }}>
-                <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "14px" }}>States &amp; territories · $/hr</div>
-                {hasNatlStates ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    {natlBoard.map(s => (
-                      <BenchRankRow key={s.key} rank={s.rank} name={s.name} value={s.value} pct={s.pct} highlight={s.key === ownStateKey} />
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ padding: "20px 8px", textAlign: "center" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>No national data yet</div>
-                    <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>State rankings appear once shifts are logged around the country.</div>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <BenchStat label="Shifts logged" value={natl && natl.shifts > 0 ? String(natl.shifts) : "—"} sub={`nationwide · ${BENCHMARK_WINDOW_DAYS}d`} tone="green" />
-                <BenchStat label="Peak day (AU)" value={natl && natl.peakDow != null ? DOW_NAMES[natl.peakDow] : "—"} sub={natl && natl.peakDow != null ? "highest median $/hr" : "no data yet"} tone="coral" />
-              </div>
-
-              <Footer>{natl && natl.median != null ? `Real GigTrack shifts logged nationwide · last ${BENCHMARK_WINDOW_DAYS} days` : `Nationwide figures appear as drivers log shifts`}</Footer>
-            </>
-          )}
-
-        </div>
+        Based on anonymised GigTrack data · Updates weekly<br/>
+        <span style={{color:"var(--blue)"}}>Live regional data activates when Firebase connects</span>
       </div>
     </div>
   );
@@ -4852,7 +2652,7 @@ function WeeklyGoalCard({ trips, weeklyGoal }) {
 }
 
 // ─── HOME SCREEN ───
-function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, activeShift, onStartTimer, onEndTimer, onPauseTimer, onResumeTimer, onOrderSession, weeklyGoal, onResumeShiftScreen, region, isPro = false, benchmarksUnlocked = false, benchmarkDaysRemaining = 0, onUpgrade, onLogShift, onDetail, onBenchmarks, liveStatus = null, onGoOnline, onGoOffline, catchupTask = null, catchupRemaining = 0, onResumeCatchup, onDismissCatchup }) {
+function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, activeShift, onStartTimer, onEndTimer, onPauseTimer, onResumeTimer, onOrderSession, weeklyGoal, onResumeShiftScreen, region, isPro = false, onUpgrade, onLogShift, onDetail, liveStatus = null, onGoOnline, onGoOffline }) {
   const { fyStart } = getFYBounds();
   const { weekStart, weekEnd } = getWeekBounds();
   const fyTrips = trips.filter(t => new Date(t.ts) >= fyStart);
@@ -4861,15 +2661,6 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
   const showWarning = fyKm >= ATO_KM_WARNING;
 
   const weekEarned = weekTrips.reduce((s, t) => s + t.totalEarned, 0);
-
-  // Tick once a second while a shift is running (and not paused) so the
-  // "Shift in progress" card's timer climbs live, not just on refresh.
-  const [, setNowTick] = useState(0);
-  useEffect(() => {
-    if (!activeShift || activeShift.paused) return;
-    const id = setInterval(() => setNowTick(t => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [activeShift?.resumedAt, activeShift?.paused, !!activeShift]);
 
   // Weekly stats for the 3-tile row (matches the hero earnings figure)
   const weekActiveHrs  = weekTrips.reduce((s, t) => s + (t.activeMin || 0), 0);
@@ -4914,145 +2705,130 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
 
   return (
     <div className="view active" id="view-home">
-      {/* Top bar — logo mark + wordmark left, avatar-to-Settings right */}
-      <div style={{
-        padding:"14px 18px 8px",
-        display:"flex",alignItems:"center",justifyContent:"space-between",
-      }}>
-        <GTBrand size={26} fontSize={17} />
-        <div
-          onClick={onSettings}
-          role="button"
-          aria-label="Settings"
-          style={{
-            width:"34px",height:"34px",borderRadius:"50%",
-            background:"var(--chip)",color:"var(--text)",
-            display:"flex",alignItems:"center",justifyContent:"center",
-            fontSize:"14px",fontWeight:"700",cursor:"pointer",
-            letterSpacing:"0",flexShrink:0,
-          }}
-        >
-          {(user?.name?.trim()?.[0] || "D").toUpperCase()}
+      {/* Status bar */}
+      <div className="home-status-bar">
+        <div className="home-status-name"><GTBrand size={22} fontSize={14} /></div>
+        <div className="home-status-right">
+          <div className="home-status-dot" style={{background: isPro ? "var(--purple)" : "#2a9d5c"}}></div>
+          <div className="home-status-plan">{isPro ? "Pro" : "Free"}</div>
         </div>
       </div>
 
       <div style={{flex:1,overflowY:"auto",paddingBottom:"96px"}}>
-        {/* Greeting */}
-        <div style={{padding:"6px 18px 0"}}>
-          <div style={{fontSize:"14px",color:"var(--muted)",fontWeight:"600"}}>
-            Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}, {user?.name?.split(" ")[0] || "Driver"}
+        {/* Hero — Cash App style */}
+        <div style={{padding:"14px 22px 4px"}}>
+          <div style={{fontSize:"14px",color:"var(--muted)",fontWeight:"400",marginBottom:"0"}}>
+            Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"},
+          </div>
+          <div style={{fontSize:"22px",fontWeight:"700",color:"var(--text)",letterSpacing:"-.02em",marginTop:"-2px"}}>
+            {user?.name?.split(" ")[0] || "Driver"}
           </div>
         </div>
 
-        {/* Earnings bubble — dark card w/ coral glow + conic goal ring */}
-        <div style={{padding:"12px 16px 0"}}>
-          <div style={{
-            position:"relative",overflow:"hidden",
-            background:"var(--hero-bg)",borderRadius:"24px",padding:"18px 18px 16px",
-            boxShadow:"0 18px 34px -16px rgba(27,26,23,.5)",
-          }}>
-            {/* coral radial glow, top-right */}
-            <div style={{
-              position:"absolute",top:"-40px",right:"-30px",
-              width:"180px",height:"180px",pointerEvents:"none",
-              background:"radial-gradient(circle, rgba(240,86,46,.5), transparent 70%)",
-            }} />
-
-            {/* conic goal ring, top-right */}
-            {weeklyGoal > 0 && (
-              <div style={{
-                position:"absolute",top:"18px",right:"18px",
-                width:"52px",height:"52px",borderRadius:"50%",
-                background:`conic-gradient(var(--coral) 0% ${goalPct}%, rgba(255,255,255,.12) ${goalPct}% 100%)`,
-                display:"flex",alignItems:"center",justifyContent:"center",
-              }}>
+        <div style={{padding:"22px 22px 4px"}}>
+          <div style={{fontSize:"11px",fontWeight:"600",color:"var(--muted2)",letterSpacing:".04em",textTransform:"uppercase",marginBottom:"6px"}}>
+            Earned this week
+          </div>
+          <div style={{fontSize:"56px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.045em",lineHeight:".95",fontVariantNumeric:"tabular-nums"}}>
+            ${whole}<span style={{fontSize:"26px",fontWeight:"500",color:"var(--muted2)"}}>.{cents}</span>
+          </div>
+          {/* Change row */}
+          <div style={{display:"flex",alignItems:"center",gap:"10px",marginTop:"12px"}}>
+            {pctChange !== null && (
+              <>
                 <div style={{
-                  width:"40px",height:"40px",borderRadius:"50%",
-                  background:"var(--hero-bg)",
-                  display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                  display:"inline-flex",alignItems:"center",gap:"4px",
+                  fontSize:"12px",fontWeight:"700",
+                  color: pctChange >= 0 ? "var(--green)" : "var(--red)",
+                  background: pctChange >= 0 ? "var(--green-dim)" : "var(--red-dim)",
+                  padding:"4px 9px",borderRadius:"8px",
                 }}>
-                  <div style={{fontSize:"12px",fontWeight:"800",color:"var(--coral-hi)",letterSpacing:"-.02em",lineHeight:"1"}}>{goalPct.toFixed(0)}%</div>
-                  <div style={{fontSize:"6.5px",fontWeight:"700",color:"var(--hero-muted)",letterSpacing:".1em",marginTop:"1px"}}>GOAL</div>
+                  {pctChange >= 0 ? "▲" : "▼"} ${Math.abs(weekEarned - lastWeekEarned).toFixed(2)}
                 </div>
+                <div style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"500"}}>
+                  {Math.abs(pctChange).toFixed(0)}% vs last week
+                </div>
+              </>
+            )}
+            {pctChange === null && trips.length === 0 && (
+              <div style={{fontSize:"11px",color:"var(--muted2)",fontWeight:"500"}}>
+                Log your first shift to get started
               </div>
             )}
-
-            <div style={{position:"relative"}}>
-              <div style={{fontSize:"11px",fontWeight:"600",color:"var(--hero-muted)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:"6px"}}>
-                Earned this week
-              </div>
-              <div style={{fontSize:"42px",fontWeight:"800",color:"var(--hero-ink)",letterSpacing:"-.04em",lineHeight:".95",fontVariantNumeric:"tabular-nums"}}>
-                ${whole}<span style={{fontSize:"22px",fontWeight:"600",color:"var(--hero-muted)"}}>.{cents}</span>
-              </div>
-
-              {/* delta row */}
-              <div style={{display:"flex",alignItems:"center",gap:"10px",marginTop:"14px"}}>
-                {weekEarned === 0 ? (
-                  <div style={{fontSize:"11px",color:"var(--hero-muted)",fontWeight:"500"}}>
-                    {trips.length === 0 ? "Log your first shift to get started" : "New week — log a shift to get rolling"}
-                  </div>
-                ) : pctChange !== null ? (
-                  <>
-                    <div style={{
-                      display:"inline-flex",alignItems:"center",gap:"4px",
-                      fontSize:"12px",fontWeight:"700",
-                      color: pctChange >= 0 ? "var(--on-coral)" : "var(--hero-ink)",
-                      background: pctChange >= 0 ? "var(--coral)" : "rgba(255,255,255,.14)",
-                      padding:"4px 9px",borderRadius:"100px",
-                    }}>
-                      {pctChange >= 0 ? "↑" : "↓"} {Math.abs(pctChange).toFixed(0)}%
-                    </div>
-                    <div style={{fontSize:"11px",color:"var(--hero-muted)",fontWeight:"500"}}>
-                      {pctChange >= 0 ? "+" : "−"}${Math.abs(weekEarned - lastWeekEarned).toFixed(2)} vs last week
-                    </div>
-                  </>
-                ) : (
-                  <div style={{fontSize:"11px",color:"var(--hero-muted)",fontWeight:"500"}}>
-                    First week — nice work getting started
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
-        </div>
 
-        {/* Weekly-goal card */}
-        {weeklyGoal > 0 && (() => {
-          const overGoal = weekEarned > weeklyGoal;
-          const basePct = Math.min((weekEarned / weeklyGoal) * 100, 100);
-          return (
-            <div style={{padding:"10px 16px 0"}}>
-              <div style={{
-                background:"var(--surface)",borderRadius:"22px",padding:"16px 18px",
-                boxShadow:"var(--shadow-card)",
-              }}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"10px"}}>
-                  <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)"}}>Weekly goal</div>
-                  <div style={{fontSize:"13px",fontWeight:"700",color:"var(--coral)"}}>
-                    {overGoal ? `$${(weekEarned - weeklyGoal).toFixed(0)} over` : `$${(weeklyGoal - weekEarned).toFixed(0)} to go`}
-                  </div>
-                </div>
-                <div style={{position:"relative",height:"12px",background:"var(--hairline)",borderRadius:"100px",overflow:"hidden"}}>
+          {/* Weekly goal progress bar */}
+          {weeklyGoal > 0 && (() => {
+            const overGoal = weekEarned > weeklyGoal;
+            const basePct = Math.min((weekEarned / weeklyGoal) * 100, 100);
+            // Over-goal: bonus is the % beyond goal, also capped at 100% (another full goal's worth)
+            const bonusPct = overGoal
+              ? Math.min(((weekEarned - weeklyGoal) / weeklyGoal) * 100, 100)
+              : 0;
+            return (
+              <div style={{marginTop:"16px"}}>
+                {/* Bar track */}
+                <div style={{
+                  position:"relative",
+                  height:"8px",
+                  background:"var(--elevated)",
+                  borderRadius:"100px",
+                  overflow:"hidden",
+                }}>
+                  {/* Base green fill */}
                   <div style={{
-                    position:"absolute",inset:0,width:`${basePct}%`,
-                    background:"var(--coral-grad)",borderRadius:"100px",
+                    position:"absolute",
+                    inset:0,
+                    width: `${basePct}%`,
+                    background: "linear-gradient(90deg, #22C55E 0%, var(--green) 100%)",
+                    borderRadius:"100px",
                     transition:"width .6s cubic-bezier(.4,0,.2,1)",
                   }} />
+                  {/* Over-goal darker green overlay */}
+                  {overGoal && (
+                    <div style={{
+                      position:"absolute",
+                      inset:0,
+                      width: `${bonusPct}%`,
+                      background: "linear-gradient(90deg, #065F30 0%, #034D24 100%)",
+                      borderRadius:"100px",
+                      transition:"width .6s cubic-bezier(.4,0,.2,1)",
+                      boxShadow:"inset 0 1px 0 rgba(255,255,255,.1)",
+                    }} />
+                  )}
                 </div>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:"8px",fontSize:"11px"}}>
-                  <div style={{color:"var(--muted2)",fontWeight:"500"}}>{basePct.toFixed(0)}% of ${weeklyGoal}</div>
-                  <div style={{color:"var(--muted2)",fontWeight:"500"}}>${weekEarned.toFixed(0)} earned</div>
+                {/* Goal text + edit link */}
+                <div style={{
+                  display:"flex",alignItems:"center",justifyContent:"space-between",
+                  marginTop:"8px",fontSize:"11px",
+                }}>
+                  <div style={{color:"var(--muted2)",fontWeight:"500"}}>
+                    {overGoal ? (
+                      <><span style={{color:"var(--green)",fontWeight:"700"}}>🎉 Goal smashed!</span> ${(weekEarned - weeklyGoal).toFixed(0)} over</>
+                    ) : (
+                      <>${(weeklyGoal - weekEarned).toFixed(0)} to go · {basePct.toFixed(0)}% of ${weeklyGoal}</>
+                    )}
+                  </div>
+                  <div
+                    onClick={onSettings}
+                    style={{
+                      color:"var(--green)",fontWeight:"600",cursor:"pointer",
+                      fontSize:"11px",
+                    }}
+                  >
+                    Edit goal ›
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })()}
+            );
+          })()}
+        </div>
         {hasWeekData && (
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",padding:"22px 16px 0"}}>
             {[
               {
                 label: "Active",
-                value: weekActiveHrs > 0 ? `${weekStatHrs}:${String(weekStatMins).padStart(2,"0")}` : "—",
+                value: weekActiveHrs > 0 ? (weekStatHrs > 0 ? `${weekStatHrs}h ${weekStatMins}m` : `${weekStatMins}m`) : "—",
                 color: "var(--green)", bg: "var(--green-dim)",
                 icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
               },
@@ -5086,49 +2862,15 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
           </div>
         )}
 
-        {/* Zone card → opens Benchmarks */}
-        {region && (
-          <div style={{padding:"14px 16px 0"}}>
-            <div
-              onClick={onBenchmarks}
-              role="button"
-              style={{
-                background:"var(--surface)",borderRadius:"18px",padding:"14px 16px",
-                boxShadow:"var(--shadow-card)",cursor:"pointer",
-                display:"flex",alignItems:"center",gap:"12px",
-              }}
-            >
-              <div style={{
-                width:"28px",height:"28px",borderRadius:"9px",flexShrink:0,
-                background:"var(--indigo-dim)",color:"var(--indigo)",
-                display:"flex",alignItems:"center",justifyContent:"center",
-              }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>
-                </svg>
-              </div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:"12px",fontWeight:"600",color:"var(--text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                  {(REGIONS.find(r => r.id === region)?.label) || "Your zone"}
-                </div>
-                <div style={{fontSize:"11px",color:"var(--muted)",fontWeight:"500",marginTop:"1px"}}>
-                  See how you compare in your zone
-                </div>
-              </div>
-              <span style={{fontSize:"18px",color:"var(--muted2)",flexShrink:0}}>›</span>
-            </div>
-          </div>
-        )}
-
         {/* Active shift banner */}
         {activeShift && (
           <div
             style={{
-              margin:"14px 16px 0",padding:"16px 18px",
-              background:"var(--coral-grad)",
-              borderRadius:"20px",cursor:"pointer",
+              margin:"14px 16px 0",padding:"14px 16px",
+              background:"linear-gradient(135deg, var(--green) 0%, #00A050 100%)",
+              borderRadius:"14px",cursor:"pointer",
               display:"flex",alignItems:"center",justifyContent:"space-between",
-              boxShadow:"var(--shadow-green)",
+              boxShadow:"0 8px 22px -6px rgba(0,143,68,.4)",
             }}
             onClick={onResumeShiftScreen}
           >
@@ -5136,7 +2878,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
               <div style={{fontSize:"10px",color:"rgba(255,255,255,.85)",letterSpacing:".1em",textTransform:"uppercase",fontWeight:"700",marginBottom:"4px"}}>
                 {activeShift.paused ? "⏸ Shift paused" : "● Shift in progress"}
               </div>
-              <div style={{fontSize:"25px",fontWeight:"800",color:"#fff",fontFamily:"'Geist Mono',monospace",letterSpacing:"-.02em",fontVariantNumeric:"tabular-nums"}}>
+              <div style={{fontSize:"28px",fontWeight:"800",color:"#fff",fontFamily:"'Geist Mono',monospace",letterSpacing:"-.02em",fontVariantNumeric:"tabular-nums"}}>
                 {(() => {
                   const ms = activeShift.paused ? activeShift.elapsed : (activeShift.elapsed||0)+(Date.now()-activeShift.resumedAt);
                   const s = Math.floor(ms/1000);
@@ -5151,115 +2893,19 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
           </div>
         )}
 
-        {/* Tasks — resume an unfinished weekly catch-up. Only shows when there's
-            an active task with days still to fill. */}
-        {catchupTask && catchupRemaining > 0 && (
-          <div style={{margin:"14px 16px 0"}}>
-            <div style={{fontSize:"10px",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",fontWeight:"800",marginBottom:"8px",paddingLeft:"2px"}}>Tasks</div>
-            <div style={{
-              padding:"16px 18px",background:"var(--elevated)",
-              border:"1.5px solid var(--coral)",borderRadius:"18px",
-              display:"flex",alignItems:"center",gap:"14px",
-            }}>
-              <div style={{flexShrink:0,fontSize:"24px"}}>📅</div>
-              <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={onResumeCatchup}>
-                <div style={{fontSize:"14px",fontWeight:"800",color:"var(--text)",lineHeight:1.3}}>
-                  Finish your {catchupTask.platform === "doordash" ? "DoorDash" : "Uber"} week
-                </div>
-                <div style={{fontSize:"12px",color:"var(--muted)",marginTop:"3px"}}>
-                  {catchupRemaining} day{catchupRemaining === 1 ? "" : "s"} left to add · tap to continue
-                </div>
-              </div>
-              <button
-                onClick={onResumeCatchup}
-                style={{flexShrink:0,border:"none",cursor:"pointer",background:"var(--coral)",color:"var(--on-coral)",borderRadius:"10px",padding:"9px 14px",fontSize:"13px",fontWeight:"800"}}
-              >Resume</button>
-              <button
-                onClick={onDismissCatchup}
-                aria-label="Dismiss task"
-                style={{flexShrink:0,border:"none",cursor:"pointer",background:"transparent",color:"var(--muted2)",fontSize:"18px",lineHeight:1,padding:"2px 4px"}}
-              >×</button>
-            </div>
-          </div>
-        )}
+        {/* Live drivers in zone */}
+        <div style={{padding:"14px 16px 0"}}>
+          <LiveDriverCard
+            region={region}
+            onGoToSettings={onSettings}
+            liveStatus={liveStatus}
+            onGoOnline={onGoOnline}
+            onGoOffline={onGoOffline}
+          />
+        </div>
 
-        {/* Live drivers + Benchmarks — gated for free users after the 30-day grace */}
-        {benchmarksUnlocked ? (
-          <>
-            {/* Grace-period warning banner — only fires in the final week of the
-                free window (not the whole 30 days, so we're not nagging from day 1) */}
-            {!isPro && benchmarkDaysRemaining > 0 && benchmarkDaysRemaining <= 7 && (
-              <div
-                onClick={onUpgrade}
-                style={{
-                  margin:"14px 16px 0",padding:"10px 12px",
-                  background:"var(--amber-dim)",
-                  border:"1px solid var(--amber-border)",
-                  borderRadius:"10px",cursor:"pointer",
-                  display:"flex",alignItems:"center",gap:"8px",
-                }}
-              >
-                <span style={{fontSize:"15px"}}>⏰</span>
-                <div style={{flex:1}}>
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>
-                    {benchmarkDaysRemaining === 1 ? "Last day" : `${benchmarkDaysRemaining} days left`} of free benchmarks
-                  </div>
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"1px"}}>
-                    Tap to keep live drivers & benchmarks after the trial ends.
-                  </div>
-                </div>
-                <span style={{fontSize:"12px",color:"var(--muted2)"}}>›</span>
-              </div>
-            )}
-
-            {/* Live drivers in zone — hidden for beta (see LIVE_DRIVERS_ENABLED) */}
-            {LIVE_DRIVERS_ENABLED && (
-              <div style={{padding:"14px 16px 0"}}>
-                <LiveDriverCard
-                  region={region}
-                  onGoToSettings={onSettings}
-                  liveStatus={liveStatus}
-                  onGoOnline={onGoOnline}
-                  onGoOffline={onGoOffline}
-                />
-              </div>
-            )}
-
-            {/* On-Home benchmarks teaser removed — the zone card above now opens
-                the full Benchmarks screen (Local/State/National). */}
-          </>
-        ) : (
-          /* Locked state — free user whose 30-day grace has expired */
-          <div style={{padding:"14px 16px 0"}}>
-            <div
-              onClick={onUpgrade}
-              style={{
-                background:"var(--surface)",
-                border:"1px dashed var(--border)",
-                borderRadius:"12px",
-                padding:"20px 16px",
-                cursor:"pointer",
-                textAlign:"center",
-              }}
-            >
-              <div style={{fontSize:"28px",marginBottom:"8px"}}>🔒</div>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>
-                Local benchmarks & live drivers
-              </div>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11.5px",color:"var(--muted)",lineHeight:"1.5",marginBottom:"12px",maxWidth:"260px",margin:"0 auto 12px"}}>
-                See how you stack up against drivers in your region — hourly rate, $ per delivery, plus live driver count.
-              </div>
-              <div style={{
-                display:"inline-block",padding:"8px 16px",
-                background:"var(--green)",color:"var(--on-coral)",
-                borderRadius:"9px",
-                fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",
-              }}>
-                Upgrade to Pro →
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Benchmarks — Pro only */}
+        {isPro && <div style={{padding:"14px 16px 0"}}><BenchmarkCard region={region} onGoToSettings={onSettings} /></div>}
 
         {/* ATO cap warning */}
         {showWarning && (
@@ -5281,11 +2927,11 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
           <div
             onClick={onLogShift}
             style={{
-              background:"var(--coral-grad)",
+              background:"linear-gradient(135deg, #008F44 0%, #00A050 100%)",
               borderRadius:"16px",padding:"16px 18px",
               display:"flex",alignItems:"center",justifyContent:"space-between",
               cursor:"pointer",
-              boxShadow:"var(--shadow-green)",
+              boxShadow:"0 8px 22px -6px rgba(0,143,68,.4), inset 0 1px 0 rgba(255,255,255,.18)",
             }}
           >
             <div>
@@ -5338,7 +2984,7 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
                       </div>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:"13px",fontWeight:"600",color:"var(--text)"}}>
-                          {isDateOnly(d) ? "" : d.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}) + " · "}{timeStr} · {t.dels || 0} deliveries
+                          {d.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"})} · {timeStr} · {t.dels || 0} deliveries
                         </div>
                         <div style={{fontSize:"11px",color:"var(--muted2)",marginTop:"2px"}}>
                           {t.totalKm.toFixed(1)} km{t.platform ? ` · ${t.platform === "uber_eats" ? "Uber Eats" : t.platform === "doordash" ? "DoorDash" : "Both"}` : ""}
@@ -5362,924 +3008,209 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
   );
 }
 
-// ─── SCREENSHOT PREVIEW STAGE ─── Editable form with parsed + manual fields.
-// Renders a large screenshot, editable per-field values with green/red indicators,
-// plus a few extras (active km, shift date, notes). Save directly creates a shift.
-
-// Defined OUTSIDE the parent component so it stays stable across renders.
-// (Defining it inside causes the input to unmount/remount on every keystroke,
-// which loses focus after each character.)
-function ScreenshotFieldRow({ icon, label, value, onChange, type = "text", placeholder = "", suffix = "", parsedOk }) {
-  return (
-    <div style={{
-      display:"flex",alignItems:"center",gap:"10px",
-      padding:"10px 13px",
-      background:"var(--surface)",
-      border:`0.5px solid ${parsedOk ? "var(--green-border)" : "var(--border)"}`,
-      borderRadius:"11px",
-    }}>
-      <div style={{
-        width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-        background: parsedOk ? "var(--green-dim)" : "var(--red-dim)",
-        color: parsedOk ? "var(--green)" : "var(--red)",
-        display:"flex",alignItems:"center",justifyContent:"center",
-        fontSize:"12px",fontWeight:"700",
-      }}>{icon}</div>
-      <div style={{minWidth:"95px",fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>{label}</div>
-      <div style={{flex:1,display:"flex",alignItems:"center",gap:"4px"}}>
-        <input
-          type={type}
-          inputMode={type === "number" ? "decimal" : undefined}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          style={{
-            flex:1,minWidth:0,
-            background:"transparent",border:"none",outline:"none",
-            color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
-            fontWeight:"700",fontVariantNumeric:"tabular-nums",
-            textAlign:"right",letterSpacing:"-.005em",padding:0,
-          }}
-        />
-        {suffix && (
-          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{suffix}</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ScreenshotPreviewStage({ parsed, previewUrl, onBack, onSaveDirect, onAddSecond, saveLabel = "Save shift →" }) {
-  // Initialise each editable field. Track original parsed value separately
-  // so we can show green tick (parsed) or red X (not found, user-entered).
-  const todayISO = localDateStr();
-  const initialDate = parsed.shift_date || todayISO;
-
-  const [totalEarned, setTotalEarned]     = useState(parsed.total_earned != null ? String(parsed.total_earned) : "");
-  const [tips, setTips]                   = useState(parsed.tips         != null ? String(parsed.tips)         : "");
-  const [bonuses, setBonuses]             = useState(parsed.bonuses      != null ? String(parsed.bonuses)      : "");
-  const [deliveries, setDeliveries]       = useState(parsed.deliveries   != null ? String(parsed.deliveries)   : "");
-  const [onlineMin, setOnlineMin]         = useState(parsed.online_minutes != null ? String(parsed.online_minutes) : "");
-  const [activeMin, setActiveMin]         = useState(parsed.active_minutes != null ? String(parsed.active_minutes) : "");
-  const [distanceKm, setDistanceKm]       = useState(parsed.distance_km != null ? String(parsed.distance_km) : "");
-  const [activeKm, setActiveKm]           = useState(parsed.active_km   != null ? String(parsed.active_km)   : "");
-  const [platform, setPlatform]           = useState(parsed.platform || "");
-  const [shiftDate, setShiftDate]         = useState(initialDate);
-  const [notes, setNotes]                 = useState("");
-
-  const [zoomed, setZoomed]               = useState(false);
-
-  // Parsed-ness signals (for green tick vs red X indicators)
-  const wasParsed = {
-    total_earned:   parsed.total_earned   != null,
-    tips:           parsed.tips           != null,
-    bonuses:        parsed.bonuses        != null,
-    deliveries:     parsed.deliveries     != null,
-    online_minutes: parsed.online_minutes != null,
-    active_minutes: parsed.active_minutes != null,
-    distance_km:    parsed.distance_km    != null,
-    active_km:      parsed.active_km      != null,
-    platform:       parsed.platform       != null,
-    shift_date:     parsed.shift_date     != null,
-  };
-
-  const parsedCount = Object.values(wasParsed).filter(Boolean).length;
-  const totalParseable = Object.keys(wasParsed).length;
-  const allFailed = parsedCount === 0;
-
-  // Build a `parsed`-shaped object from the user's current edits (for merging).
-  const num = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
-  const intv = (s) => { const v = parseInt(s, 10); return Number.isFinite(v) ? v : null; };
-  const buildParsedShape = () => ({
-    total_earned:   num(totalEarned),
-    tips:           num(tips),
-    bonuses:        num(bonuses),
-    deliveries:     intv(deliveries),
-    online_minutes: intv(onlineMin),
-    active_minutes: intv(activeMin),
-    distance_km:    num(distanceKm),
-    active_km:      num(activeKm),
-    platform:       platform || null,
-    shift_date:     shiftDate || null,
-  });
-
-  // Build the finalValues shape consumed by onParsed/onSaveDirect.
-  const buildFinalValues = () => {
-    const fv = {};
-    if (num(totalEarned) != null) fv.earned   = num(totalEarned);
-    if (num(tips) != null)        fv.tips     = num(tips);
-    if (num(bonuses) != null)     fv.bonus    = num(bonuses);
-    if (intv(deliveries) != null) fv.dels     = intv(deliveries);
-    if (intv(onlineMin) != null)  fv.mins     = intv(onlineMin);
-    if (intv(activeMin) != null)  fv.activeMin = intv(activeMin);
-    if (num(distanceKm) != null)  fv.km       = num(distanceKm);
-    if (num(activeKm) != null)    fv.activeKm = num(activeKm);
-    if (platform)                 fv.platform = platform;
-    if (shiftDate)                fv.shiftDate = shiftDate;
-    if (notes.trim())             fv.notes    = notes.trim();
-    return fv;
-  };
-
-  const handleSave = () => {
-    onSaveDirect(buildFinalValues(), buildParsedShape());
-  };
-
-  return (
-    <div className="view active">
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Review & save</div>
-      </div>
-      <div className="scroll-area" style={{padding:"14px 14px 100px"}}>
-
-        {/* Top banner */}
-        <div style={{
-          background: allFailed ? "var(--red-dim)" : parsedCount === totalParseable ? "var(--green-dim)" : "var(--amber-dim)",
-          border: `1px solid ${allFailed ? "var(--red-border)" : parsedCount === totalParseable ? "var(--green-border)" : "var(--amber-border)"}`,
-          borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",
-          display:"flex",gap:"10px",alignItems:"center",
-        }}>
-          <div style={{fontSize:"20px",flexShrink:0}}>
-            {allFailed ? "❌" : parsedCount === totalParseable ? "✅" : "⚠️"}
-          </div>
-          <div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",color:"var(--text)",marginBottom:"2px"}}>
-              {allFailed ? "Couldn't read screenshot" : `${parsedCount}/${totalParseable} fields detected`}
-            </div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>
-              Edit any field, then save.
-            </div>
-          </div>
-        </div>
-
-        {/* Large screenshot — tappable to zoom */}
-        {previewUrl && (
-          <div
-            onClick={() => setZoomed(true)}
-            style={{
-              borderRadius:"12px",
-              border:"0.5px solid var(--border)",marginBottom:"14px",
-              overflow:"hidden",background:"var(--elevated)",
-              cursor:"pointer",
-            }}
-          >
-            <img
-              src={previewUrl}
-              alt="Uploaded screenshot"
-              style={{display:"block",width:"100%",height:"auto",maxHeight:"480px",objectFit:"contain"}}
-            />
-            <div style={{
-              padding:"6px 0",textAlign:"center",
-              fontFamily:"'Inter',sans-serif",fontSize:"10px",
-              color:"var(--muted2)",letterSpacing:".04em",
-            }}>Tap to enlarge</div>
-          </div>
-        )}
-
-        {/* Zoom modal */}
-        {zoomed && previewUrl && (
-          <div
-            onClick={() => setZoomed(false)}
-            style={{
-              position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",
-              display:"flex",alignItems:"center",justifyContent:"center",
-              zIndex:2000,padding:"20px",cursor:"pointer",
-            }}
-          >
-            <img
-              src={previewUrl}
-              alt="Screenshot zoomed"
-              style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain"}}
-            />
-            <div style={{
-              position:"absolute",top:"20px",right:"20px",
-              width:"40px",height:"40px",borderRadius:"50%",
-              background:"rgba(255,255,255,.15)",color:"#fff",
-              display:"flex",alignItems:"center",justifyContent:"center",
-              fontSize:"20px",fontWeight:"700",
-            }}>✕</div>
-          </div>
-        )}
-
-        {/* Parsed/editable fields */}
-        <div style={{display:"flex",flexDirection:"column",gap:"6px",marginBottom:"14px"}}>
-          <ScreenshotFieldRow icon={wasParsed.total_earned ? "✓" : "✕"} parsedOk={wasParsed.total_earned}
-            label="Total earned" value={totalEarned} onChange={setTotalEarned} type="number" placeholder="0.00" suffix="$" />
-          <ScreenshotFieldRow icon={wasParsed.tips ? "✓" : "✕"} parsedOk={wasParsed.tips}
-            label="Tips" value={tips} onChange={setTips} type="number" placeholder="0.00" suffix="$" />
-          <ScreenshotFieldRow icon={wasParsed.bonuses ? "✓" : "✕"} parsedOk={wasParsed.bonuses}
-            label="Bonuses" value={bonuses} onChange={setBonuses} type="number" placeholder="0.00" suffix="$" />
-          <ScreenshotFieldRow icon={wasParsed.deliveries ? "✓" : "✕"} parsedOk={wasParsed.deliveries}
-            label="Deliveries" value={deliveries} onChange={setDeliveries} type="number" placeholder="0" />
-          <ScreenshotFieldRow icon={wasParsed.online_minutes ? "✓" : "✕"} parsedOk={wasParsed.online_minutes}
-            label="Online time" value={onlineMin} onChange={setOnlineMin} type="number" placeholder="0" suffix="min" />
-          <ScreenshotFieldRow icon={wasParsed.active_minutes ? "✓" : "✕"} parsedOk={wasParsed.active_minutes}
-            label="Active time" value={activeMin} onChange={setActiveMin} type="number" placeholder="0" suffix="min" />
-          <ScreenshotFieldRow icon={wasParsed.distance_km ? "✓" : "✕"} parsedOk={wasParsed.distance_km}
-            label="Total km" value={distanceKm} onChange={setDistanceKm} type="number" placeholder="0.0" suffix="km" />
-          <ScreenshotFieldRow icon={wasParsed.active_km ? "✓" : "✕"} parsedOk={wasParsed.active_km}
-            label="Active km" value={activeKm} onChange={setActiveKm} type="number" placeholder="0.0" suffix="km" />
-        </div>
-
-        {/* Platform picker */}
-        <div style={{
-          padding:"10px 13px",
-          background:"var(--surface)",
-          border:`0.5px solid ${wasParsed.platform ? "var(--green-border)" : "var(--border)"}`,
-          borderRadius:"11px",marginBottom:"6px",
-        }}>
-          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"8px"}}>
-            <div style={{
-              width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-              background: wasParsed.platform ? "var(--green-dim)" : "var(--red-dim)",
-              color: wasParsed.platform ? "var(--green)" : "var(--red)",
-              display:"flex",alignItems:"center",justifyContent:"center",
-              fontSize:"12px",fontWeight:"700",
-            }}>{wasParsed.platform ? "✓" : "✕"}</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Platform</div>
-          </div>
-          <div style={{display:"flex",gap:"6px"}}>
-            {[
-              ["uber_eats", "Uber Eats"],
-              ["doordash",  "DoorDash"],
-              ["both",      "Both"],
-            ].map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setPlatform(id)}
-                style={{
-                  flex:1,padding:"9px 8px",borderRadius:"9px",cursor:"pointer",
-                  background: platform === id ? "var(--green-dim)" : "var(--elevated)",
-                  border: `0.5px solid ${platform === id ? "var(--green-border)" : "var(--border)"}`,
-                  color: platform === id ? "var(--green)" : "var(--muted)",
-                  fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",
-                }}
-              >{label}</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Shift date */}
-        <ScreenshotFieldRow icon={wasParsed.shift_date ? "✓" : "✕"} parsedOk={wasParsed.shift_date}
-          label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
-
-        {/* Notes (optional) */}
-        <div style={{
-          marginTop:"6px",padding:"10px 13px",
-          background:"var(--surface)",
-          border:"0.5px solid var(--border)",
-          borderRadius:"11px",
-        }}>
-          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"6px"}}>
-            <div style={{
-              width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-              background:"var(--elevated)",color:"var(--muted)",
-              display:"flex",alignItems:"center",justifyContent:"center",
-              fontSize:"11px",fontWeight:"700",
-            }}>—</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Notes (optional)</div>
-          </div>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Anything to remember about this shift…"
-            rows={2}
-            style={{
-              width:"100%",background:"transparent",border:"none",outline:"none",
-              color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12.5px",
-              resize:"vertical",padding:0,letterSpacing:"-.005em",
-            }}
-          />
-        </div>
-
-      </div>
-
-      {/* Fixed bottom CTA */}
-      <div style={{
-        position:"fixed",bottom:0,left:0,right:0,
-        background:"linear-gradient(180deg,transparent,var(--bg) 40%)",
-        padding:"24px 14px 24px",zIndex:50,
-      }}>
-        {onAddSecond && (
-          <button
-            onClick={() => onAddSecond(buildParsedShape())}
-            style={{
-              width:"100%",padding:"13px",marginBottom:"8px",
-              background:"var(--surface)",color:"var(--green)",
-              border:"0.5px solid var(--green-border)",borderRadius:"13px",cursor:"pointer",
-              fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
-            }}
-          >+ Ran a second app this shift? Add it</button>
-        )}
-        <button
-          onClick={handleSave}
-          style={{
-            width:"100%",padding:"15px",
-            background:"var(--green)",color:"var(--on-coral)",
-            border:"none",borderRadius:"13px",cursor:"pointer",
-            fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-          }}
-        >{saveLabel}</button>
-      </div>
-    </div>
-  );
-}
-
-// ─── SCREENSHOT MERGE STAGE ───────────────────────────────────────────────
-// Shows the merged result of two same-shift screenshots (UE + DD), editable,
-// with a date-conflict warning when the two screenshots' dates differ.
-function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, onBack, onSave }) {
-  const m = mergeData.merged;
-  const num = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
-  const intv = (s) => { const v = parseInt(s, 10); return Number.isFinite(v) ? v : null; };
-  const str = (v) => (v == null ? "" : String(v));
-
-  const [totalEarned, setTotalEarned] = useState(str(m.total_earned));
-  const [tips, setTips]               = useState(str(m.tips));
-  const [bonuses, setBonuses]         = useState(str(m.bonuses));
-  const [deliveries, setDeliveries]   = useState(str(m.deliveries));
-  const [onlineMin, setOnlineMin]     = useState(str(m.online_minutes));
-  const [activeMin, setActiveMin]     = useState(str(m.active_minutes));
-  const [distanceKm, setDistanceKm]   = useState(str(m.distance_km));
-  const [activeKm, setActiveKm]       = useState(str(m.active_km));
-  const [shiftDate, setShiftDate]     = useState(m.shift_date || "");
-  const [notes, setNotes]             = useState("");
-  const [proceedDespiteDates, setProceedDespiteDates] = useState(false);
-
-  const save = () => {
-    const fv = {};
-    if (num(totalEarned) != null) fv.earned   = num(totalEarned);
-    if (num(tips) != null)        fv.tips     = num(tips);
-    if (num(bonuses) != null)     fv.bonus    = num(bonuses);
-    if (intv(deliveries) != null) fv.dels     = intv(deliveries);
-    if (intv(onlineMin) != null)  fv.mins     = intv(onlineMin);
-    if (intv(activeMin) != null)  fv.activeMin = intv(activeMin);
-    if (num(distanceKm) != null)  fv.km       = num(distanceKm);
-    if (num(activeKm) != null)    fv.activeKm = num(activeKm);
-    fv.platform = "both";
-    if (shiftDate)                fv.shiftDate = shiftDate;
-    if (notes.trim())             fv.notes    = notes.trim();
-    onSave(fv);
-  };
-
-  const blocked = mergeData.dateConflict && !proceedDespiteDates;
-
-  return (
-    <div className="view active">
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Combined shift</div>
-      </div>
-      <div className="scroll-area" style={{padding:"14px 14px 120px"}}>
-
-        {/* Combined banner */}
-        <div style={{
-          background:"var(--green-dim)",border:"1px solid var(--green-border)",
-          borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",
-          display:"flex",gap:"10px",alignItems:"center",
-        }}>
-          <div style={{fontSize:"20px",flexShrink:0}}>🔗</div>
-          <div>
-            <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)",marginBottom:"2px"}}>Two apps combined into one shift</div>
-            <div style={{fontSize:"11px",color:"var(--muted)"}}>
-              Earnings, deliveries, active time & distance added. Online time = the longer of the two.
-            </div>
-          </div>
-        </div>
-
-        {/* Date conflict warning */}
-        {mergeData.dateConflict && (
-          <div style={{
-            background:"var(--amber-dim)",border:"1px solid var(--amber-border)",
-            borderRadius:"12px",padding:"12px 14px",marginBottom:"12px",
-          }}>
-            <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>⚠️ Different dates detected</div>
-            <div style={{fontSize:"11px",color:"var(--muted)",lineHeight:1.45,marginBottom:"10px"}}>
-              Screenshot 1 is dated <b>{mergeData.dates.a || "—"}</b> and screenshot 2 is <b>{mergeData.dates.b || "—"}</b>.
-              That can be normal for a shift crossing midnight (e.g. started 11:30pm, finished after 12). It would use the earlier date ({shiftDate || "—"}). But if these are actually two different shifts, you shouldn't combine them.
-            </div>
-            <label style={{display:"flex",alignItems:"center",gap:"8px",fontSize:"12px",color:"var(--text)",cursor:"pointer"}}>
-              <input type="checkbox" checked={proceedDespiteDates} onChange={(e) => setProceedDespiteDates(e.target.checked)} />
-              Yes, this is one shift — combine them
-            </label>
-          </div>
-        )}
-
-        {/* Editable merged fields */}
-        <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-          <ScreenshotFieldRow icon="Σ" parsedOk label="Total earned" value={totalEarned} onChange={setTotalEarned} type="number" suffix="$" />
-          <ScreenshotFieldRow icon="Σ" parsedOk label="Tips" value={tips} onChange={setTips} type="number" suffix="$" />
-          <ScreenshotFieldRow icon="Σ" parsedOk label="Bonuses" value={bonuses} onChange={setBonuses} type="number" suffix="$" />
-          <ScreenshotFieldRow icon="Σ" parsedOk label="Deliveries" value={deliveries} onChange={setDeliveries} type="number" />
-          <ScreenshotFieldRow icon="↔" parsedOk label="Online (min)" value={onlineMin} onChange={setOnlineMin} type="number" suffix="m" />
-          <ScreenshotFieldRow icon="Σ" parsedOk label="Active (min)" value={activeMin} onChange={setActiveMin} type="number" suffix="m" />
-          <ScreenshotFieldRow icon="Σ" parsedOk label="Distance" value={distanceKm} onChange={setDistanceKm} type="number" suffix="km" />
-          <ScreenshotFieldRow icon="Σ" parsedOk label="Active km" value={activeKm} onChange={setActiveKm} type="number" suffix="km" />
-        </div>
-
-        <div style={{marginTop:"6px",display:"flex",flexDirection:"column",gap:"6px"}}>
-          <ScreenshotFieldRow icon="🔗" parsedOk label="Shift date" value={shiftDate} onChange={setShiftDate} type="date" />
-        </div>
-        <div style={{fontSize:"10px",color:"var(--muted2)",margin:"5px 0 0 13px"}}>
-          Platform set to “Both”. Date = the earlier of the two screenshots.
-        </div>
-
-        {/* Source thumbnails */}
-        <div style={{display:"flex",gap:"8px",marginTop:"14px"}}>
-          {[["Screenshot 1", firstPreviewUrl],["Screenshot 2", secondPreviewUrl]].map(([lbl, url]) => (
-            <div key={lbl} style={{flex:1,textAlign:"center"}}>
-              <div style={{fontSize:"10px",color:"var(--muted2)",marginBottom:"4px"}}>{lbl}</div>
-              {url && <img src={url} alt={lbl} style={{width:"100%",borderRadius:"8px",border:"0.5px solid var(--border)",maxHeight:"160px",objectFit:"cover",objectPosition:"top"}} />}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Fixed bottom CTA */}
-      <div style={{position:"fixed",bottom:0,left:0,right:0,background:"linear-gradient(180deg,transparent,var(--bg) 40%)",padding:"24px 14px 24px",zIndex:50}}>
-        <button
-          onClick={save}
-          disabled={blocked}
-          style={{
-            width:"100%",padding:"15px",
-            background: blocked ? "var(--elevated)" : "var(--green)",
-            color: blocked ? "var(--muted2)" : "var(--on-coral)",
-            border:"none",borderRadius:"13px",cursor: blocked ? "not-allowed" : "pointer",
-            fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-          }}
-        >{blocked ? "Confirm dates above to continue" : "Save combined shift →"}</button>
-      </div>
-    </div>
-  );
-}
-
-// ─── SCREENSHOT IMPORT ─── Parse a shift-summary screenshot via Edge Function + Claude vision.
-// Stage 1: pick — user selects an image file
-// Stage 2: progress — uploading + AI parsing (animated %)
-// Stage 3: preview — per-field green/red indicators + confirm
-// Turn an image File into a compact, self-contained base64 data-URL suitable for
-// persisting in localStorage (unlike a blob: URL, which dies with the session).
-// Downscaled to a max width and JPEG-compressed so the catch-up thumbnail stays
-// small — a full-res data-URL could blow the ~5MB localStorage budget on its own.
-function makeThumbDataUrl(file, maxW = 900, quality = 0.7) {
-  return new Promise((resolve, reject) => {
-    if (!file) { reject(new Error("no file")); return; }
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const scale = Math.min(1, maxW / (img.naturalWidth || maxW));
-        const w = Math.round((img.naturalWidth || maxW) * scale);
-        const h = Math.round((img.naturalHeight || maxW) * scale);
-        const canvas = document.createElement("canvas");
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, w, h);
-        URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL("image/jpeg", quality));
-      } catch (e) { URL.revokeObjectURL(url); reject(e); }
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("image load failed")); };
-    img.src = url;
-  });
-}
-
-function ScreenshotImportScreen({ onBack, onParsed, onWeeklyDetected }) {
-  const [stage, setStage] = useState("pick"); // pick | progress | preview | merge | error
-  const [pickedFile, setPickedFile] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState(null);
+// ─── VOICE ENTRY ─── Parses natural speech into shift values.
+// Uses Web Speech API (Chrome desktop + Android). iOS Safari doesn't support
+// this reliably in PWAs yet — we'll move to Whisper backend on real launch.
+function VoiceEntryScreen({ onBack, onParsed }) {
+  const [status, setStatus] = useState("idle"); // idle | listening | done | error
+  const [transcript, setTranscript] = useState("");
   const [parsed, setParsed] = useState(null);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [errorKind, setErrorKind] = useState("generic"); // network | timeout | unreadable | generic
-  const [progressPct, setProgressPct] = useState(0);
-  const [progressStep, setProgressStep] = useState("");
-  const fileInputRef = useRef(null);
+  const recogRef = useRef(null);
 
-  // ── Merge flow (two screenshots, same shift) ──
-  // When the user taps "add second app", we stash screenshot 1's edited values
-  // (parsed-shaped) + its preview, then re-run pick/parse for screenshot 2.
-  const [firstParsed, setFirstParsed] = useState(null);
-  const [firstPreviewUrl, setFirstPreviewUrl] = useState(null);
-  const [secondParsed, setSecondParsed] = useState(null); // screenshot 2's edited parsed-shape
-  const isSecond = firstParsed != null; // currently capturing the 2nd screenshot
+  const parseTranscript = (text) => {
+    const t = " " + text.toLowerCase().replace(/[,]/g, " ") + " ";
+    const num = (re) => { const m = t.match(re); return m ? parseFloat(m[1]) : null; };
 
-  // Open file picker on mount
-  useEffect(() => {
-    if (stage === "pick" && fileInputRef.current) {
-      // Don't auto-click; let user tap the button
-    }
-  }, [stage]);
+    // Dollar amounts — "55 dollars", "$55", "55 bucks"
+    const earned = num(/\$?\s*(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?|\$)/) ?? num(/\$\s*(\d+(?:\.\d+)?)/);
+    const tips   = num(/(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?)?\s*(?:in\s+)?tips?\b/);
+    const bonus  = num(/(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?)?\s*(?:in\s+)?(?:bonus(?:es)?|promo(?:s|tion)?)/);
 
-  const handleFilePick = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setErrorMsg("Please choose an image file");
-      setErrorKind("unreadable");
-      setStage("error");
-      return;
-    }
-    setPickedFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
-    startParse(file);
-  };
+    // Km — "28 km", "28 kilometers"
+    const km     = num(/(\d+(?:\.\d+)?)\s*(?:km|kms|kilometres?|kilometers?)\b/);
 
-  // Classify a failure into a kind that drives the error screen's copy and
-  // whether "Try again" re-runs the SAME image (network/timeout — image was
-  // fine) or sends the user back to pick a clearer one (unreadable).
-  const classifyError = (raw) => {
-    const msg = (raw || "").toString().toLowerCase();
-    if (msg.includes("timed out") || msg.includes("timeout")) return "timeout";
-    if (!navigator.onLine || msg.includes("failed to fetch") || msg.includes("network") ||
-        msg.includes("networkerror") || msg.includes("load failed")) return "network";
-    if (msg.includes("couldn't read") || msg.includes("could not read") ||
-        msg.includes("no text") || msg.includes("unreadable") || msg.includes("parse")) return "unreadable";
-    return "generic";
-  };
+    // Deliveries — "6 deliveries", "6 orders", "6 drops"
+    const dels   = num(/(\d+)\s*(?:deliveries|delivery|orders?|drops?|trips?)\b/);
 
-  const startParse = async (file) => {
-    setStage("progress");
-    setProgressPct(0);
-    setProgressStep("Uploading screenshot…");
-
-    // Animate progress while parsing happens in background
-    let pct = 0;
-    const steps = [
-      { at: 10,  text: "Uploading screenshot…" },
-      { at: 30,  text: "Asking AI to read it…" },
-      { at: 60,  text: "Extracting earnings…" },
-      { at: 85,  text: "Almost done…" },
-    ];
-    const animator = setInterval(() => {
-      pct = Math.min(pct + 2, 92);
-      setProgressPct(pct);
-      const step = steps.slice().reverse().find(s => pct >= s.at);
-      if (step) setProgressStep(step.text);
-    }, 120);
-
-    // Timeout guard: never let the progress ring hang forever if the Edge
-    // Function or vision call stalls. Races the parse against a 30s limit.
-    const PARSE_TIMEOUT_MS = 30000;
-    let timeoutId;
-    const timeout = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error("timed out")), PARSE_TIMEOUT_MS);
+    // Time — "two hours", "1 hour 30 min", "90 minutes", "1h 30m"
+    let mins = null;
+    const hM = t.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b/);
+    const mM = t.match(/(\d+)\s*(?:minutes?|mins?|m)\b/);
+    if (hM) mins = (mins || 0) + Math.round(parseFloat(hM[1]) * 60);
+    if (mM) mins = (mins || 0) + parseInt(mM[1]);
+    // Word numbers — "two hours", "half an hour"
+    const words = { one:60, two:120, three:180, four:240, five:300, six:360, half:30 };
+    Object.entries(words).forEach(([w,m]) => {
+      if (new RegExp(`\\b${w}\\s+(?:hours?|hrs?)\\b`).test(t)) mins = (mins || 0) + m;
+      if (w === "half" && /\bhalf\s+(?:an?\s+)?hour\b/.test(t)) mins = (mins || 0) + 30;
     });
 
-    const failTo = (kind, msg) => {
-      clearInterval(animator);
-      clearTimeout(timeoutId);
-      setErrorKind(kind);
-      setErrorMsg(msg || "");
-      setStage("error");
-    };
+    // Platform
+    let platform = null;
+    if (/\b(doordash|door\s*dash|dd)\b/.test(t)) platform = "doordash";
+    if (/\b(uber\s*eats?|uber|ue)\b/.test(t)) platform = platform === "doordash" ? "both" : "uber_eats";
+    if (/\bboth\b/.test(t)) platform = "both";
 
-    try {
-      // Fail fast if the device is offline — don't spin for 30s.
-      if (!navigator.onLine) {
-        failTo("network", "You appear to be offline.");
-        return;
-      }
-
-      const { parseShiftScreenshot } = await import("./screenshotImport.js");
-      const result = await Promise.race([parseShiftScreenshot(file), timeout]);
-      clearInterval(animator);
-      clearTimeout(timeoutId);
-
-      if (!result.ok) {
-        failTo(classifyError(result.error), result.error || "");
-        return;
-      }
-
-      // Final flourish to 100%
-      setProgressPct(100);
-      setProgressStep("Done");
-      setTimeout(async () => {
-        // WEEKLY branch: the Edge Function classified this as a whole-week
-        // summary. Hand it up to the app (accept-confirm + credit charge +
-        // catch-up flow) instead of the single-shift preview. Single-shift
-        // (type !== "weekly", incl. legacy responses with no type) is unchanged.
-        if (result.parsed && result.parsed.type === "weekly" && onWeeklyDetected) {
-          // Pass a COMPACT base64 data-URL (not the blob previewUrl): the catch-up
-          // task is persisted to localStorage and re-read across reloads, and a
-          // blob: URL dies with the session (was why the thumbnail vanished).
-          // A downscaled JPEG data-URL is self-contained and small enough to store.
-          let thumb = null;
-          try { thumb = await makeThumbDataUrl(pickedFile || file); } catch { /* thumbnail is best-effort */ }
-          onWeeklyDetected(result.parsed, thumb);
-          return;
-        }
-        setParsed(result.parsed);
-        setStage("preview");
-      }, 350);
-
-    } catch (e) {
-      failTo(classifyError(e?.message), e?.message || "");
-    }
+    return { earned, tips, bonus, km, dels, mins, platform };
   };
+
+  const start = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setStatus("error"); return; }
+    const recog = new SR();
+    recog.lang = "en-AU";
+    recog.interimResults = true;
+    recog.continuous = false;
+    recog.onresult = (e) => {
+      const text = Array.from(e.results).map(r => r[0].transcript).join(" ");
+      setTranscript(text);
+    };
+    recog.onend = () => {
+      setStatus("done");
+      setParsed(parseTranscript(recog._lastTranscript || transcript));
+    };
+    recog.onerror = () => setStatus("error");
+    // Capture final transcript robustly
+    const origOnResult = recog.onresult;
+    recog.onresult = (e) => {
+      origOnResult(e);
+      recog._lastTranscript = Array.from(e.results).map(r => r[0].transcript).join(" ");
+    };
+    recogRef.current = recog;
+    setTranscript("");
+    setParsed(null);
+    setStatus("listening");
+    recog.start();
+  };
+
+  const stop = () => recogRef.current?.stop();
+
+  // Auto-start on mount
+  useEffect(() => { const t = setTimeout(start, 200); return () => { clearTimeout(t); recogRef.current?.abort?.(); }; }, []);
 
   const handleConfirm = () => {
     if (!parsed) return;
     onParsed(parsed);
   };
 
-  // User tapped "add second app" on screenshot 1's preview. Stash its edited
-  // (parsed-shaped) values + preview, reset to pick for screenshot 2.
-  const handleAddSecond = (firstEditedParsed) => {
-    setFirstParsed(firstEditedParsed);
-    setFirstPreviewUrl(previewUrl);
-    setPickedFile(null);
-    setPreviewUrl(null);
-    setParsed(null);
-    setStage("pick");
-  };
-
-  // Compute merge once screenshot 2 has been reviewed. Uses the user's EDITED
-  // values from both previews (firstParsed captured on "add second",
-  // secondParsed captured when screenshot 2's preview is confirmed).
-  const mergeData = (firstParsed && secondParsed) ? mergeParsedScreenshots(firstParsed, secondParsed) : null;
-
-  // PICK STAGE
-
-  if (stage === "pick") {
-    return (
-      <div className="view active">
-        <div className="topbar">
-          <button className="topbar-back" onClick={() => {
-            if (isSecond) {
-              // Backing out of the 2nd pick — abandon the merge, restore screenshot 1's preview.
-              setParsed(firstParsed ? {
-                total_earned: firstParsed.total_earned, tips: firstParsed.tips, bonuses: firstParsed.bonuses,
-                deliveries: firstParsed.deliveries, online_minutes: firstParsed.online_minutes,
-                active_minutes: firstParsed.active_minutes, distance_km: firstParsed.distance_km,
-                active_km: firstParsed.active_km, platform: firstParsed.platform,
-                shift_date: firstParsed.shift_date, start_time: firstParsed.start_time,
-              } : null);
-              setPreviewUrl(firstPreviewUrl);
-              setFirstParsed(null);
-              setFirstPreviewUrl(null);
-              setSecondParsed(null);
-              setStage("preview");
-            } else {
-              onBack();
-            }
-          }}>←</button>
-          <div className="topbar-title">{isSecond ? "Add second app" : "Import from screenshot"}</div>
-        </div>
-        <div className="scroll-area" style={{padding:"24px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
-
-          <div style={{
-            width:"100%",maxWidth:"360px",
-            padding:"32px 20px",textAlign:"center",
-            background:"linear-gradient(180deg, var(--green-dim), var(--surface))",
-            border:"1px solid var(--green-border)",
-            borderRadius:"16px",marginBottom:"22px",
-          }}>
-            <div style={{fontSize:"42px",marginBottom:"10px"}}>{isSecond ? "🔗" : "📷"}</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"16px",fontWeight:"800",color:"var(--text)",marginBottom:"6px",letterSpacing:"-.01em"}}>
-              {isSecond ? "Now the second app" : "Pick your shift summary"}
-            </div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",lineHeight:"1.55"}}>
-              {isSecond
-                ? "Pick the other app's screenshot for this same shift. We'll combine them — earnings add up, overlapping time is handled for you."
-                : "Choose a screenshot from Uber Eats or DoorDash showing your final shift totals — earnings, deliveries, time."}
-            </div>
-          </div>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFilePick}
-            style={{display:"none"}}
-          />
-
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              width:"100%",maxWidth:"360px",padding:"15px",
-              background:"var(--green)",color:"var(--on-coral)",
-              border:"none",borderRadius:"13px",cursor:"pointer",
-              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-            }}
-          >Pick screenshot from gallery</button>
-
-          <div style={{
-            marginTop:"22px",maxWidth:"320px",textAlign:"center",
-            fontFamily:"'Inter',sans-serif",fontSize:"11px",
-            color:"var(--muted2)",lineHeight:"1.55",
-          }}>
-            Tip: For best results, use a clean screenshot of the shift-summary screen — not blurred, no other apps overlapping.
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── PROGRESS STAGE ──
-  if (stage === "progress") {
-    return (
-      <div className="view active">
-        <div className="topbar">
-          <div className="topbar-title" style={{marginLeft:"auto",marginRight:"auto"}}>Reading your screenshot</div>
-        </div>
-        <div className="scroll-area" style={{padding:"40px 18px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-
-          {/* Circular progress */}
-          <div style={{position:"relative",width:"140px",height:"140px",marginBottom:"24px"}}>
-            <svg width="140" height="140" viewBox="0 0 140 140" style={{transform:"rotate(-90deg)"}}>
-              {/* Background ring */}
-              <circle cx="70" cy="70" r="62" fill="none"
-                stroke="var(--border)" strokeWidth="8" />
-              {/* Progress ring */}
-              <circle cx="70" cy="70" r="62" fill="none"
-                stroke="var(--green)" strokeWidth="8"
-                strokeLinecap="round"
-                strokeDasharray={`${2 * Math.PI * 62}`}
-                strokeDashoffset={`${2 * Math.PI * 62 * (1 - progressPct / 100)}`}
-                style={{transition:"stroke-dashoffset .3s ease"}}
-              />
-            </svg>
-            <div style={{
-              position:"absolute",inset:0,
-              display:"flex",alignItems:"center",justifyContent:"center",
-              fontFamily:"'Inter',sans-serif",fontSize:"32px",fontWeight:"800",
-              color:"var(--text)",letterSpacing:"-.02em",
-              fontVariantNumeric:"tabular-nums",
-            }}>{progressPct}%</div>
-          </div>
-
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"600",color:"var(--text)",marginBottom:"8px"}}>
-            {progressStep}
-          </div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",textAlign:"center",maxWidth:"260px",lineHeight:"1.5"}}>
-            This usually takes 3-5 seconds.
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── PREVIEW STAGE — editable form with all parsed values + extra fields ──
-  if (stage === "preview" && parsed) {
-    if (isSecond) {
-      // Second screenshot — its "save" captures edited values then moves to merge review.
-      return (
-        <ScreenshotPreviewStage
-          parsed={parsed}
-          previewUrl={previewUrl}
-          onBack={() => setStage("pick")}
-          onSaveDirect={(_finalValues, parsedShape) => { setSecondParsed(parsedShape); setStage("merge"); }}
-          saveLabel="Review combined shift →"
-        />
-      );
-    }
-    return (
-      <ScreenshotPreviewStage
-        parsed={parsed}
-        previewUrl={previewUrl}
-        onBack={() => setStage("pick")}
-        onSaveDirect={(finalValues) => onParsed(finalValues)}
-        onAddSecond={handleAddSecond}
-      />
-    );
-  }
-
-  if (stage === "merge" && mergeData) {
-    return (
-      <ScreenshotMergeStage
-        mergeData={mergeData}
-        firstPreviewUrl={firstPreviewUrl}
-        secondPreviewUrl={previewUrl}
-        onBack={() => setStage("preview")}
-        onSave={(finalValues) => onParsed(finalValues)}
-      />
-    );
-  }
-
-  // ── ERROR STAGE ──
-  if (stage === "error") {
-    // Per-kind copy. network/timeout keep the picked image (re-run same file);
-    // unreadable/generic send the user back to choose a clearer screenshot.
-    const canRetrySame = (errorKind === "network" || errorKind === "timeout") && pickedFile != null;
-    const errorCopy = {
-      network: {
-        icon: "📡",
-        title: "Connection problem",
-        body: "We couldn't reach the server. Check your internet connection and try again — your screenshot is still here.",
-      },
-      timeout: {
-        icon: "⏳",
-        title: "Taking too long",
-        body: "The server took too long to respond. This is usually temporary — give it another go.",
-      },
-      unreadable: {
-        icon: "😕",
-        title: "Couldn't read that image",
-        body: "We couldn't pull the numbers from this screenshot. Try a clearer, full screenshot of your shift summary.",
-      },
-      generic: {
-        icon: "😕",
-        title: "Something went wrong",
-        body: "We couldn't read this screenshot. Try again with a clearer image.",
-      },
-    };
-    const c = errorCopy[errorKind] || errorCopy.generic;
-    const retry = () => {
-      if (canRetrySame) {
-        setErrorMsg(""); setErrorKind("generic");
-        startParse(pickedFile); // re-run the same image; no credit is spent on parse
-      } else {
-        setStage("pick"); setErrorMsg(""); setErrorKind("generic");
-      }
-    };
-    return (
-      <div className="view active">
-        <div className="topbar">
-          <button className="topbar-back" onClick={onBack}>←</button>
-          <div className="topbar-title">{c.title}</div>
-        </div>
-        <div className="scroll-area" style={{padding:"32px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
-          <div style={{fontSize:"42px",marginBottom:"14px"}}>{c.icon}</div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"16px",fontWeight:"700",color:"var(--text)",marginBottom:"6px",textAlign:"center"}}>
-            {c.title}
-          </div>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"24px",textAlign:"center",maxWidth:"320px",lineHeight:"1.55"}}>
-            {c.body}
-          </div>
-          <button
-            onClick={retry}
-            style={{
-              width:"100%",maxWidth:"320px",padding:"14px",
-              background:"var(--green)",color:"var(--on-coral)",
-              border:"none",borderRadius:"13px",cursor:"pointer",
-              fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
-            }}
-          >{canRetrySame ? "Try again" : "Choose another screenshot"}</button>
-          {canRetrySame && (
-            <button
-              onClick={() => { setStage("pick"); setErrorMsg(""); setErrorKind("generic"); }}
-              style={{
-                width:"100%",maxWidth:"320px",marginTop:"10px",padding:"13px",
-                background:"transparent",border:"none",cursor:"pointer",
-                color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
-              }}
-            >Choose a different image</button>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  return null;
-}
-
-// ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
-// Small badge shown on each Log-a-shift card: either "Free" (green, subtle) or a
-// credit cost (muted; red when the user can't afford it).
-function LogCostBadge({ free = false, label = "", warn = false }) {
-  const base = {
-    marginLeft:"8px",fontSize:"10px",fontWeight:"700",letterSpacing:".04em",
-    padding:"2px 7px",borderRadius:"5px",whiteSpace:"nowrap",verticalAlign:"middle",
-  };
-  if (free) {
-    return <span style={{...base, background:"var(--green-dim)", color:"var(--green)"}}>FREE</span>;
-  }
   return (
-    <span style={{
-      ...base,
-      background: warn ? "var(--red-dim)" : "var(--elevated)",
-      color: warn ? "var(--red)" : "var(--muted)",
-      border: warn ? "none" : "0.5px solid var(--border)",
-    }}>{label}</span>
+    <div className="view active">
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">Voice entry</div>
+      </div>
+      <div className="scroll-area" style={{padding:"16px"}}>
+
+        {/* Mic card */}
+        <div style={{
+          padding:"28px 16px",textAlign:"center",
+          background:"linear-gradient(180deg, rgba(59,130,246,.1), var(--surface))",
+          border:`1px solid ${status==="listening"?"var(--blue-border)":"var(--border)"}`,
+          borderRadius:"16px",marginBottom:"14px",
+        }}>
+          <div
+            onClick={status === "listening" ? stop : start}
+            style={{
+              width:"72px",height:"72px",borderRadius:"50%",
+              background:"var(--blue-dim)",color:"var(--blue)",
+              display:"inline-flex",alignItems:"center",justifyContent:"center",
+              fontSize:"30px",marginBottom:"12px",cursor:"pointer",
+              animation: status === "listening" ? "pulse 1.5s ease-in-out infinite" : "none",
+              boxShadow: status === "listening" ? "0 0 0 8px rgba(59,130,246,.15)" : "none",
+              transition:"box-shadow .3s ease",
+            }}
+          >🎤</div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>
+            {status === "idle"      && "Tap mic to start"}
+            {status === "listening" && "Listening…"}
+            {status === "done"      && "Got it"}
+            {status === "error"     && "Couldn't access mic"}
+          </div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>
+            {status === "listening" && "Speak naturally. Tap to stop."}
+            {status === "done"      && "Tap to record again"}
+            {status === "idle"      && 'Say: "55 dollars, 6 deliveries, 28 km on DoorDash"'}
+            {status === "error"     && "Check microphone permissions and try again"}
+          </div>
+        </div>
+
+        {/* Transcript */}
+        {transcript && (
+          <div style={{marginBottom:"14px"}}>
+            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"8px"}}>You said</div>
+            <div style={{
+              background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"12px",
+              padding:"13px 14px",fontSize:"13px",color:"var(--text)",lineHeight:"1.6",fontStyle:"italic",
+            }}>"{transcript}"</div>
+          </div>
+        )}
+
+        {/* Parsed values */}
+        {parsed && (
+          <>
+            <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"8px"}}>Parsed</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"14px"}}>
+              {[
+                ["Earnings",   parsed.earned != null ? `$${parsed.earned.toFixed(2)}` : "—"],
+                ["Deliveries", parsed.dels != null ? String(parsed.dels) : "—"],
+                ["Total km",   parsed.km   != null ? `${parsed.km} km` : "—"],
+                ["Duration",   parsed.mins != null ? `${Math.floor(parsed.mins/60)}h ${parsed.mins%60}m` : "—"],
+                ["Tips",       parsed.tips != null ? `$${parsed.tips.toFixed(2)}` : "—"],
+                ["Bonuses",    parsed.bonus != null ? `$${parsed.bonus.toFixed(2)}` : "—"],
+              ].map(([label, val]) => {
+                const found = val !== "—";
+                return (
+                  <div key={label} style={{
+                    background:"var(--surface)",
+                    border: `0.5px solid ${found ? "var(--green-border)" : "var(--border)"}`,
+                    borderRadius:"11px",padding:"12px",
+                  }}>
+                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",color: found ? "var(--text)" : "var(--muted2)",fontVariantNumeric:"tabular-nums",letterSpacing:"-.01em",lineHeight:"1"}}>{val}</div>
+                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)",marginTop:"5px",fontWeight:"500"}}>{label}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {parsed.platform && (
+              <div style={{
+                background:"var(--green-dim)",border:"0.5px solid var(--green-border)",borderRadius:"10px",
+                padding:"10px 13px",fontSize:"11px",color:"var(--green)",fontWeight:"600",marginBottom:"14px",
+              }}>
+                Platform: {parsed.platform === "uber_eats" ? "Uber Eats" : parsed.platform === "doordash" ? "DoorDash" : "Both"}
+              </div>
+            )}
+
+            <button
+              onClick={handleConfirm}
+              style={{
+                width:"100%",padding:"15px",background:"var(--green)",color:"#0B0F14",
+                border:"none",borderRadius:"13px",
+                fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",cursor:"pointer",
+              }}
+            >Use these values →</button>
+            <div style={{textAlign:"center",fontSize:"10px",color:"var(--muted2)",marginTop:"8px",lineHeight:"1.5"}}>
+              You'll be able to edit anything on the next screen before saving.
+            </div>
+          </>
+        )}
+
+      </div>
+    </div>
   );
 }
 
-function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, onCsvImport, onBuyCredits, isPro = false, onUpgrade, screenshotsRemaining }) {
-  // Per-card credit costs surfaced up front. Balance shown once in the topbar;
-  // each paid card shows what it costs. Timer + manual entry are free.
-  const hasBalance = screenshotsRemaining != null;
-  const csvAffordable = !hasBalance || screenshotsRemaining >= CREDIT_COST_CSV;
+// ─── LOG A SHIFT SELECTION SCREEN — 3 options ───
+function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onVoiceEntry, isPro = false, onUpgrade }) {
+  // Detect Web Speech API support
+  const voiceSupported = typeof window !== "undefined" &&
+    ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
+
   return (
     <div className="view active">
       <div className="topbar">
         <button className="topbar-back" onClick={onBack}>←</button>
         <div className="topbar-title">Log a shift</div>
-        {hasBalance && (
-          <button
-            onClick={onBuyCredits}
-            aria-label="Credit balance — tap to top up"
-            style={{
-              marginLeft:"auto",display:"flex",alignItems:"center",gap:"5px",
-              background: screenshotsRemaining === 0 ? "var(--red-dim)" : "var(--green-dim)",
-              color: screenshotsRemaining === 0 ? "var(--red)" : "var(--green)",
-              border:"none",borderRadius:"100px",padding:"6px 12px",cursor:"pointer",
-              fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"800",letterSpacing:".02em",
-            }}
-          >
-            <span style={{fontSize:"13px"}}>◈</span>
-            {screenshotsRemaining} credit{screenshotsRemaining === 1 ? "" : "s"}
-          </button>
-        )}
       </div>
       <div className="scroll-area">
         <div className="log-shift-list">
@@ -6290,31 +3221,25 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, o
               <span style={{color:"var(--green)",fontSize:"20px"}}>▶</span>
             </div>
             <div className="log-entry-text">
-              <div className="log-entry-title">
-                Start shift timer
-                <LogCostBadge free />
-              </div>
-              <div className="log-entry-desc">{TIMER_GPS_ENABLED
-                ? "Tap to start timing your shift live. GPS tracks your KMs automatically."
-                : "Tap to start timing your shift live. You'll add your KMs when you save."}</div>
+              <div className="log-entry-title">Start shift timer</div>
+              <div className="log-entry-desc">Tap to start timing your shift live. GPS tracks your KMs automatically.</div>
             </div>
             <div className="log-entry-arrow">›</div>
           </div>
 
-          {/* 2 — Screenshot Import */}
-          <div className="log-entry-card" onClick={onScreenshotImport}>
-            <div className="log-entry-icon" style={{background:"rgba(168,85,247,.14)",color:"var(--purple)"}}>
-              <span style={{fontSize:"22px"}}>📷</span>
-            </div>
-            <div className="log-entry-text">
-              <div className="log-entry-title">
-                Import from screenshot
-                {hasBalance && <LogCostBadge label={`${CREDIT_COST_SCREENSHOT}–${CREDIT_COST_WEEKLY} credits`} />}
+          {/* 2 — Voice Entry (only if supported) */}
+          {voiceSupported && (
+            <div className="log-entry-card" onClick={onVoiceEntry}>
+              <div className="log-entry-icon" style={{background:"rgba(59,130,246,.14)",color:"var(--blue)"}}>
+                <span style={{fontSize:"22px"}}>🎤</span>
               </div>
-              <div className="log-entry-desc">Upload an Uber Eats or DoorDash summary — we'll read the values for you. A weekly summary uses {CREDIT_COST_WEEKLY}.</div>
+              <div className="log-entry-text">
+                <div className="log-entry-title">Voice entry</div>
+                <div className="log-entry-desc">Speak naturally — "55 dollars, 6 deliveries on DoorDash". We'll fill it in.</div>
+              </div>
+              <div className="log-entry-arrow">›</div>
             </div>
-            <div className="log-entry-arrow">›</div>
-          </div>
+          )}
 
           {/* 3 — Manual entry */}
           <div className="log-entry-card" onClick={onNewTrip}>
@@ -6322,26 +3247,8 @@ function LogShiftScreen({ onBack, onStartTimer, onNewTrip, onScreenshotImport, o
               <span style={{fontSize:"22px"}}>✏️</span>
             </div>
             <div className="log-entry-text">
-              <div className="log-entry-title">
-                Enter shift details
-                <LogCostBadge free />
-              </div>
+              <div className="log-entry-title">Enter shift details</div>
               <div className="log-entry-desc">Fill in earnings, time, and KMs yourself. Takes about 30 seconds.</div>
-            </div>
-            <div className="log-entry-arrow">›</div>
-          </div>
-
-          {/* 4 — Bulk import (CSV / Excel) */}
-          <div className="log-entry-card" onClick={onCsvImport}>
-            <div className="log-entry-icon" style={{background:"rgba(59,130,246,.14)",color:"var(--blue)"}}>
-              <span style={{fontSize:"22px"}}>📄</span>
-            </div>
-            <div className="log-entry-text">
-              <div className="log-entry-title">
-                Bulk import from a file
-                {hasBalance && <LogCostBadge label={`${CREDIT_COST_CSV} credits`} warn={!csvAffordable} />}
-              </div>
-              <div className="log-entry-desc">Upload a spreadsheet (CSV or Excel) of past shifts — we'll map the columns and add them all at once.</div>
             </div>
             <div className="log-entry-arrow">›</div>
           </div>
@@ -6393,92 +3300,8 @@ function PlatformPill({ platform }) {
   return <span style={{color:"var(--muted2)",fontSize:"14px"}}>—</span>;
 }
 
-// ─── MANUAL FIELD ROW ─── Compact editable row matching screenshot-review aesthetic.
-// status: "ok" (green tick), "error" (red X — only shown after save attempt for empty required),
-// or null/undefined (no indicator — for optional fields).
-function ManualFieldRow({ status, label, sublabel, value, onChange, type = "text", placeholder = "", suffix = "", prefix = "", disabled = false, min, max, step }) {
-  const showOk    = status === "ok";
-  const showError = status === "error";
-  const showDot   = !showOk && !showError;
-
-  let bg, color, content;
-  if (showOk)    { bg = "var(--green-dim)"; color = "var(--green)"; content = "✓"; }
-  else if (showError) { bg = "var(--red-dim)"; color = "var(--red)"; content = "✕"; }
-  else { bg = "var(--elevated)"; color = "var(--muted2)"; content = ""; }
-
-  return (
-    <div style={{
-      display:"flex",alignItems:"center",gap:"10px",
-      padding:"10px 13px",
-      background:"var(--surface)",
-      border:`0.5px solid ${showOk ? "var(--green-border)" : showError ? "var(--red-border)" : "var(--border)"}`,
-      borderRadius:"11px",
-    }}>
-      <div style={{
-        width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-        background: bg,color: color,
-        display:"flex",alignItems:"center",justifyContent:"center",
-        fontSize:"12px",fontWeight:"700",
-      }}>{content}</div>
-      <div style={{minWidth:"95px",flex:"0 0 auto"}}>
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>{label}</div>
-        {sublabel && <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"1px"}}>{sublabel}</div>}
-      </div>
-      <div style={{flex:1,display:"flex",alignItems:"center",gap:"4px"}}>
-        {prefix && (
-          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{prefix}</span>
-        )}
-        <input
-          type={type}
-          inputMode={type === "number" ? "decimal" : undefined}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          disabled={disabled}
-          min={min} max={max} step={step}
-          style={{
-            flex:1,minWidth:0,
-            background:"transparent",border:"none",outline:"none",
-            color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
-            fontWeight:"700",fontVariantNumeric:"tabular-nums",
-            textAlign:"right",letterSpacing:"-.005em",padding:0,
-            colorScheme: type === "date" ? "dark" : undefined,
-          }}
-        />
-        {suffix && (
-          <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",flexShrink:0}}>{suffix}</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Small group divider — "EARNINGS", "TIME", etc.
-function ManualGroupHeader({ children }) {
-  return (
-    <div style={{
-      fontSize:"10px",fontWeight:"800",color:"var(--coral)",
-      letterSpacing:".08em",textTransform:"uppercase",
-      marginBottom:"11px",
-    }}>{children}</div>
-  );
-}
-
-// M1 card wrapper — groups a section's header + fields into a rounded card.
-function ManualCard({ children }) {
-  return (
-    <div style={{
-      background:"var(--elevated)",
-      border:"1px solid var(--border)",
-      borderRadius:"16px",
-      padding:"15px",
-      marginBottom:"14px",
-    }}>{children}</div>
-  );
-}
-
 // ─── NEW / EDIT SHIFT ───
-function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefill, targets = DEFAULT_TARGETS, onGoToSettings, isPro = false, onUpgrade, showScoring = true }) {
+function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefill, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onFuelSave, onGoToSettings, isPro = false, onUpgrade }) {
   const isEdit = !!editTrip;
 
   // Format a Date to the value datetime-local inputs expect: "YYYY-MM-DDTHH:MM"
@@ -6487,13 +3310,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     const pad = n => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
-  // Date-only value for <input type="date"> ("YYYY-MM-DD"). Time isn't a factor
-  // anywhere in the app, so the shift form captures date only.
-  const toDateInput = (iso) => {
-    const d = iso ? new Date(iso) : new Date();
-    const pad = n => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  };
 
   const toTimeStr = (ms) => {
     const d = new Date(ms);
@@ -6501,24 +3317,10 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
-  // Read one-shot prefills ONCE (useState initializer runs a single time even if
-  // the component body re-renders). Removing them during render caused a race:
-  // a re-render would find them already deleted and lose the carried-over data
-  // (earnings/tips/dels vanished when coming from the Confirm screen's "add details").
-  // NOTE: these must be declared BEFORE initShiftDate below — initShiftDate reads
-  // entryPrefill.date, and doing its own DB.get would hit the same delete race.
-  const [orderPrefill] = useState(() => DB.get("gt_order_prefill"));
-  const [entryPrefill] = useState(() => DB.get("gt_entry_prefill"));
-  useEffect(() => {
-    if (orderPrefill) DB.remove("gt_order_prefill");
-    if (entryPrefill) DB.remove("gt_entry_prefill");
-  }, []);
-
-  // Determine initial shift date — timer prefill, entry prefill (catch-up /
-  // screenshot), or edit (date only)
+  // Determine initial shift date — timer prefill or edit
   const initShiftDate = timerPrefill
-    ? toDateInput(timerPrefill.startedAt)
-    : (entryPrefill?.date || toDateInput(editTrip?.ts));
+    ? toDatetimeLocal(timerPrefill.startedAt)
+    : toDatetimeLocal(editTrip?.ts);
 
   // Initial online time from timer prefill
   const initOnlineHrs  = timerPrefill ? String(Math.floor((timerPrefill.totalMin||0) / 60)) : (editTrip ? String(Math.floor((editTrip.totalMin||0)/60)) : "");
@@ -6526,26 +3328,32 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   const initKmFromGps  = timerPrefill?.totalKm ? String(timerPrefill.totalKm.toFixed(2)) : null;
 
   const [shiftDate, setShiftDate] = useState(initShiftDate);
+  // Check for order session prefill
+  const orderPrefill = DB.get("gt_order_prefill");
+  if (orderPrefill) DB.remove("gt_order_prefill");
+  // Check for voice entry prefill
+  const voicePrefill = DB.get("gt_voice_prefill");
+  if (voicePrefill) DB.remove("gt_voice_prefill");
 
   const [totalEarned, setTotalEarned] = useState(
-    entryPrefill?.earned != null ? String(entryPrefill.earned)
+    voicePrefill?.earned != null ? String(voicePrefill.earned)
     : orderPrefill ? String(orderPrefill.totalEarned)
     : (editTrip ? String(editTrip.totalEarned) : "")
   );
-  const [tip, setTip]     = useState(entryPrefill?.tips != null ? String(entryPrefill.tips) : (editTrip ? String(editTrip.tip) : ""));
-  const [bonus, setBonus] = useState(entryPrefill?.bonus != null ? String(entryPrefill.bonus) : (editTrip ? String(editTrip.bonus) : ""));
+  const [tip, setTip]     = useState(voicePrefill?.tips != null ? String(voicePrefill.tips) : (editTrip ? String(editTrip.tip) : ""));
+  const [bonus, setBonus] = useState(voicePrefill?.bonus != null ? String(voicePrefill.bonus) : (editTrip ? String(editTrip.bonus) : ""));
 
   // Online Time — total time on shift (h + m, matching Uber Eats / DoorDash "Online" field)
   const [onlineHrs, setOnlineHrs]   = useState(
-    entryPrefill?.mins != null ? String(Math.floor(entryPrefill.mins / 60)) : initOnlineHrs
+    voicePrefill?.mins != null ? String(Math.floor(voicePrefill.mins / 60)) : initOnlineHrs
   );
   const [onlineMins, setOnlineMins] = useState(
-    entryPrefill?.mins != null ? String(entryPrefill.mins % 60) : initOnlineMins
+    voicePrefill?.mins != null ? String(voicePrefill.mins % 60) : initOnlineMins
   );
 
   const [kmMode, setKmMode]       = useState("total"); // "total" | "odometer"
   const [totalKmInput, setTotalKmInput] = useState(
-    entryPrefill?.km != null ? String(entryPrefill.km)
+    voicePrefill?.km != null ? String(voicePrefill.km)
     : (initKmFromGps || (editTrip ? String(editTrip.totalKm) : ""))
   );
   const [odoStart, setOdoStart]   = useState("");
@@ -6562,40 +3370,18 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     orderPrefill ? String((orderPrefill.totalMin||0) % 60) : (editTrip ? String((editTrip.activeMins||0)%60) : "")
   );
   const [dels, setDels] = useState(
-    entryPrefill?.dels != null ? String(entryPrefill.dels)
+    voicePrefill?.dels != null ? String(voicePrefill.dels)
     : orderPrefill ? String(orderPrefill.dels)
     : (editTrip ? String(editTrip.dels) : "")
   );
   const [expenses, setExpenses] = useState(editTrip ? String(editTrip.expenses) : "0");
-  const [notes, setNotes] = useState(editTrip?.notes ? editTrip.notes : "");
-  const [platform, setPlatform] = useState(() => {
-    const explicit = entryPrefill?.platform || orderPrefill?.platform || editTrip?.platform;
-    if (explicit) return explicit;
-    // Fall back to the user's saved Default Platform setting (if not "none").
-    const dflt = DB.get("gt_default_platform");
-    return dflt && dflt !== "none" ? dflt : null;
-  });
+  const [platform, setPlatform] = useState(
+    voicePrefill?.platform || orderPrefill?.platform || editTrip?.platform || null
+  );
   const [errors, setErrors] = useState({});
-  const [saveAttempted, setSaveAttempted] = useState(false);
   const [valMsg, setValMsg] = useState("");
-  // Light view: optional fields (tips, bonuses, active time, active km, expenses,
-  // notes) start collapsed behind an "Add detail" toggle so the form shows just
-  // the 5 required fields + date. Auto-opens below if any optional field already
-  // carries a value (editing a shift, or a screenshot/CSV/timer prefill).
-  const [showOptional, setShowOptional] = useState(false);
 
   const n = (v) => Math.max(0, parseFloat(v) || 0);
-
-  // Reveal the optional section on mount if anything optional came pre-filled,
-  // so a prefill/edit never hides values the user expects to see.
-  useEffect(() => {
-    const anyOptional =
-      n(tip) > 0 || n(bonus) > 0 ||
-      n(activeHrsPart) > 0 || n(activeMinsPart) > 0 ||
-      n(activeKmInput) > 0 || n(expenses) > 0 ||
-      (typeof notes === "string" && notes.trim() !== "");
-    if (anyOptional) setShowOptional(true);
-  }, []);
 
   // Base is derived: Total Earned − Tip − Bonus (floored at 0)
   const derivedBase = Math.max(0, n(totalEarned) - n(tip) - n(bonus));
@@ -6625,20 +3411,15 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   }, targets);
 
   const deductKm = derivedTotalKm;
-  // Rate follows the SHIFT'S date, not today's — editing a June shift in July
-  // must still use last FY's rate. A user-set custom rate (Settings) overrides.
-  const effectiveRate = atoRate || atoRateForDate(shiftDate);
-  const deduction = deductKm * effectiveRate;
+  const deduction = deductKm * (atoRate || ATO_RATE_PER_KM);
 
   const validate = () => {
-    setSaveAttempted(true);
     const e = {};
     if (!totalEarned.trim() || isNaN(parseFloat(totalEarned))) e.totalEarned = true;
     if (derivedTotalMin <= 0) e.onlineTime = true;
     if (kmMode === "total" && (!totalKmInput.trim() || isNaN(parseFloat(totalKmInput)))) e.km = true;
     if (kmMode === "odometer" && (!odoStart.trim() || !odoEnd.trim() || derivedTotalKm <= 0)) e.km = true;
     if (!dels.trim() || isNaN(parseFloat(dels))) e.dels = true;
-    if (!platform) e.platform = true;
     setErrors(e);
     if (Object.keys(e).length) {
       const labels = [];
@@ -6646,7 +3427,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
       if (e.onlineTime) labels.push("Online Time");
       if (e.km) labels.push("Distance");
       if (e.dels) labels.push("Deliveries");
-      if (e.platform) labels.push("Platform");
       setValMsg("Required: " + labels.join(", "));
       return false;
     }
@@ -6660,19 +3440,17 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
     const record = {
       id: editTrip?.id || Date.now(),
       ts: shiftDate ? new Date(shiftDate).toISOString() : new Date().toISOString(),
-      // Preserve the shift's original region on edit (handleSaved keeps
-      // rawRecord.region for edits; without this it would blank to null and
-      // drop the shift out of zone benchmarks).
-      region: editTrip?.region ?? null,
       activeMins: derivedActiveMin || null,
       activeKm: activeKmInput !== "" ? n(activeKmInput) : null,
       platform: platform || null,
-      notes: notes.trim() || null,
-      ...inputs, ...c, deduction: derivedTotalKm * effectiveRate,
+      ...inputs, ...c, deduction: derivedTotalKm * (atoRate || ATO_RATE_PER_KM),
     };
     onSaved(record, isEdit);
   };
 
+  const [showFuelModal, setShowFuelModal] = useState(false);
+  const [fuelModalEff, setFuelModalEff]   = useState(fuelEfficiency ? String(fuelEfficiency) : "");
+  const [fuelModalPr,  setFuelModalPr]    = useState(fuelPrice ? String(fuelPrice) : "");
 
   const f = (id, err) => `input-field${err ? " err" : ""}`;
 
@@ -6707,359 +3485,279 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
           </div>
         )}
 
-        {/* ─── COMPACT FORM ─── matches screenshot-review aesthetic ── */}
-        <div style={{padding:"4px 14px 0"}}>
-
-          {/* ── EARNINGS ── */}
-          <ManualCard>
-          <ManualGroupHeader>Earnings</ManualGroupHeader>
-          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-            <ManualFieldRow
-              status={saveAttempted && !totalEarned.trim() ? "error" : (totalEarned.trim() && !isNaN(parseFloat(totalEarned)) ? "ok" : null)}
-              label="Total earned" sublabel="required"
-              value={totalEarned}
-              onChange={(v) => { setTotalEarned(v); if (saveAttempted) setErrors(e => ({...e, totalEarned: false})); }}
-              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
+        {/* Shift Date & Time */}
+        <div className="section">
+          <div className="section-label">Shift Date &amp; Time</div>
+          <div className="input-row">
+            <div className="input-label">When did this shift take place?</div>
+            <input
+              className="input-field"
+              type="datetime-local"
+              value={shiftDate}
+              onChange={e => setShiftDate(e.target.value)}
+              style={{colorScheme:"dark"}}
             />
-            {showOptional && (
-              <>
-                <ManualFieldRow
-                  label="Tips" value={tip}
-                  onChange={setTip}
-                  type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
-                />
-                <ManualFieldRow
-                  label="Bonuses" value={bonus}
-                  onChange={setBonus}
-                  type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
-                />
-              </>
-            )}
           </div>
-          {(n(totalEarned) > 0 || n(tip) > 0 || n(bonus) > 0) && (
-            <div style={{
-              marginTop:"6px",padding:"8px 13px",
-              background:"var(--bg)",
-              borderRadius:"9px",
-              fontSize:"11px",color:"var(--muted)",
-              display:"flex",justifyContent:"space-between",alignItems:"center",
-            }}>
-              <span>Base pay (auto)</span>
-              <strong style={{color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>{fmt$(derivedBase)}</strong>
-            </div>
-          )}
-          </ManualCard>
-
-          {/* ── TIME ── */}
-          <ManualCard>
-          <ManualGroupHeader>Time</ManualGroupHeader>
-          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-
-            {/* Online — hours + minutes side by side */}
-            <div style={{
-              display:"flex",alignItems:"center",gap:"10px",
-              padding:"10px 13px",background:"var(--surface)",
-              border:`0.5px solid ${saveAttempted && derivedTotalMin <= 0 ? "var(--red-border)" : (derivedTotalMin > 0 ? "var(--green-border)" : "var(--border)")}`,
-              borderRadius:"11px",
-            }}>
-              <div style={{
-                width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-                background: saveAttempted && derivedTotalMin <= 0 ? "var(--red-dim)" : (derivedTotalMin > 0 ? "var(--green-dim)" : "var(--elevated)"),
-                color:    saveAttempted && derivedTotalMin <= 0 ? "var(--red)"     : (derivedTotalMin > 0 ? "var(--green)"     : "var(--muted2)"),
-                display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px",fontWeight:"700",
-              }}>{saveAttempted && derivedTotalMin <= 0 ? "✕" : (derivedTotalMin > 0 ? "✓" : "")}</div>
-              <div style={{minWidth:"95px"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Online time</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"1px"}}>required</div>
-              </div>
-              <div style={{flex:1,display:"flex",alignItems:"center",gap:"6px"}}>
-                <input
-                  type="number" inputMode="decimal" min="0" max="23"
-                  value={onlineHrs}
-                  onChange={(e) => { setOnlineHrs(e.target.value); if (saveAttempted) setErrors(v => ({...v, onlineTime: false})); }}
-                  placeholder="0"
-                  style={{
-                    width:"42px",background:"transparent",border:"none",outline:"none",
-                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
-                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
-                  }}
-                />
-                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>h</span>
-                <input
-                  type="number" inputMode="decimal" min="0" max="59"
-                  value={onlineMins}
-                  onChange={(e) => { setOnlineMins(e.target.value); if (saveAttempted) setErrors(v => ({...v, onlineTime: false})); }}
-                  placeholder="0"
-                  style={{
-                    width:"42px",background:"transparent",border:"none",outline:"none",
-                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
-                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
-                  }}
-                />
-                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
-              </div>
-            </div>
-
-            {/* Active time — hours + minutes (optional) */}
-            {showOptional && (
-            <div style={{
-              display:"flex",alignItems:"center",gap:"10px",
-              padding:"10px 13px",background:"var(--surface)",
-              border:`0.5px solid ${derivedActiveMin > 0 ? "var(--green-border)" : "var(--border)"}`,
-              borderRadius:"11px",
-            }}>
-              <div style={{
-                width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-                background: derivedActiveMin > 0 ? "var(--green-dim)" : "var(--elevated)",
-                color:    derivedActiveMin > 0 ? "var(--green)"     : "var(--muted2)",
-                display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px",fontWeight:"700",
-              }}>{derivedActiveMin > 0 ? "✓" : ""}</div>
-              <div style={{minWidth:"95px"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Active time</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"1px"}}>delivery only</div>
-              </div>
-              <div style={{flex:1,display:"flex",alignItems:"center",gap:"6px"}}>
-                <input
-                  type="number" inputMode="decimal" min="0" max="23"
-                  value={activeHrsPart}
-                  onChange={(e) => setActiveHrsPart(e.target.value)}
-                  placeholder="0"
-                  style={{
-                    width:"42px",background:"transparent",border:"none",outline:"none",
-                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
-                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
-                  }}
-                />
-                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>h</span>
-                <input
-                  type="number" inputMode="decimal" min="0" max="59"
-                  value={activeMinsPart}
-                  onChange={(e) => setActiveMinsPart(e.target.value)}
-                  placeholder="0"
-                  style={{
-                    width:"42px",background:"transparent",border:"none",outline:"none",
-                    color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",
-                    fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0,
-                  }}
-                />
-                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
-              </div>
-            </div>
-            )}
-          </div>
-          {derivedActiveMin > 0 && derivedTotalMin > 0 && (
-            <div style={{
-              marginTop:"6px",padding:"8px 13px",
-              background:"var(--elevated)",borderRadius:"9px",
-              fontSize:"11px",color:"var(--muted)",
-              display:"flex",justifyContent:"space-between",alignItems:"center",
-            }}>
-              <span>Active time %</span>
-              <strong style={{color: derivedActiveMin/derivedTotalMin >= 0.85 ? "var(--green)" : derivedActiveMin/derivedTotalMin >= 0.6 ? "var(--amber)" : "var(--red)", fontVariantNumeric:"tabular-nums"}}>
-                {((derivedActiveMin/derivedTotalMin)*100).toFixed(0)}%
-              </strong>
-            </div>
-          )}
-          </ManualCard>
-
-          {/* ── DISTANCE ── */}
-          <ManualCard>
-          <ManualGroupHeader>Distance</ManualGroupHeader>
-
-          {/* Km mode toggle */}
-          <div style={{display:"flex",gap:"6px",marginBottom:"6px"}}>
-            {[
-              { id:"total",    label:"📍 Total km" },
-              { id:"odometer", label:"🔢 Odometer" },
-            ].map(opt => (
-              <button
-                key={opt.id}
-                onClick={() => setKmMode(opt.id)}
-                style={{
-                  flex:1,padding:"9px 8px",borderRadius:"9px",cursor:"pointer",
-                  background: kmMode === opt.id ? "var(--green-dim)" : "var(--elevated)",
-                  border: `0.5px solid ${kmMode === opt.id ? "var(--green-border)" : "var(--border)"}`,
-                  color: kmMode === opt.id ? "var(--green)" : "var(--muted)",
-                  fontFamily:"'Inter',sans-serif",fontSize:"11.5px",fontWeight:"700",
-                }}
-              >{opt.label}</button>
-            ))}
-          </div>
-
-          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-            {kmMode === "total" ? (
-              <ManualFieldRow
-                status={saveAttempted && (!totalKmInput.trim() || isNaN(parseFloat(totalKmInput))) ? "error" : (totalKmInput.trim() && !isNaN(parseFloat(totalKmInput)) ? "ok" : null)}
-                label="Total km" sublabel="required"
-                value={totalKmInput}
-                onChange={(v) => { setTotalKmInput(v); if (saveAttempted) setErrors(e => ({...e, km: false})); }}
-                type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
-              />
-            ) : (
-              <>
-                <ManualFieldRow
-                  status={saveAttempted && (!odoStart.trim() || derivedTotalKm <= 0) ? "error" : (odoStart.trim() ? "ok" : null)}
-                  label="Start odometer" sublabel="required"
-                  value={odoStart}
-                  onChange={(v) => { setOdoStart(v); if (saveAttempted) setErrors(e => ({...e, km: false})); }}
-                  type="number" min="0" step="0.1" placeholder="0"
-                />
-                <ManualFieldRow
-                  status={saveAttempted && (!odoEnd.trim() || derivedTotalKm <= 0) ? "error" : (odoEnd.trim() ? "ok" : null)}
-                  label="End odometer" sublabel="required"
-                  value={odoEnd}
-                  onChange={(v) => { setOdoEnd(v); if (saveAttempted) setErrors(e => ({...e, km: false})); }}
-                  type="number" min="0" step="0.1" placeholder="0"
-                />
-                {derivedTotalKm > 0 && (
-                  <div style={{
-                    padding:"8px 13px",background:"var(--elevated)",borderRadius:"9px",
-                    fontSize:"11px",color:"var(--muted)",
-                    display:"flex",justifyContent:"space-between",alignItems:"center",
-                  }}>
-                    <span>Calculated distance</span>
-                    <strong style={{color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>{derivedTotalKm.toFixed(1)} km</strong>
-                  </div>
-                )}
-              </>
-            )}
-            {showOptional && (
-            <ManualFieldRow
-              label="Active km" sublabel="optional"
-              value={activeKmInput}
-              onChange={setActiveKmInput}
-              type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
-            />
-            )}
-          </div>
-          </ManualCard>
-
-          {/* ── SHIFT DETAILS ── */}
-          <ManualCard>
-          <ManualGroupHeader>Shift details</ManualGroupHeader>
-          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-            <ManualFieldRow
-              status={saveAttempted && (!dels.trim() || isNaN(parseFloat(dels))) ? "error" : (dels.trim() && !isNaN(parseFloat(dels)) ? "ok" : null)}
-              label="Deliveries" sublabel="required"
-              value={dels}
-              onChange={(v) => { setDels(v); if (saveAttempted) setErrors(e => ({...e, dels: false})); }}
-              type="number" min="0" placeholder="0"
-            />
-
-            {/* Shift date — date only (no time, matching screenshot review) */}
-            <ManualFieldRow
-              status={shiftDate ? "ok" : null}
-              label="Shift date"
-              value={shiftDate ? shiftDate.slice(0, 10) : ""}
-              onChange={(v) => setShiftDate(v ? `${v}T00:00` : "")}
-              type="date"
-            />
-
-            {/* Platform — segmented buttons */}
-            <div style={{
-              padding:"10px 13px",
-              background:"var(--surface)",
-              border:`0.5px solid ${platform ? "var(--green-border)" : "var(--border)"}`,
-              borderRadius:"11px",
-            }}>
-              <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"8px"}}>
-                <div style={{
-                  width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-                  background: platform ? "var(--green-dim)" : "var(--elevated)",
-                  color: platform ? "var(--green)" : "var(--muted2)",
-                  display:"flex",alignItems:"center",justifyContent:"center",
-                  fontSize:"12px",fontWeight:"700",
-                }}>{platform ? "✓" : ""}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color: errors.platform ? "var(--red)" : "var(--muted)",fontWeight:"500"}}>Platform{errors.platform ? " · required" : ""}</div>
-              </div>
-              <div style={{display:"flex",gap:"6px"}}>
-                {[
-                  ["uber_eats", "Uber Eats"],
-                  ["doordash",  "DoorDash"],
-                  ["both",      "Both"],
-                ].map(([id, label]) => (
-                  <button
-                    key={id}
-                    onClick={() => setPlatform(platform === id ? null : id)}
-                    style={{
-                      flex:1,padding:"9px 8px",borderRadius:"9px",cursor:"pointer",
-                      background: platform === id ? "var(--green-dim)" : "var(--elevated)",
-                      border: `0.5px solid ${platform === id ? "var(--green-border)" : "var(--border)"}`,
-                      color: platform === id ? "var(--green)" : "var(--muted)",
-                      fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",
-                    }}
-                  >{label}</button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* ── OTHER ── */}
-          </ManualCard>
-
-          {/* Light-view toggle: reveal all optional fields (tips, bonuses, active
-              time/km, expenses, notes). Collapsed by default so the form shows
-              just the required essentials. */}
-          {!showOptional && (
-            <button
-              onClick={() => setShowOptional(true)}
-              style={{
-                width:"100%",padding:"13px",marginTop:"2px",cursor:"pointer",
-                background:"var(--elevated)",border:"0.5px dashed var(--muted2)",
-                borderRadius:"12px",color:"var(--muted)",
-                fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
-                display:"flex",alignItems:"center",justifyContent:"center",gap:"7px",
-              }}
-            >
-              <span style={{fontSize:"15px"}}>+</span> Add detail
-              <span style={{fontSize:"11px",fontWeight:"500",color:"var(--muted2)"}}>· tips, active time, notes</span>
-            </button>
-          )}
-
-          {showOptional && (
-          <ManualCard>
-          <ManualGroupHeader>Other</ManualGroupHeader>
-          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-            <ManualFieldRow
-              label="Expenses" sublabel="not scored"
-              value={expenses}
-              onChange={setExpenses}
-              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
-            />
-
-            {/* Notes (optional textarea) */}
-            <div style={{
-              padding:"10px 13px",background:"var(--surface)",
-              border:"0.5px solid var(--border)",borderRadius:"11px",
-            }}>
-              <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"6px"}}>
-                <div style={{
-                  width:"22px",height:"22px",borderRadius:"50%",flexShrink:0,
-                  background:"var(--elevated)",color:"var(--muted)",
-                  display:"flex",alignItems:"center",justifyContent:"center",
-                  fontSize:"11px",fontWeight:"700",
-                }}>—</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Notes (optional)</div>
-              </div>
-              <textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Anything to remember about this shift…"
-                rows={2}
-                style={{
-                  width:"100%",background:"transparent",border:"none",outline:"none",
-                  color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12.5px",
-                  resize:"vertical",padding:0,letterSpacing:"-.005em",
-                }}
-              />
-            </div>
-
-          </div>
-          </ManualCard>
-          )}
-
         </div>
-{/* ─── END COMPACT FORM ─── */}
+
+        {/* Earnings */}
+        <div className="section">
+          <div className="section-label">Earnings</div>
+          <div className="input-group">
+            <div className="input-row">
+              <div className="input-label">Total Earned ($) <span className="req">*</span></div>
+              <input className={`input-field${errors.totalEarned ? " err" : ""}`} type="number" min="0" step="0.01" placeholder="0.00" value={totalEarned} onChange={e => { setTotalEarned(e.target.value); setErrors(v => ({...v,totalEarned:false})); }} />
+            </div>
+            <div className="input-row">
+              <div className="input-label">Tip Amount ($)</div>
+              <input className="input-field" type="number" min="0" step="0.01" placeholder="0.00" value={tip} onChange={e => setTip(e.target.value)} />
+            </div>
+            <div className="input-row">
+              <div className="input-label">Bonus ($)</div>
+              <input className="input-field" type="number" min="0" step="0.01" placeholder="0.00" value={bonus} onChange={e => setBonus(e.target.value)} />
+            </div>
+            <div className="calc-row">
+              <div className="calc-label">Base Pay (auto)</div>
+              <div className="calc-value">{fmt$(derivedBase)}</div>
+            </div>
+            <div className="calc-row" style={{borderTop:"none",paddingTop:0}}>
+              <div className="calc-label">Total Earned</div>
+              <div className="calc-value" style={{color:"var(--green)"}}>{fmt$(calc.totalEarned)}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Time */}
+        <div className="section">
+          <div className="section-label">Time on Shift <span className="req">*</span></div>
+          <div className="input-group">
+
+            {/* Online Time */}
+            <div>
+              <div className="input-label" style={{marginBottom:"8px"}}>
+                Online Time <span className="req">*</span>
+                <span style={{color:"var(--muted2)",fontSize:"10px",fontWeight:400,marginLeft:"6px"}}>total time on shift</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
+                <div className="input-row">
+                  <div className="input-label">Hours</div>
+                  <input
+                    className={`input-field${errors.onlineTime ? " err" : ""}`}
+                    type="number" min="0" max="23" placeholder="e.g. 2"
+                    value={onlineHrs}
+                    onChange={e => { setOnlineHrs(e.target.value); setErrors(v => ({...v,onlineTime:false})); }}
+                  />
+                </div>
+                <div className="input-row">
+                  <div className="input-label">Minutes</div>
+                  <input
+                    className={`input-field${errors.onlineTime ? " err" : ""}`}
+                    type="number" min="0" max="59" placeholder="e.g. 2"
+                    value={onlineMins}
+                    onChange={e => { setOnlineMins(e.target.value); setErrors(v => ({...v,onlineTime:false})); }}
+                  />
+                </div>
+              </div>
+              {derivedTotalMin > 0 && (
+                <div className="calc-row" style={{marginTop:"6px"}}>
+                  <div className="calc-label">Total Online Time</div>
+                  <div className="calc-value">{derivedTotalMin} min ({(derivedTotalMin/60).toFixed(1)} hrs)</div>
+                </div>
+              )}
+            </div>
+
+            {/* Active Time */}
+            <div style={{borderTop:"1px solid #252530",paddingTop:"14px"}}>
+              <div className="input-label" style={{marginBottom:"8px"}}>
+                Active Time
+                <span style={{color:"var(--muted2)",fontSize:"10px",fontWeight:400,marginLeft:"6px"}}>active delivery time only</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
+                <div className="input-row">
+                  <div className="input-label">Hours</div>
+                  <input
+                    className="input-field"
+                    type="number" min="0" max="23" placeholder="e.g. 1"
+                    value={activeHrsPart}
+                    onChange={e => setActiveHrsPart(e.target.value)}
+                  />
+                </div>
+                <div className="input-row">
+                  <div className="input-label">Minutes</div>
+                  <input
+                    className="input-field"
+                    type="number" min="0" max="59" placeholder="e.g. 16"
+                    value={activeMinsPart}
+                    onChange={e => setActiveMinsPart(e.target.value)}
+                  />
+                </div>
+              </div>
+              {derivedActiveMin > 0 && derivedTotalMin > 0 && (
+                <div style={{fontSize:"11px",color:"var(--muted)",background:"var(--elevated)",borderRadius:"8px",padding:"8px 12px",border:"1px solid #252530",marginTop:"8px"}}>
+                  Active Time %: <strong style={{color: derivedActiveMin/derivedTotalMin >= 0.85 ? "var(--green)" : derivedActiveMin/derivedTotalMin >= 0.6 ? "var(--amber)" : "var(--red)"}}>
+                    {((derivedActiveMin/derivedTotalMin)*100).toFixed(0)}%
+                  </strong> of online time
+                </div>
+              )}
+            </div>
+
+          </div>
+        </div>
+
+        {/* Distance */}
+        <div className="section">
+          <div className="section-label">Distance <span className="req">*</span></div>
+          <div className="km-toggle">
+            <div className={`km-toggle-btn${kmMode === "total" ? " active" : ""}`} onClick={() => setKmMode("total")}>
+              📍 Enter Total KMs
+            </div>
+            <div className={`km-toggle-btn${kmMode === "odometer" ? " active" : ""}`} onClick={() => setKmMode("odometer")}>
+              🔢 Odometer Readings
+            </div>
+          </div>
+          <div className="input-group">
+            {kmMode === "total" ? (
+              <div className="input-row">
+                <div className="input-label">Total KMs Driven <span className="req">*</span></div>
+                <input
+                  className={`input-field${errors.km ? " err" : ""}`}
+                  type="number" min="0" step="0.1" placeholder="e.g. 45.5"
+                  value={totalKmInput}
+                  onChange={e => { setTotalKmInput(e.target.value); setErrors(v => ({...v, km: false})); }}
+                />
+              </div>
+            ) : (
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px"}}>
+                <div className="input-row">
+                  <div className="input-label">Start Odometer <span className="req">*</span></div>
+                  <input
+                    className={`input-field${errors.km ? " err" : ""}`}
+                    type="number" min="0" step="0.1" placeholder="e.g. 45230"
+                    value={odoStart}
+                    onChange={e => { setOdoStart(e.target.value); setErrors(v => ({...v, km: false})); }}
+                  />
+                </div>
+                <div className="input-row">
+                  <div className="input-label">End Odometer <span className="req">*</span></div>
+                  <input
+                    className={`input-field${errors.km ? " err" : ""}`}
+                    type="number" min="0" step="0.1" placeholder="e.g. 45278"
+                    value={odoEnd}
+                    onChange={e => { setOdoEnd(e.target.value); setErrors(v => ({...v, km: false})); }}
+                  />
+                </div>
+              </div>
+            )}
+            <div className="calc-row">
+              <div className="calc-label">Total KMs</div>
+              <div className="calc-value">{derivedTotalKm > 0 ? `${derivedTotalKm.toFixed(1)} km` : "—"}</div>
+            </div>
+            {kmMode === "odometer" && derivedTotalKm > 0 && (
+              <div style={{fontSize:"11px",color:"var(--muted)",background:"var(--elevated)",borderRadius:"8px",padding:"8px 12px",border:"1px solid #252530"}}>
+                💡 {n(odoEnd).toFixed(1)} − {n(odoStart).toFixed(1)} = <strong style={{color:"var(--text)"}}>{derivedTotalKm.toFixed(1)} km</strong> driven this shift
+              </div>
+            )}
+
+            {/* Optional Active KMs — only affects scoring if entered */}
+            <div style={{borderTop:"1px solid #252530",paddingTop:"14px",marginTop:"4px"}}>
+              <div className="input-label" style={{marginBottom:"4px"}}>
+                Active KMs <span style={{color:"var(--muted2)",fontSize:"10px",fontWeight:400,marginLeft:"6px"}}>optional — used in scoring if entered</span>
+              </div>
+              <div style={{fontSize:"10px",color:"var(--muted2)",marginBottom:"8px",lineHeight:"1.5"}}>
+                KMs driven while actively on a delivery (not repositioning or waiting). If left blank, Active KM% is excluded from your score.
+              </div>
+              <input
+                className="input-field"
+                type="number" min="0" step="0.1" placeholder="e.g. 38.2"
+                value={activeKmInput}
+                onChange={e => setActiveKmInput(e.target.value)}
+              />
+              {activeKmInput !== "" && derivedTotalKm > 0 && (
+                <div style={{fontSize:"11px",color:"var(--muted)",background:"var(--elevated)",borderRadius:"8px",padding:"8px 12px",border:"1px solid #252530",marginTop:"8px"}}>
+                  Active KM %: <strong style={{color: n(activeKmInput)/derivedTotalKm >= 0.85 ? "var(--green)" : n(activeKmInput)/derivedTotalKm >= 0.6 ? "var(--amber)" : "var(--red)"}}>
+                    {((n(activeKmInput)/derivedTotalKm)*100).toFixed(0)}%
+                  </strong> of total KMs
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Activity */}
+        <div className="section">
+          <div className="section-label">Activity <span className="req">*</span></div>
+          <div className="input-group">
+            <div className="input-row">
+              <div className="input-label">Number of Deliveries <span className="req">*</span></div>
+              <input className={f("dels",errors.dels)} type="number" min="0" placeholder="0" value={dels} onChange={e => { setDels(e.target.value); setErrors(v => ({...v,dels:false})); }} />
+            </div>
+          </div>
+        </div>
+
+        {/* Platform */}
+        <div className="section">
+          <div className="section-label">Platform</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+            {[
+              { id:"uber_eats", label:"Uber Eats", color:"#06C167", bg:"rgba(6,193,103,.12)", border:"rgba(6,193,103,.4)" },
+              { id:"doordash",  label:"DoorDash",  color:"#FF3008", bg:"rgba(255,48,8,.12)",  border:"rgba(255,48,8,.35)" },
+            ].map(p => {
+              const selected = platform === p.id || platform === "both";
+              const exactSelected = platform === p.id || platform === "both";
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => {
+                    if (platform === p.id) {
+                      setPlatform(null);
+                    } else if (platform === "both") {
+                      setPlatform(p.id === "uber_eats" ? "doordash" : "uber_eats");
+                    } else if (platform && platform !== p.id) {
+                      setPlatform("both");
+                    } else {
+                      setPlatform(p.id);
+                    }
+                  }}
+                  style={{
+                    padding:"13px 14px",borderRadius:"10px",cursor:"pointer",
+                    background: exactSelected ? p.bg : "var(--elevated)",
+                    border: `1.5px solid ${exactSelected ? p.border : "var(--border)"}`,
+                    display:"flex",alignItems:"center",gap:"10px",
+                    transition:"all var(--tr)",
+                  }}
+                >
+                  <div style={{
+                    width:"10px",height:"10px",borderRadius:"50%",flexShrink:0,
+                    background: exactSelected ? p.color : "var(--border2)",
+                    transition:"background var(--tr)",
+                  }} />
+                  <span style={{fontSize:"13px",fontWeight:"600",color: exactSelected ? p.color : "var(--muted)"}}>{p.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          {platform === "both" && (
+            <div style={{marginTop:"8px",fontSize:"11px",color:"var(--muted2)",lineHeight:"1.5"}}>
+              Both selected — mixed platform shift
+            </div>
+          )}
+          {!platform && (
+            <div style={{marginTop:"8px",fontSize:"11px",color:"var(--muted2)"}}>
+              Optional — tap to select
+            </div>
+          )}
+        </div>
+
+        {/* Expenses */}
+        <div className="section">
+          <div className="section-label">Expenses <span style={{fontSize:"9px",color:"var(--muted)",fontWeight:400}}>(not scored)</span></div>
+          <div className="input-group">
+            <div className="input-row">
+              <div className="input-label">Total Spent ($)</div>
+              <input className="input-field" type="number" min="0" step="0.01" value={expenses} onChange={e => setExpenses(e.target.value)} />
+            </div>
+          </div>
+        </div>
 
         {/* Live Metrics */}
         <div className="metrics-panel">
@@ -7080,7 +3778,6 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
             ))}
           </div>
 
-          {showScoring && (<>
           <div className="ratio-grid">
             <RatioBar ratio={calc.ratioH} label={`Hourly (tgt $${targets.hourly}/hr)`} />
             <RatioBar ratio={calc.ratioD} label={`Per Del (tgt $${targets.perDel})`} />
@@ -7111,17 +3808,25 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
             </div>
             <div className="score-num">{fmtPct(calc.score)}</div>
           </div>
-          </>)}
 
           {/* Live ATO deduction */}
           <div className="deduction-card">
             <div>
-              <div className="ded-label">Est. ATO Deduction ({atoFyLabel(shiftDate)})</div>
+              <div className="ded-label">Est. ATO Deduction ({ATO_FY_LABEL})</div>
               <div className="ded-value">{fmt$(deduction)}</div>
-              <div className="ded-sub">{deductKm.toFixed(1)} km × ${effectiveRate.toFixed(2)}/km</div>
+              <div className="ded-sub">{deductKm.toFixed(1)} km × ${(atoRate||ATO_RATE_PER_KM).toFixed(2)}/km</div>
             </div>
             <div className="ded-icon">🧾</div>
           </div>
+
+          {/* Live fuel cost */}
+          <FuelCard
+            totalKm={derivedTotalKm}
+            totalEarned={calc.totalEarned}
+            fuelEfficiency={fuelEfficiency}
+            fuelPrice={fuelPrice}
+            onSetFuel={() => setShowFuelModal(true)}
+          />
         </div>
 
       </div>
@@ -7130,231 +3835,41 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
         <button className="btn-save" onClick={save}>{isEdit ? "Save Changes" : "Save Shift"}</button>
       </div>
 
-    </div>
-  );
-}
-
-// ─── CONFIRM SHIFT SCREEN ─────────────────────────────────────────────────
-// Short post-timer flow. Pre-fills timer-captured time + km (editable), asks
-// only for the money/count fields the timer can't know, and saves an identical
-// record to the full form via the same computeTrip pipeline. "Add more details"
-// hands off to the full NewTripScreen for bonus/active-km/notes/expenses.
-function ConfirmShiftScreen({ timerPrefill, onSaved, onAddDetails, onBack, kmPref, atoRate, targets = DEFAULT_TARGETS }) {
-  const pf = timerPrefill || {};
-  const initHrs  = String(Math.floor((pf.totalMin || 0) / 60));
-  const initMins = String((pf.totalMin || 0) % 60);
-  const initKm   = pf.totalKm ? String(pf.totalKm.toFixed(2)) : "";
-
-  const [totalEarned, setTotalEarned] = useState("");
-  const [dels, setDels]               = useState("");
-  const [tip, setTip]                 = useState("");
-  const [onlineHrs, setOnlineHrs]     = useState(initHrs);
-  const [onlineMins, setOnlineMins]   = useState(initMins);
-  const [totalKmInput, setTotalKmInput] = useState(initKm);
-  const [platform, setPlatform]       = useState(() => {
-    const dflt = DB.get("gt_default_platform");
-    return dflt && dflt !== "none" ? dflt : null;
-  });
-  const [saveAttempted, setSaveAttempted] = useState(false);
-  const [platformOpen, setPlatformOpen]   = useState(false);
-
-  const n = (v) => Math.max(0, parseFloat(v) || 0);
-
-  const derivedBase    = Math.max(0, n(totalEarned) - n(tip)); // no bonus on this short flow
-  const derivedTotalMin = (n(onlineHrs) * 60) + n(onlineMins);
-  const derivedTotalKm  = n(totalKmInput);
-
-  const calc = computeTrip({
-    base: derivedBase, tip: n(tip), bonus: 0,
-    tDel: derivedTotalMin, tWait: 0,
-    activeMin: null, activeKmInput: null,
-    kmDel: derivedTotalKm, kmWait: 0,
-    dels: n(dels), expenses: 0,
-  }, targets);
-
-  const startTime = pf.startedAt
-    ? new Date(pf.startedAt).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })
-    : "";
-
-  const save = () => {
-    setSaveAttempted(true);
-    if (!totalEarned.trim() || isNaN(parseFloat(totalEarned))) return;
-    if (!platform) return; // platform is required
-    const inputs = {
-      base: derivedBase, tip: n(tip), bonus: 0,
-      tDel: derivedTotalMin, tWait: 0,
-      activeMin: null, activeKmInput: null,
-      kmDel: derivedTotalKm, kmWait: 0,
-      dels: n(dels), expenses: 0,
-    };
-    const c = computeTrip(inputs);
-    const record = {
-      id: Date.now(),
-      ts: pf.startedAt ? new Date(pf.startedAt).toISOString() : new Date().toISOString(),
-      activeMins: null,
-      activeKm: null,
-      platform: platform || null,
-      notes: null,
-      ...inputs, ...c,
-      deduction: derivedTotalKm * (atoRate || atoRateForDate(pf.startedAt || new Date())),
-    };
-    onSaved(record, false);
-  };
-
-  const handoff = () => {
-    // Carry the current edits forward into the full form via the entry-prefill
-    // so nothing the user already typed is lost on the way to NewTripScreen.
-    DB.set("gt_entry_prefill", {
-      earned: totalEarned.trim() ? n(totalEarned) : undefined,
-      tips:   tip.trim() ? n(tip) : undefined,
-      dels:   dels.trim() ? n(dels) : undefined,
-      mins:   derivedTotalMin || undefined,
-      km:     totalKmInput.trim() ? n(totalKmInput) : undefined,
-      platform: platform || undefined,
-    });
-    onAddDetails();
-  };
-
-  const platformLabel = platform === "uber_eats" ? "Uber Eats"
-    : platform === "doordash" ? "DoorDash"
-    : platform === "both" ? "Both platforms" : "Select platform";
-
-  return (
-    <div className="view active">
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Confirm Shift</div>
-      </div>
-      <div className="scroll-area">
-
-        <div style={{padding:"14px 14px 0"}}>
-          {/* Captured automatically — green M1 card */}
-          <div style={{background:"var(--pos-dim, rgba(30,158,104,.08))",border:"1px solid rgba(30,158,104,.25)",borderRadius:"16px",padding:"15px",marginBottom:"14px"}}>
-            <div style={{fontSize:"10px",fontWeight:"800",letterSpacing:".08em",textTransform:"uppercase",color:"var(--pos, #1E9E68)",marginBottom:"11px"}}>Captured automatically</div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 0",borderBottom:"1px solid rgba(30,158,104,.15)"}}>
-              <span style={{fontSize:"13px",color:"var(--muted)"}}>Online time</span>
-              <span style={{fontSize:"14px",fontWeight:"800"}}>{Math.floor(derivedTotalMin/60)}h {derivedTotalMin%60}m</span>
-            </div>
-            {startTime && (
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 0",borderBottom:derivedTotalKm>0?"1px solid rgba(30,158,104,.15)":"none"}}>
-                <span style={{fontSize:"13px",color:"var(--muted)"}}>Started</span>
-                <span style={{fontSize:"14px",fontWeight:"800"}}>{startTime}</span>
+      {/* Inline Fuel Settings Modal */}
+      {showFuelModal && (
+        <div className="fuel-modal-overlay" onClick={e => e.target.className === "fuel-modal-overlay" && setShowFuelModal(false)}>
+          <div className="fuel-modal">
+            <div className="fuel-modal-title">⛽ Fuel Settings</div>
+            <div className="fuel-modal-sub">Enter your details below. This saves to your account and applies to all shifts.</div>
+            <div className="input-group">
+              <div className="input-row">
+                <div className="input-label">Fuel efficiency (L/100km)</div>
+                <input className="input-field" type="number" min="0" step="0.1" placeholder="e.g. 8.5" value={fuelModalEff} onChange={e => setFuelModalEff(e.target.value)} />
               </div>
-            )}
-            {derivedTotalKm > 0 && (
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 0"}}>
-                <span style={{fontSize:"13px",color:"var(--muted)"}}>Distance (GPS)</span>
-                <span style={{fontSize:"14px",fontWeight:"800"}}>{derivedTotalKm.toFixed(1)} km</span>
+              <div className="input-row">
+                <div className="input-label">Fuel price ($/L)</div>
+                <input className="input-field" type="number" min="0" step="0.01" placeholder="e.g. 2.05" value={fuelModalPr} onChange={e => setFuelModalPr(e.target.value)} />
               </div>
-            )}
-          </div>
-
-          {/* ── EARNINGS ── */}
-          <ManualCard>
-            <ManualGroupHeader>Earnings</ManualGroupHeader>
-            <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-              <ManualFieldRow
-                status={saveAttempted && !totalEarned.trim() ? "error" : (totalEarned.trim() && !isNaN(parseFloat(totalEarned)) ? "ok" : null)}
-                label="Total earned" sublabel="required"
-                value={totalEarned} onChange={setTotalEarned}
-                type="number" min="0" step="0.01" placeholder="0.00" prefix="$"
-              />
-              <ManualFieldRow
-                label="Tips" sublabel="included in total"
-                value={tip} onChange={setTip}
-                type="number" min="0" step="0.01" placeholder="0.00" prefix="$"
-              />
-              <ManualFieldRow
-                label="Deliveries"
-                value={dels} onChange={setDels}
-                type="number" min="0" step="1" placeholder="0"
-              />
-            </div>
-          </ManualCard>
-
-          {/* ── TIME & DISTANCE (pre-filled, editable) ── */}
-          <ManualCard>
-            <ManualGroupHeader>Time & distance</ManualGroupHeader>
-            <div style={{display:"flex",alignItems:"center",gap:"10px",padding:"10px 14px",borderRadius:"10px",border:"0.5px solid var(--border)",background:"var(--surface)"}}>
-              <div style={{minWidth:"95px"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",fontWeight:"500"}}>Online time</div>
-              </div>
-              <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"flex-end",gap:"6px"}}>
-                <input
-                  type="number" inputMode="decimal" min="0" max="23"
-                  value={onlineHrs} onChange={(e) => setOnlineHrs(e.target.value)} placeholder="0"
-                  style={{width:"42px",background:"transparent",border:"none",outline:"none",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0}}
-                />
-                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>h</span>
-                <input
-                  type="number" inputMode="decimal" min="0" max="59"
-                  value={onlineMins} onChange={(e) => setOnlineMins(e.target.value)} placeholder="0"
-                  style={{width:"42px",background:"transparent",border:"none",outline:"none",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",fontVariantNumeric:"tabular-nums",textAlign:"right",padding:0}}
-                />
-                <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
-              </div>
-            </div>
-            <div style={{marginTop:"6px"}}>
-              <ManualFieldRow
-                label="Total KM" sublabel={initKm ? "from GPS — edit if needed" : null}
-                value={totalKmInput} onChange={setTotalKmInput}
-                type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
-              />
-            </div>
-          </ManualCard>
-
-          {/* ── PLATFORM ── */}
-          <ManualCard>
-            <ManualGroupHeader>Platform</ManualGroupHeader>
-            <button
-              onClick={() => setPlatformOpen(true)}
-              style={{
-                width:"100%", textAlign:"left", padding:"12px 14px", borderRadius:"10px",
-                border:`0.5px solid ${saveAttempted && !platform ? "var(--red)" : "var(--border)"}`,
-                background:"var(--surface)",
-                color: platform ? "var(--text)" : "var(--muted2)", fontSize:"14px", cursor:"pointer",
-              }}
-            >{platformLabel}</button>
-            {saveAttempted && !platform && (
-              <div style={{fontSize:"11px",color:"var(--red)",fontWeight:"600",marginTop:"5px",paddingLeft:"2px"}}>Please select a platform</div>
-            )}
-          </ManualCard>
-
-          {/* ── LIVE PREVIEW ── */}
-          {totalEarned.trim() && !isNaN(parseFloat(totalEarned)) && (
-            <div className="score-block" style={{marginTop:"16px"}}>
-              <div>
-                <div className="score-label">This shift</div>
-                <div style={{fontSize:"11px",color:"var(--muted2)",marginTop:"2px"}}>
-                  ${calc.hourly ? calc.hourly.toFixed(2) : "0.00"}/hr · ${derivedTotalKm > 0 ? (derivedTotalKm * (atoRate || atoRateForDate(pf.startedAt || new Date()))).toFixed(2) : "0.00"} ATO deduction
+              {parseFloat(fuelModalEff) > 0 && parseFloat(fuelModalPr) > 0 && (
+                <div style={{fontSize:"11px",color:"var(--muted2)",padding:"8px 12px",background:"var(--surface)",borderRadius:"8px",border:"1px solid #252530"}}>
+                  💡 At these settings, a 50km shift costs ~${((50/100)*parseFloat(fuelModalEff)*parseFloat(fuelModalPr)).toFixed(2)} in fuel.
                 </div>
-              </div>
-              <div className="score-num">${n(totalEarned).toFixed(2)}</div>
+              )}
             </div>
-          )}
-
-          {/* ── ACTIONS ── */}
-          <button className="btn-save" style={{marginTop:"16px"}} onClick={save}>
-            Save Shift
-          </button>
-          <button
-            onClick={handoff}
-            style={{
-              width:"100%", padding:"12px", marginTop:"8px", marginBottom:"24px",
-              background:"none", border:"none", color:"var(--green)",
-              fontSize:"13px", fontWeight:"600", cursor:"pointer",
-            }}
-          >+ Add more details (bonus, active km, notes)</button>
+            <div style={{display:"flex",gap:"8px",marginTop:"16px"}}>
+              <button className="btn btn-outline" style={{flex:1,padding:"14px"}} onClick={() => setShowFuelModal(false)}>Cancel</button>
+              <button className="btn btn-primary" style={{flex:2,padding:"14px"}} onClick={() => {
+                const fe = parseFloat(fuelModalEff);
+                const fp = parseFloat(fuelModalPr);
+                if (!isNaN(fe) && fe > 0) onFuelSave(fe, fp > 0 ? fp : fuelPrice);
+                if (!isNaN(fp) && fp > 0) onFuelSave(fuelEfficiency, fp);
+                if (!isNaN(fe) && fe > 0 && !isNaN(fp) && fp > 0) onFuelSave(fe, fp);
+                setShowFuelModal(false);
+              }}>Save &amp; Apply</button>
+            </div>
+          </div>
         </div>
-      </div>
-
-      <PlatformPickerModal
-        open={platformOpen}
-        title="Which platform?"
-        subtitle="Which app did you drive for on this shift?"
-        onPick={(id) => { setPlatform(id); setPlatformOpen(false); }}
-        onClose={() => setPlatformOpen(false)}
-      />
+      )}
     </div>
   );
 }
@@ -7468,7 +3983,7 @@ const PERIODS = [
   { id: "weekly",  label: "Weekly" },
 ];
 
-function StatsTile({ trips, kmPref }) {
+function StatsTile({ trips, kmPref, fuelEfficiency, fuelPrice }) {
   const [period, setPeriod] = useState("lifetime");
   const filtered = filterTrips(trips, period);
   const s = computeStats(filtered, kmPref);
@@ -7504,6 +4019,14 @@ function StatsTile({ trips, kmPref }) {
             <div className="stat-item"><div className="stat-label">AVG / SHIFT</div><div className="stat-value">{fmt$(s.totalEarned/s.n)}</div></div>
             <div className="stat-item"><div className="stat-label">AVG HOURLY</div><div className="stat-value">{s.totalHrs > 0 ? fmt$(s.totalEarned/s.totalHrs)+"/hr" : "—"}</div></div>
             <div className="stat-item"><div className="stat-label">AVG / DELIVERY</div><div className="stat-value">{s.totalDels > 0 ? fmt$(s.totalEarned/s.totalDels) : "—"}</div></div>
+            {fuelEfficiency > 0 && fuelPrice > 0 && (() => {
+              const totalFuel = (s.totalKm / 100) * fuelEfficiency * fuelPrice;
+              const netEarned = s.totalEarned - totalFuel;
+              return (<>
+                <div className="stat-item"><div className="stat-label">FUEL COST</div><div className="stat-value" style={{color:"var(--red)"}}>−{fmt$(totalFuel)}</div></div>
+                <div className="stat-item"><div className="stat-label">NET (AFTER FUEL)</div><div className="stat-value" style={{color:"var(--green)"}}>{fmt$(netEarned)}</div></div>
+              </>);
+            })()}
 
             <div className="stats-section-divider">Time & Distance</div>
             <div className="stat-item"><div className="stat-label">TOTAL HOURS</div><div className="stat-value">{s.totalHrs.toFixed(1)} hrs</div></div>
@@ -7516,7 +4039,7 @@ function StatsTile({ trips, kmPref }) {
             <div className="ded-stat">
               <div className="ded-stat-label">EST. DEDUCTION — CENTS PER KM METHOD</div>
               <div className="ded-stat-value">{fmt$(s.deduction)}</div>
-              <div className="ded-stat-sub">{s.deductKm.toFixed(1)} business km · rate applied per financial year (currently ${ATO_RATE_PER_KM.toFixed(2)}/km) · cap {ATO_KM_CAP.toLocaleString()}km/yr · {kmPref === "active" ? "delivery km only" : "all shift km"}</div>
+              <div className="ded-stat-sub">{s.deductKm.toFixed(1)} business km × ${ATO_RATE_PER_KM.toFixed(2)}/km · cap {ATO_KM_CAP.toLocaleString()}km/yr · {kmPref === "active" ? "delivery km only" : "all shift km"}</div>
             </div>
 
             {s.totalExp > 0 && (
@@ -7655,81 +4178,6 @@ function DailyBarChart({ trips }) {
   );
 }
 
-// ─── CSV EXPORT ─── Raw shift data for spreadsheets/accountants
-function exportCSV(trips, user) {
-  if (!trips.length) {
-    alert("No shifts to export yet. Log a shift first.");
-    return;
-  }
-  const sorted = [...trips].sort((a, b) => new Date(a.ts) - new Date(b.ts));
-
-  // Real ATO rate(s) actually applied across these shifts (per financial year,
-  // by each shift's date) — mirrors the PDF, so the header is never stale.
-  const rateLabel = [...new Set(sorted.map(t => atoRateForDate(t.ts)))]
-    .sort((a, b) => a - b)
-    .map(r => `$${r.toFixed(2)}`)
-    .join(" / ");
-
-  // CSV header — only the columns the user wants
-  const header = [
-    "Date", "Platform",
-    "Total Earned", "Base Earnings", "Tips", "Bonuses",
-    "Deliveries",
-    "Online Hours", "Active Hours",
-    "Total Km", "Active Km",
-    `ATO Deduction (${rateLabel}/km)`,
-    "Expenses",
-    "Notes",
-    "Source",
-  ];
-
-  // CSV value escaper — wraps fields containing commas, quotes, or newlines
-  const esc = (v) => {
-    if (v == null) return "";
-    const s = String(v);
-    if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-  };
-
-  const rows = sorted.map(t => {
-    const d = new Date(t.ts);
-    const dateStr = d.toLocaleDateString("en-AU", { year: "numeric", month: "2-digit", day: "2-digit" });
-    return [
-      esc(dateStr), esc(t.platform || ""),
-      esc((t.totalEarned ?? 0).toFixed(2)),
-      esc((t.base ?? 0).toFixed(2)),
-      esc((t.tip ?? 0).toFixed(2)),
-      esc((t.bonus ?? 0).toFixed(2)),
-      esc(t.dels ?? 0),
-      esc(((t.totalMin ?? 0) / 60).toFixed(2)),
-      esc(t.activeMin != null ? (t.activeMin / 60).toFixed(2) : ""),
-      esc((t.totalKm ?? 0).toFixed(2)),
-      esc(t.activeKm != null ? t.activeKm.toFixed(2) : ""),
-      esc((t.deduction ?? 0).toFixed(2)),
-      esc((t.expenses ?? 0).toFixed(2)),
-      esc(t.notes || ""),
-      esc(t.imported_from_screenshot ? "Screenshot" : "Manual"),
-    ].join(",");
-  });
-
-  const csv = [header.map(esc).join(","), ...rows].join("\n");
-
-  // Trigger download
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const today = localDateStr();
-  const filename = `gigtrack-shifts-${today}.csv`;
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
 // ─── PDF EXPORT ─── (ATO-focused shift log report)
 function exportPDF(trips, user) {
   if (!trips.length) {
@@ -7754,237 +4202,218 @@ function exportPDF(trips, user) {
   const totalDels     = reportTrips.reduce((s, t) => s + (t.dels || 0), 0);
   const totalHrs      = reportTrips.reduce((s, t) => s + (t.totalHrs || 0), 0);
 
-  // ATO deduction — rate AND the 5,000km cap are per financial year, so group
-  // by FY rather than applying one rate to everything (a report spanning 1 July
-  // would otherwise re-rate last year's driving at this year's rate).
+  // ATO deduction — use total km, capped at the FY 5000km limit
   const cappedKm    = Math.min(totalTotalKm, ATO_KM_CAP);
-  const reportKmByFy = {};
-  reportTrips.forEach(t => {
-    const fy = atoFyStartYear(t.ts);
-    reportKmByFy[fy] = (reportKmByFy[fy] || 0) + (t.totalKm || 0);
-  });
-  const totalDed = Object.keys(reportKmByFy).reduce((sum, fy) => {
-    const rate = ATO_RATES[fy] != null ? ATO_RATES[fy] : atoRateForDate(`${fy}-07-01`);
-    return sum + Math.min(reportKmByFy[fy], ATO_KM_CAP) * rate;
-  }, 0);
-  // Rates actually used in this report (usually one; two if it spans 1 July).
-  const reportRates = [...new Set(Object.keys(reportKmByFy).map(fy =>
-    ATO_RATES[fy] != null ? ATO_RATES[fy] : atoRateForDate(`${fy}-07-01`)
-  ))].sort((a, b) => a - b);
-  const reportRateLabel = reportRates.map(r => `$${r.toFixed(2)}`).join(" / ");
+  const totalDed    = cappedKm * ATO_RATE_PER_KM;
+  const estTaxSaved = totalDed * 0.325; // estimate at common 32.5% marginal rate
 
   const fmtD = iso => new Date(iso).toLocaleDateString("en-AU", { day:"2-digit", month:"short", year:"numeric" });
+  const fmtT = iso => new Date(iso).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" });
   const fmtMoney = v => `$${(v || 0).toFixed(2)}`;
+
+  // Table rows
+  const rows = sorted.map((t, i) => {
+    const platName = t.platform === "uber_eats" ? "Uber Eats" : t.platform === "doordash" ? "DoorDash" : "—";
+    const dur = (() => {
+      const m = Math.round((t.totalHrs || 0) * 60);
+      return `${Math.floor(m/60)}h ${m%60}m`;
+    })();
+    const tripDed = (t.totalKm || 0) * ATO_RATE_PER_KM;
+    return `<tr>
+      <td class="num">${i+1}</td>
+      <td>${fmtD(t.ts)}</td>
+      <td>${fmtT(t.ts)}</td>
+      <td>${platName}</td>
+      <td class="num">${dur}</td>
+      <td class="num">${(t.totalKm || 0).toFixed(1)}</td>
+      <td class="num">${t.dels || 0}</td>
+      <td class="num">${fmtMoney(t.base)}</td>
+      <td class="num">${fmtMoney(t.tip)}</td>
+      <td class="num">${fmtMoney(t.bonus)}</td>
+      <td class="num strong">${fmtMoney(t.totalEarned)}</td>
+      <td class="num ded">${fmtMoney(tripDed)}</td>
+    </tr>`;
+  }).join("");
 
   const periodLabel = useFY
     ? `FY ${ATO_FY_LABEL} · ${fmtD(fyStart.toISOString())} – ${fmtD(new Date(fyEnd.getTime()-86400000).toISOString())}`
     : `All-time · ${fmtD(sorted[0].ts)} – ${fmtD(sorted[sorted.length-1].ts)}`;
 
-  // ── Build a real vector PDF with jsPDF (A4 landscape) ──
-  // Rebuilt from the old print-HTML so it downloads as a proper file (saves to
-  // Files / share sheet on iOS) instead of a print window that traps the PWA.
-  const CORAL = [240, 86, 46];
-  const INDIGO = [79, 70, 229];
-  const AMBER = [192, 66, 28];
-  const INK = [27, 26, 23];
-  const MUTED = [138, 128, 113];
-  const GREEN = [30, 158, 104];
-  const CREAM = [251, 247, 241];
-  const BORDER = [237, 230, 220];
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>GigTrack — ATO Shift Report</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:11px;color:#0F172A;background:#fff;padding:32px;}
 
-  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  const pageW = doc.internal.pageSize.getWidth();
-  const M = 32; // margin
-  let y = M;
+/* Header */
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;padding-bottom:16px;border-bottom:2px solid #22C55E;}
+.brand-block{display:flex;align-items:center;gap:10px;}
+.brand-logo{width:32px;height:32px;background:linear-gradient(135deg,#22C55E,#16A34A);border-radius:8px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;}
+.brand-name{font-size:22px;font-weight:800;color:#0F172A;letter-spacing:-.02em;}
+.brand-tag{font-size:10px;color:#64748B;letter-spacing:.04em;margin-top:1px;}
+.header-right{text-align:right;font-size:10px;color:#64748B;line-height:1.6;}
+.header-right strong{display:block;color:#0F172A;font-size:13px;font-weight:700;margin-bottom:2px;}
 
-  // ── Header: brand block + right-aligned meta ──
-  doc.setFillColor(...CORAL);
-  doc.roundedRect(M, y, 26, 26, 5, 5, "F");
-  doc.setTextColor(255, 255, 255);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.text("GT", M + 13, y + 17, { align: "center" });
+/* Period banner */
+.period{background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:8px 14px;font-size:10px;color:#15803D;margin-bottom:18px;font-weight:600;letter-spacing:.02em;}
 
-  doc.setTextColor(...INK);
-  doc.setFontSize(20);
-  doc.text("GigTrack", M + 34, y + 13);
-  doc.setTextColor(...MUTED);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.text("ATO Shift Report", M + 34, y + 23);
+/* Hero squares */
+.hero-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+.hero{border:1px solid #E2E8F0;border-radius:10px;padding:14px 14px 12px;background:#fff;position:relative;overflow:hidden;}
+.hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
+.hero.h-green::before{background:#22C55E;}
+.hero.h-blue::before{background:#3B82F6;}
+.hero.h-amber::before{background:#F59E0B;}
+.hero.h-purple::before{background:#A855F7;}
+.hero-label{font-size:9px;color:#64748B;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;font-weight:600;}
+.hero-value{font-size:20px;font-weight:800;color:#0F172A;letter-spacing:-.02em;line-height:1;}
+.hero-sub{font-size:9px;color:#64748B;margin-top:5px;}
+.hero.h-green .hero-value{color:#15803D;}
+.hero.h-blue .hero-value{color:#1D4ED8;}
+.hero.h-amber .hero-value{color:#B45309;}
 
-  // Right meta
-  doc.setTextColor(...INK);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.text(user?.name || "Driver", pageW - M, y + 8, { align: "right" });
-  doc.setTextColor(...MUTED);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.text(`Generated ${fmtD(new Date().toISOString())}`, pageW - M, y + 20, { align: "right" });
-  doc.text(`${sorted.length} shift${sorted.length !== 1 ? "s" : ""} included`, pageW - M, y + 30, { align: "right" });
+/* Mini summary row */
+.mini-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px;}
+.mini{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:10px 12px;}
+.mini-label{font-size:9px;color:#64748B;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px;font-weight:600;}
+.mini-value{font-size:13px;font-weight:700;color:#0F172A;}
 
-  y += 34;
-  doc.setDrawColor(...CORAL);
-  doc.setLineWidth(1.5);
-  doc.line(M, y, pageW - M, y);
-  y += 14;
+/* Table */
+.section-title{font-size:12px;font-weight:700;color:#0F172A;margin-bottom:8px;letter-spacing:-.01em;}
+table{width:100%;border-collapse:collapse;font-size:9.5px;margin-bottom:18px;}
+thead tr{background:#0F172A;color:#fff;}
+thead th{padding:8px 6px;text-align:left;font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;}
+thead th.num{text-align:right;}
+tbody tr:nth-child(even){background:#F8FAFC;}
+tbody td{padding:6px;border-bottom:1px solid #E2E8F0;vertical-align:middle;}
+tbody td.num{text-align:right;font-variant-numeric:tabular-nums;}
+tbody td.strong{font-weight:700;color:#0F172A;}
+tbody td.ded{font-weight:700;color:#15803D;}
+tfoot tr{background:#F1F5F9;}
+tfoot td{padding:9px 6px;font-weight:800;font-size:10px;border-top:2px solid #0F172A;}
+tfoot td.num{text-align:right;font-variant-numeric:tabular-nums;}
+tfoot td.ded{color:#15803D;}
 
-  // ── Period banner ──
-  doc.setFillColor(253, 237, 231);
-  doc.roundedRect(M, y, pageW - 2 * M, 20, 4, 4, "F");
-  doc.setTextColor(...AMBER);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.text(periodLabel, M + 10, y + 13);
-  y += 32;
+/* Notes & footer */
+.notes{background:#FFFBEB;border:1px solid #FCD34D;border-radius:8px;padding:13px 15px;margin-bottom:14px;font-size:10px;color:#78350F;line-height:1.7;}
+.notes strong{display:block;font-size:11px;margin-bottom:5px;color:#78350F;}
+.footer{text-align:center;color:#94A3B8;font-size:9px;border-top:1px solid #E2E8F0;padding-top:10px;margin-top:6px;}
 
-  // ── Hero stat cards (3 across) ──
-  const heroW = (pageW - 2 * M - 2 * 10) / 3;
-  const heroData = [
-    { label: "TOTAL EARNED", value: fmtMoney(totalEarned), sub: `${sorted.length} shift${sorted.length !== 1 ? "s" : ""}`, color: CORAL },
-    { label: "ATO DEDUCTION", value: fmtMoney(totalDed), sub: `${cappedKm.toFixed(1)} km × ${reportRateLabel}/km${totalTotalKm > ATO_KM_CAP ? ` (cap ${ATO_KM_CAP.toLocaleString()})` : ""}`, color: INDIGO },
-    { label: "DISTANCE", value: `${totalTotalKm.toFixed(1)} km`, sub: `${totalActiveKm.toFixed(1)} km active delivery`, color: AMBER },
-  ];
-  heroData.forEach((h, i) => {
-    const hx = M + i * (heroW + 10);
-    doc.setDrawColor(...BORDER);
-    doc.setLineWidth(0.5);
-    doc.roundedRect(hx, y, heroW, 52, 6, 6, "S");
-    doc.setFillColor(...h.color);
-    doc.rect(hx, y, 3, 52, "F"); // accent stripe
-    doc.setTextColor(...MUTED);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(7);
-    doc.text(h.label, hx + 12, y + 14);
-    doc.setTextColor(...h.color);
-    doc.setFontSize(17);
-    doc.text(h.value, hx + 12, y + 32);
-    doc.setTextColor(...MUTED);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text(h.sub, hx + 12, y + 44);
-  });
-  y += 64;
+/* Print */
+@media print{
+  body{padding:14px;}
+  @page{margin:1cm;size:A4 landscape;}
+  .hero-grid,.mini-grid{page-break-inside:avoid;}
+  table{page-break-inside:auto;}
+  tr{page-break-inside:avoid;}
+  thead{display:table-header-group;}
+}
+</style></head><body>
 
-  // ── Mini breakdown (4 across) ──
-  const miniW = (pageW - 2 * M - 3 * 10) / 4;
-  const miniData = [
-    { label: "BASE EARNINGS", value: fmtMoney(totalBase) },
-    { label: "TIPS", value: fmtMoney(totalTips) },
-    { label: "BONUSES", value: fmtMoney(totalBonuses) },
-    { label: "DELIVERIES · ONLINE HRS", value: `${totalDels} · ${totalHrs.toFixed(1)} hrs` },
-  ];
-  miniData.forEach((m, i) => {
-    const mx = M + i * (miniW + 10);
-    doc.setFillColor(...CREAM);
-    doc.setDrawColor(...BORDER);
-    doc.setLineWidth(0.5);
-    doc.roundedRect(mx, y, miniW, 34, 4, 4, "FD");
-    doc.setTextColor(...MUTED);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(6.5);
-    doc.text(m.label, mx + 10, y + 13);
-    doc.setTextColor(...INK);
-    doc.setFontSize(11);
-    doc.text(m.value, mx + 10, y + 27);
-  });
-  y += 48;
+<div class="header">
+  <div class="brand-block">
+    <div class="brand-logo">GT</div>
+    <div>
+      <div class="brand-name">GigTrack</div>
+      <div class="brand-tag">ATO Shift Report</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <strong>${user?.name || "Driver"}</strong>
+    Generated ${fmtD(new Date().toISOString())}<br>
+    ${sorted.length} shift${sorted.length !== 1 ? "s" : ""} included
+  </div>
+</div>
 
-  // ── Shift table via autoTable ──
-  doc.setTextColor(...INK);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.text("Chronological shift breakdown", M, y);
-  y += 8;
+<div class="period">${periodLabel}</div>
 
-  const body = sorted.map((t, i) => {
-    const platName = t.platform === "uber_eats" ? "Uber Eats" : t.platform === "doordash" ? "DoorDash" : "—";
-    const mins = Math.round((t.totalHrs || 0) * 60);
-    const dur = `${Math.floor(mins/60)}h ${mins%60}m`;
-    const tripDed = (t.totalKm || 0) * atoRateForDate(t.ts);
-    return [
-      i + 1, fmtD(t.ts), platName, dur,
-      (t.totalKm || 0).toFixed(1), t.dels || 0,
-      fmtMoney(t.base), fmtMoney(t.tip), fmtMoney(t.bonus),
-      fmtMoney(t.totalEarned), fmtMoney(tripDed),
-    ];
-  });
+<!-- HERO SQUARES -->
+<div class="hero-grid">
+  <div class="hero h-green">
+    <div class="hero-label">Total earned</div>
+    <div class="hero-value">${fmtMoney(totalEarned)}</div>
+    <div class="hero-sub">${sorted.length} shift${sorted.length !== 1 ? "s" : ""}</div>
+  </div>
+  <div class="hero h-blue">
+    <div class="hero-label">ATO Deduction</div>
+    <div class="hero-value">${fmtMoney(totalDed)}</div>
+    <div class="hero-sub">${cappedKm.toFixed(1)} km × $${ATO_RATE_PER_KM.toFixed(2)}/km${totalTotalKm > ATO_KM_CAP ? ` (capped at ${ATO_KM_CAP.toLocaleString()})` : ""}</div>
+  </div>
+  <div class="hero h-amber">
+    <div class="hero-label">Distance</div>
+    <div class="hero-value">${totalTotalKm.toFixed(1)} km</div>
+    <div class="hero-sub">${totalActiveKm.toFixed(1)} km on active delivery</div>
+  </div>
+  <div class="hero h-purple">
+    <div class="hero-label">Est. tax saved</div>
+    <div class="hero-value">${fmtMoney(estTaxSaved)}</div>
+    <div class="hero-sub">at 32.5% marginal rate</div>
+  </div>
+</div>
 
-  autoTable(doc, {
-    startY: y,
-    margin: { left: M, right: M },
-    head: [["#", "Date", "Platform", "Duration", "Total km", "Dels", "Base", "Tips", "Bonus", "Earned", "ATO ded."]],
-    body,
-    foot: [[
-      { content: `TOTAL (${sorted.length} shifts)`, colSpan: 3 },
-      `${totalHrs.toFixed(1)}h`, totalTotalKm.toFixed(1), totalDels,
-      fmtMoney(totalBase), fmtMoney(totalTips), fmtMoney(totalBonuses),
-      fmtMoney(totalEarned), fmtMoney(totalDed),
-    ]],
-    styles: { fontSize: 7.5, cellPadding: 3, textColor: INK, lineColor: BORDER, lineWidth: 0.5 },
-    headStyles: { fillColor: INK, textColor: [255, 255, 255], fontSize: 7, fontStyle: "bold" },
-    footStyles: { fillColor: [241, 235, 225], textColor: INK, fontStyle: "bold", fontSize: 8 },
-    alternateRowStyles: { fillColor: CREAM },
-    columnStyles: {
-      0: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" },
-      5: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" },
-      8: { halign: "right" }, 9: { halign: "right", fontStyle: "bold" },
-      10: { halign: "right", textColor: GREEN, fontStyle: "bold" },
-    },
-    // Green ATO-deduction column in the footer too
-    didParseCell: (data) => {
-      if (data.section === "foot" && data.column.index === 10) data.cell.styles.textColor = GREEN;
-    },
-  });
+<!-- MINI BREAKDOWN -->
+<div class="mini-grid">
+  <div class="mini"><div class="mini-label">Base earnings</div><div class="mini-value">${fmtMoney(totalBase)}</div></div>
+  <div class="mini"><div class="mini-label">Tips</div><div class="mini-value">${fmtMoney(totalTips)}</div></div>
+  <div class="mini"><div class="mini-label">Bonuses</div><div class="mini-value">${fmtMoney(totalBonuses)}</div></div>
+  <div class="mini"><div class="mini-label">Deliveries · Online hrs</div><div class="mini-value">${totalDels} · ${totalHrs.toFixed(1)} hrs</div></div>
+</div>
 
-  let afterTableY = (doc.lastAutoTable?.finalY || y) + 16;
-  const pageH = doc.internal.pageSize.getHeight();
-  if (afterTableY > pageH - 70) { doc.addPage(); afterTableY = M; }
+<!-- TABLE -->
+<div class="section-title">Chronological shift breakdown</div>
+<table>
+  <thead>
+    <tr>
+      <th class="num">#</th>
+      <th>Date</th>
+      <th>Start</th>
+      <th>Platform</th>
+      <th class="num">Duration</th>
+      <th class="num">Total km</th>
+      <th class="num">Dels</th>
+      <th class="num">Base</th>
+      <th class="num">Tips</th>
+      <th class="num">Bonus</th>
+      <th class="num">Earned</th>
+      <th class="num">ATO ded.</th>
+    </tr>
+  </thead>
+  <tbody>${rows}</tbody>
+  <tfoot>
+    <tr>
+      <td colspan="4">TOTAL (${sorted.length} shifts)</td>
+      <td class="num">${totalHrs.toFixed(1)}h</td>
+      <td class="num">${totalTotalKm.toFixed(1)}</td>
+      <td class="num">${totalDels}</td>
+      <td class="num">${fmtMoney(totalBase)}</td>
+      <td class="num">${fmtMoney(totalTips)}</td>
+      <td class="num">${fmtMoney(totalBonuses)}</td>
+      <td class="num">${fmtMoney(totalEarned)}</td>
+      <td class="num ded">${fmtMoney(totalDed)}</td>
+    </tr>
+  </tfoot>
+</table>
 
-  // ── ATO notes ──
-  doc.setFillColor(255, 251, 235);
-  doc.setDrawColor(252, 211, 77);
-  doc.setLineWidth(0.5);
-  const notesText = `This report uses the ATO cents per kilometre method. Rates are applied per financial year based on each shift's date (${reportRateLabel}/km), capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.`;
-  const wrapped = doc.splitTextToSize(notesText, pageW - 2 * M - 24);
-  const notesH = 22 + wrapped.length * 10;
-  doc.roundedRect(M, afterTableY, pageW - 2 * M, notesH, 4, 4, "FD");
-  doc.setTextColor(120, 53, 15);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.text("ATO disclaimer & method", M + 12, afterTableY + 15);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.text(wrapped, M + 12, afterTableY + 27);
+<div class="notes">
+  <strong>ATO disclaimer & method</strong>
+  This report uses the ATO cents per kilometre method for ${ATO_FY_LABEL}: $${ATO_RATE_PER_KM.toFixed(2)}/km, capped at ${ATO_KM_CAP.toLocaleString()}km per financial year. Estimated tax saving applies a 32.5% marginal rate as a guide only — your actual rate depends on your total taxable income. GigTrack does not provide tax advice. Confirm all figures with a registered tax agent or visit ato.gov.au before lodging your return.
+</div>
 
-  // ── Footer ──
-  const footY = afterTableY + notesH + 14;
-  doc.setDrawColor(...BORDER);
-  doc.setLineWidth(0.5);
-  doc.line(M, footY, pageW - M, footY);
-  doc.setTextColor(166, 158, 146);
-  doc.setFontSize(7.5);
-  doc.text(
-    `GigTrack · Generated ${new Date().toLocaleDateString("en-AU", { day:"2-digit", month:"long", year:"numeric" })} ${new Date().toLocaleTimeString("en-AU", { hour:"2-digit", minute:"2-digit" })}`,
-    pageW / 2, footY + 12, { align: "center" }
-  );
+<div class="footer">
+  GigTrack · Generated ${new Date().toLocaleDateString("en-AU", { day:"2-digit", month:"long", year:"numeric" })} ${new Date().toLocaleTimeString("en-AU", { hour:"2-digit", minute:"2-digit" })}
+</div>
 
-  // ── Download as a real file (same mechanism as CSV — works in iOS PWA) ──
-  const filename = `gigtrack-ato-report-${localDateStr()}.pdf`;
-  const blob = doc.output("blob");
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+</body></html>`;
+
+  const win = window.open("", "_blank");
+  if (!win) { alert("Allow popups for GigTrack to export PDF."); return; }
+  win.document.write(html);
+  win.document.close();
+  win.onload = () => { win.focus(); setTimeout(() => win.print(), 250); };
 }
 
 // ─── TRIP LOG ───
-function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, onUpgrade, showScoring = true }) {
+function TripLogScreen({ trips, onBack, onDetail, kmPref, user, fuelEfficiency, fuelPrice, isPro = false, onUpgrade }) {
   const [sort, setSort] = useState("date");
   const sorted = [...trips].sort((a, b) => {
     if (sort === "date") return new Date(b.ts) - new Date(a.ts);
@@ -8011,14 +4440,12 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
         <div className="topbar-title">Shift Log</div>
         {trips.length > 0 && (
           isPro ? (
-            <button className="export-btn" style={{marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:"6px"}} onClick={() => exportPDF(trips, user)}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
-              Export
+            <button className="export-btn" style={{marginLeft:"auto"}} onClick={() => exportPDF(trips, user)}>
+              🧾 Export
             </button>
           ) : (
-            <button className="export-btn" style={{marginLeft:"auto",opacity:0.6,display:"inline-flex",alignItems:"center",gap:"6px"}} onClick={onUpgrade}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-              Export
+            <button className="export-btn" style={{marginLeft:"auto",opacity:0.6}} onClick={onUpgrade}>
+              🔒 Export
             </button>
           )
         )}
@@ -8026,7 +4453,7 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
       <div className="scroll-area">
         {/* Sort chips — pill style */}
         <div style={{display:"flex",gap:"6px",padding:"12px 16px 0"}}>
-          {[["date","Newest"],...(showScoring ? [["score","Score ↓"]] : []),["earned","Earned ↓"]].map(([s,l]) => (
+          {[["date","Newest"],["score","Score ↓"],["earned","Earned ↓"]].map(([s,l]) => (
             <div
               key={s}
               onClick={() => setSort(s)}
@@ -8083,7 +4510,7 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
                     {/* Top row — date + earnings hero */}
                     <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:"10px"}}>
                       <div style={{fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>
-                        {fmtShiftDateTime(d, {weekday:"short",month:"short",day:"numeric"})}
+                        {d.toLocaleDateString("en-AU",{weekday:"short",month:"short",day:"numeric"})} · {d.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"})}
                       </div>
                       <div style={{textAlign:"right"}}>
                         <div style={{
@@ -8100,13 +4527,13 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
                       {[
                         ["TIME",  timeStr, "var(--text)"],
                         ["KMs",   t.totalKm.toFixed(1), "var(--text)"],
-                        ...(showScoring ? [["SCORE", t.score.toFixed(1)+"%", color]] : []),
-                      ].map(([label, value, col], i, arr) => (
+                        ["SCORE", t.score.toFixed(1)+"%", color],
+                      ].map(([label, value, col], i) => (
                         <div key={label} style={{
                           flex:1,
                           paddingLeft: i === 0 ? "0" : "10px",
-                          paddingRight: i < arr.length - 1 ? "10px" : "0",
-                          borderRight: i < arr.length - 1 ? "0.5px solid var(--border)" : "none",
+                          paddingRight: i < 2 ? "10px" : "0",
+                          borderRight: i < 2 ? "0.5px solid var(--border)" : "none",
                         }}>
                           <div style={{fontSize:"13px",fontWeight:"700",color:col,fontVariantNumeric:"tabular-nums",fontFamily:"'Geist Mono',monospace"}}>{value}</div>
                           <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"2px",fontWeight:"500"}}>{label}</div>
@@ -8125,226 +4552,8 @@ function TripLogScreen({ trips, onBack, onDetail, kmPref, user, isPro = false, o
   );
 }
 
-// ─── INSIGHTS: ADVANCED BREAKDOWNS ────────────────────────────────────────
-// All read the already-period-filtered trips passed in. Pure presentation of
-// existing fields (ts, totalEarned, totalHrs, dels, platform) — no new data.
-
-// Small shared section wrapper to match the Insights card aesthetic.
-function InsightCard({ title, subtitle, children, featured = false }) {
-  return (
-    <div style={{
-      background:"var(--surface)",borderRadius:"18px",padding:"18px",marginBottom:"10px",
-      boxShadow:"var(--shadow-card)",
-      border: featured ? "1px solid var(--coral-border, rgba(240,86,46,.25))" : "none",
-    }}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:"14px"}}>
-        <div style={{fontSize:"11px",color: featured ? "var(--coral)" : "var(--muted2)",fontWeight:"700",letterSpacing:".06em",textTransform:"uppercase"}}>{title}</div>
-        {subtitle && <div style={{fontSize:"10px",color:"var(--muted2)"}}>{subtitle}</div>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-// Day-of-week: average $/hr per weekday, with total earned as the bar.
-function DayOfWeekChart({ trips }) {
-  const labels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-  // JS getDay(): 0=Sun..6=Sat → remap so Monday is index 0.
-  const idx = (d) => (new Date(d).getDay() + 6) % 7;
-  const buckets = labels.map(() => ({ earned: 0, hrs: 0, count: 0 }));
-  trips.forEach(t => {
-    const b = buckets[idx(t.ts)];
-    b.earned += t.totalEarned || 0;
-    b.hrs    += t.totalHrs || 0;
-    b.count  += 1;
-  });
-  const maxEarned = Math.max(...buckets.map(b => b.earned), 1);
-  const hasData = buckets.some(b => b.count > 0);
-
-  if (!hasData) {
-    return <div style={{fontSize:"12px",color:"var(--muted2)",textAlign:"center",padding:"12px 0"}}>No shifts in this period yet.</div>;
-  }
-
-  // Best day by $/hr (min 1 shift)
-  const rated = buckets.map((b, i) => ({ i, rate: b.hrs > 0 ? b.earned / b.hrs : 0, count: b.count }));
-  const best = rated.filter(r => r.count > 0).sort((a,b) => b.rate - a.rate)[0];
-
-  return (
-    <>
-      <div style={{display:"flex",alignItems:"flex-end",gap:"4px",height:"96px"}}>
-        {buckets.map((b, i) => {
-          const h = b.earned > 0 ? Math.max(6, Math.round((b.earned / maxEarned) * 80)) : 3;
-          const isBest = best && i === best.i;
-          const rate = b.hrs > 0 ? b.earned / b.hrs : 0;
-          return (
-            <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:"100%",gap:"4px"}}>
-              <div style={{fontSize:"9px",color:"var(--muted2)",fontVariantNumeric:"tabular-nums",minHeight:"11px"}}>
-                {b.count > 0 ? `$${rate.toFixed(0)}` : ""}
-              </div>
-              <div style={{
-                width:"66%",height:`${h}px`,
-                background: b.earned > 0 ? (isBest ? "var(--coral-grad)" : "var(--hairline)") : "var(--hairline)",
-                borderRadius:"6px 6px 0 0",
-              }} />
-              <div style={{fontSize:"10px",color: isBest ? "var(--green)" : "var(--muted)",fontWeight: isBest ? "700" : "500"}}>{labels[i]}</div>
-            </div>
-          );
-        })}
-      </div>
-      {best && (
-        <div style={{fontSize:"11px",color:"var(--muted)",marginTop:"12px",textAlign:"center"}}>
-          Best day by hourly rate: <span style={{color:"var(--green)",fontWeight:"700"}}>{labels[best.i]}</span> at ${best.rate.toFixed(2)}/hr
-        </div>
-      )}
-      <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"4px",textAlign:"center"}}>Bar height = total earned · number = $/hr</div>
-    </>
-  );
-}
-
-// Hour-of-day: which shift START hours earn most. Buckets into 6 blocks.
-function HourOfDayChart({ trips }) {
-  const blocks = [
-    { label: "Early\n5–9a",  lo: 5,  hi: 9 },
-    { label: "Late AM\n9–12", lo: 9,  hi: 12 },
-    { label: "Lunch\n12–3p", lo: 12, hi: 15 },
-    { label: "Arvo\n3–5p",   lo: 15, hi: 17 },
-    { label: "Dinner\n5–9p", lo: 17, hi: 21 },
-    { label: "Late\n9p+",    lo: 21, hi: 29 }, // wraps past midnight (hi treated mod 24)
-  ];
-  const data = blocks.map(() => ({ earned: 0, hrs: 0, count: 0 }));
-  let excluded = 0; // shifts at exactly 00:00 — almost always date-only imports with no real start time
-  trips.forEach(t => {
-    const dt = new Date(t.ts);
-    const h = dt.getHours();
-    const m = dt.getMinutes();
-    if (h === 0 && m === 0) { excluded += 1; return; } // skip exact midnight
-    for (let i = 0; i < blocks.length; i++) {
-      const { lo, hi } = blocks[i];
-      const hh = h < lo && hi > 24 ? h + 24 : h; // handle late wrap
-      if (hh >= lo && hh < hi) { data[i].earned += t.totalEarned||0; data[i].hrs += t.totalHrs||0; data[i].count += 1; break; }
-    }
-  });
-  const maxRate = Math.max(...data.map(d => d.hrs > 0 ? d.earned/d.hrs : 0), 1);
-  const hasData = data.some(d => d.count > 0);
-
-  if (!hasData) {
-    return (
-      <div style={{fontSize:"12px",color:"var(--muted2)",textAlign:"center",padding:"12px 0"}}>
-        {excluded > 0
-          ? `No timed shifts in this period. ${excluded} shift${excluded!==1?"s":""} had no start time (imported by date) and can't be placed on the clock.`
-          : "No shifts in this period yet."}
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div style={{display:"flex",gap:"4px"}}>
-        {data.map((d, i) => {
-          const rate = d.hrs > 0 ? d.earned/d.hrs : 0;
-          const intensity = d.count > 0 ? Math.max(0.14, rate / maxRate) : 0;
-          return (
-            <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"6px"}}>
-              <div style={{
-                width:"100%",aspectRatio:"1",borderRadius:"9px",
-                background: d.count > 0 ? `rgba(240,86,46,${intensity})` : "var(--hairline)",
-                display:"flex",alignItems:"center",justifyContent:"center",
-                fontSize:"11px",fontWeight:"700",
-                color: intensity > 0.5 ? "#fff" : "var(--text)",
-                fontVariantNumeric:"tabular-nums",
-                transition:"background .4s ease",
-              }}>{d.count > 0 ? `$${rate.toFixed(0)}` : "—"}</div>
-              <div style={{fontSize:"8px",color:"var(--muted)",textAlign:"center",lineHeight:1.2,whiteSpace:"pre-line"}}>{blocks[i].label}</div>
-            </div>
-          );
-        })}
-      </div>
-      {/* Quiet → Peak legend */}
-      <div style={{display:"flex",alignItems:"center",gap:"8px",marginTop:"12px"}}>
-        <span style={{fontSize:"9px",color:"var(--muted2)",fontWeight:"600"}}>Quiet</span>
-        <div style={{flex:1,height:"6px",borderRadius:"100px",background:"linear-gradient(90deg, rgba(240,86,46,.14), #F0562E)"}} />
-        <span style={{fontSize:"9px",color:"var(--muted2)",fontWeight:"600"}}>Peak $</span>
-      </div>
-      <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"8px",textAlign:"center"}}>
-        Colour intensity = $/hr · by shift start time
-        {excluded > 0 && <><br />{excluded} date-only shift{excluded!==1?"s":""} excluded (no start time)</>}
-      </div>
-    </>
-  );
-}
-
-// Platform comparison: UE vs DoorDash vs Both.
-function PlatformComparison({ trips }) {
-  const groups = {
-    uber_eats: { label: "Uber Eats", earned: 0, hrs: 0, dels: 0, count: 0 },
-    doordash:  { label: "DoorDash",  earned: 0, hrs: 0, dels: 0, count: 0 },
-    both:      { label: "Both",      earned: 0, hrs: 0, dels: 0, count: 0 },
-  };
-  let untagged = 0;
-  trips.forEach(t => {
-    const g = groups[t.platform];
-    if (!g) { untagged += 1; return; }
-    g.earned += t.totalEarned||0; g.hrs += t.totalHrs||0; g.dels += t.dels||0; g.count += 1;
-  });
-  const active = Object.entries(groups).filter(([,g]) => g.count > 0);
-
-  if (active.length === 0) {
-    return <div style={{fontSize:"12px",color:"var(--muted2)",textAlign:"center",padding:"12px 0"}}>
-      No platform tagged on shifts in this period. Tag platform when saving to compare.
-    </div>;
-  }
-
-  return (
-    <>
-      <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
-        {(() => {
-          const maxEarned = Math.max(...active.map(([,g]) => g.earned), 1);
-          const platColor = { uber_eats:"var(--coral)", doordash:"var(--indigo)", both:"var(--coral-hi)" };
-          const platGrad  = {
-            uber_eats:"var(--coral-grad)",
-            doordash:"linear-gradient(90deg,#4F46E5,#7C74F0)",
-            both:"linear-gradient(90deg,#F6863A,#F0562E)",
-          };
-          return active.map(([id, g]) => {
-            const rate = g.hrs > 0 ? g.earned/g.hrs : 0;
-            const perDel = g.dels > 0 ? g.earned/g.dels : 0;
-            const w = Math.max(6, (g.earned / maxEarned) * 100);
-            return (
-              <div key={id} style={{padding:"12px 14px",borderRadius:"14px",background:"var(--surface)",boxShadow:"var(--shadow-card)"}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"8px"}}>
-                  <div>
-                    <div style={{fontSize:"13px",fontWeight:"700",color:"var(--text)"}}>{g.label}</div>
-                    <div style={{fontSize:"10px",color:"var(--muted2)",marginTop:"2px"}}>{g.count} shift{g.count!==1?"s":""}</div>
-                  </div>
-                  <div style={{display:"flex",gap:"16px",textAlign:"right"}}>
-                    <div>
-                      <div style={{fontSize:"14px",fontWeight:"800",color:platColor[id]||"var(--coral)",fontVariantNumeric:"tabular-nums"}}>${rate.toFixed(0)}</div>
-                      <div style={{fontSize:"9px",color:"var(--muted2)"}}>/hr</div>
-                    </div>
-                    <div>
-                      <div style={{fontSize:"14px",fontWeight:"700",color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>${perDel.toFixed(1)}</div>
-                      <div style={{fontSize:"9px",color:"var(--muted2)"}}>/del</div>
-                    </div>
-                  </div>
-                </div>
-                <div style={{height:"10px",borderRadius:"100px",background:"var(--hairline)",overflow:"hidden"}}>
-                  <div style={{height:"100%",width:`${w}%`,borderRadius:"100px",background:platGrad[id]||"var(--coral-grad)",transition:"width .6s cubic-bezier(.4,0,.2,1)"}} />
-                </div>
-                <div style={{fontSize:"10px",color:"var(--muted2)",marginTop:"6px",fontWeight:"600",fontVariantNumeric:"tabular-nums"}}>${g.earned.toFixed(0)}</div>
-              </div>
-            );
-          });
-        })()}
-      </div>
-      {untagged > 0 && (
-        <div style={{fontSize:"9px",color:"var(--muted2)",marginTop:"10px",textAlign:"center"}}>{untagged} untagged shift{untagged!==1?"s":""} not shown</div>
-      )}
-    </>
-  );
-}
-
 // ─── INSIGHTS SCREEN ──────────────────────────────────────────────────────
-function InsightsScreen({ trips, kmPref, showScoring = true }) {
+function InsightsScreen({ trips, kmPref, fuelEfficiency, fuelPrice }) {
   const [period, setPeriod] = useState("week");
   const [showPicker, setShowPicker] = useState(false);
 
@@ -8453,36 +4662,22 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
       });
     }
     if (period === "month") {
-      // Last 4 weeks, labelled with their actual date range (e.g. "Jun 29–Jul 5").
-      const fmtDay = (d) => d.toLocaleDateString("en-AU", { month: "short", day: "numeric" });
+      // Last 4 weeks
       return Array.from({length: 4}, (_, i) => {
         const ws = new Date(now); ws.setDate(ws.getDate() - (3-i)*7 - now.getDay() + 1);
         ws.setHours(0,0,0,0);
         const we = new Date(ws); we.setDate(we.getDate() + 7);
-        const lastDay = new Date(we); lastDay.setDate(lastDay.getDate() - 1); // inclusive end
         const val = trips.filter(t => { const d = new Date(t.ts); return d >= ws && d < we; }).reduce((s,t)=>s+t.totalEarned,0);
-        return { label: `${fmtDay(ws)}–${fmtDay(lastDay)}`, val, isCurrent: now >= ws && now < we };
+        return { label: `W${i+1}`, val };
       });
     }
-    if (period === "fy") {
-      // Financial year: 12 months from 1 July (fyStart) → June.
-      const { fyStart } = getFYBounds();
-      return Array.from({length: 12}, (_, i) => {
-        const ms = new Date(fyStart.getFullYear(), fyStart.getMonth() + i, 1);
-        const me = new Date(fyStart.getFullYear(), fyStart.getMonth() + i + 1, 1);
-        const val = trips.filter(t => { const d = new Date(t.ts); return d >= ms && d < me; }).reduce((s,t)=>s+t.totalEarned,0);
-        const label = ms.toLocaleDateString("en-AU",{month:"short"}).slice(0,1);
-        return { label, val, isCurrent: now >= ms && now < me };
-      });
-    }
-    // "year" — calendar year: Jan → Dec.
-    const yearStart = new Date(now.getFullYear(), 0, 1);
+    // FY / Year — last 12 months
     return Array.from({length: 12}, (_, i) => {
-      const ms = new Date(yearStart.getFullYear(), i, 1);
-      const me = new Date(yearStart.getFullYear(), i + 1, 1);
+      const ms = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
+      const me = new Date(now.getFullYear(), now.getMonth() - 10 + i, 1);
       const val = trips.filter(t => { const d = new Date(t.ts); return d >= ms && d < me; }).reduce((s,t)=>s+t.totalEarned,0);
       const label = ms.toLocaleDateString("en-AU",{month:"short"}).slice(0,1);
-      return { label, val, isCurrent: now >= ms && now < me };
+      return { label, val };
     });
   };
 
@@ -8505,12 +4700,9 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
   const avgHourly  = allHrs > 0 ? allEarned / allHrs : 0;
   const avgPerDel  = allDels > 0 ? allEarned / allDels : 0;
   const avgPerShift= trips.length ? allEarned / trips.length : 0;
-  // Rate each shift at its own FY rate rather than one blanket rate — a period
-  // spanning 1 July would otherwise re-rate older shifts.
-  const allDeduction = trips.reduce((s, t) => {
-    const km = kmPref === "active" ? (t.kmDel || 0) : (t.totalKm || 0);
-    return s + km * atoRateForDate(t.ts);
-  }, 0);
+  const allDeduction = (kmPref === "active"
+    ? trips.reduce((s,t) => s+(t.kmDel||0), 0)
+    : allKm) * ATO_RATE_PER_KM;
 
   const currentLabel = periods.find(p => p.id === period)?.label;
 
@@ -8583,19 +4775,15 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
             </div>
 
             {/* Comparison pill */}
-            {earned === 0 ? (
-              <div style={{fontSize:"12px",fontWeight:"600",color:"var(--muted)"}}>
-                No earnings logged {period === "7days" ? "in the last 7 days" : period === "week" ? "this week yet" : period === "month" ? "this month yet" : "this period"}
-              </div>
-            ) : pctChange !== null && (
+            {pctChange !== null && (
               <div style={{
                 display:"inline-flex",alignItems:"center",gap:"4px",
                 fontSize:"12px",fontWeight:"700",
-                color: diff >= 0 ? "var(--green)" : "var(--muted)",
-                background: diff >= 0 ? "var(--green-dim)" : "var(--elevated)",
-                padding:"4px 9px",borderRadius:"100px",
+                color: diff >= 0 ? "var(--green)" : "var(--red)",
+                background: diff >= 0 ? "var(--green-dim)" : "var(--red-dim)",
+                padding:"4px 9px",borderRadius:"8px",
               }}>
-                {diff >= 0 ? "↑" : "↓"} ${Math.abs(diff).toFixed(2)} vs {period === "7days" ? "prev 7 days" : period === "week" ? "last week" : period === "month" ? "last month" : "last year"}
+                {diff >= 0 ? "▲" : "▼"} ${Math.abs(diff).toFixed(2)} vs {period === "7days" ? "prev 7 days" : period === "week" ? "last week" : period === "month" ? "last month" : "last year"}
               </div>
             )}
 
@@ -8604,9 +4792,9 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
               const CHART_H = 80;
               const LABEL_H = 20;
               return (
-                <div style={{display:"flex",alignItems:"flex-end",gap:"2px",height:`${CHART_H + LABEL_H}px`,marginTop:"22px"}}>
+                <div style={{display:"flex",alignItems:"flex-end",gap:"2px",height:`${CHART_H + LABEL_H}px`,paddingTop:"14px"}}>
                   {chartData.map((bar, i) => {
-                    const isToday = bar.isCurrent ?? bar.isToday ?? (period === "week" && i === (new Date().getDay() + 6) % 7);
+                    const isToday = bar.isToday ?? (period === "week" && i === (new Date().getDay() + 6) % 7);
                     const barH = maxVal > 0 && bar.val > 0
                       ? Math.max(6, Math.round((bar.val / maxVal) * CHART_H))
                       : 3;
@@ -8625,24 +4813,20 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
                           width: "60%",
                           height: `${barH}px`,
                           background: bar.val > 0
-                            ? (isToday ? "var(--coral-grad)" : "var(--hairline)")
-                            : "var(--hairline)",
-                          borderRadius: "6px 6px 0 0",
+                            ? (isToday ? "var(--green)" : "rgba(0,143,68,.4)")
+                            : "var(--elevated)",
+                          borderRadius: "3px 3px 0 0",
                           transition: "height .4s ease",
                           flexShrink: 0,
                         }} />
                         <div style={{
-                          fontSize: period === "month" ? "8px" : "9px",
-                          color: isToday ? "var(--coral)" : "var(--muted2)",
+                          fontSize: "9px",
+                          color: isToday ? "var(--green)" : "var(--muted2)",
                           fontWeight: isToday ? "700" : "600",
-                          minHeight: `${LABEL_H}px`,
+                          height: `${LABEL_H}px`,
                           display: "flex",
                           alignItems: "center",
-                          justifyContent: "center",
-                          textAlign: "center",
-                          lineHeight: "1.25",
                           flexShrink: 0,
-                          paddingTop: "2px",
                         }}>
                           {bar.label}
                         </div>
@@ -8774,7 +4958,7 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
                     ["Distance",       `${allKm.toFixed(1)} km`,    "blue",   ICO.route],
                     ["Tax deduction",  `$${allDeduction.toFixed(2)}`,"blue",  ICO.receipt],
                     ["Best shift",     bestShift ? `$${bestShift.totalEarned.toFixed(2)}` : "—", "purple", ICO.trophy],
-                    ...(showScoring ? [["Best score", bestScore != null ? `${bestScore.toFixed(1)}%` : "—", "purple", ICO.star]] : []),
+                    ["Best score",     bestScore != null ? `${bestScore.toFixed(1)}%` : "—",     "purple", ICO.star],
                   ].map(([label, value, color, iconNode]) => (
                     <div key={label} style={{
                       background:"var(--elevated)",
@@ -8818,16 +5002,6 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
             )}
           </div>
 
-          {/* Day of week */}
-          <InsightCard title="Best Days" subtitle={currentLabel}>
-            <DayOfWeekChart trips={filtered} />
-          </InsightCard>
-
-          {/* Platform comparison */}
-          <InsightCard title="Platform Comparison" subtitle={currentLabel}>
-            <PlatformComparison trips={filtered} />
-          </InsightCard>
-
         </div>
       </div>
     </div>
@@ -8835,15 +5009,13 @@ function InsightsScreen({ trips, kmPref, showScoring = true }) {
 }
 
 // ─── DETAIL SCREEN ───
-function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAULT_TARGETS, onGoToSettings, trips = [], showScoring = true }) {
+function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAULT_TARGETS, fuelEfficiency, fuelPrice, onGoToSettings, trips = [] }) {
   if (!trip) return null;
   const d = new Date(trip.ts);
   const sc = scoreClass(trip.score);
   const activeKmPct = trip.totalKm > 0 ? (trip.kmDel / trip.totalKm) * 100 : 0;
   const deductKm = kmPref === "active" ? trip.kmDel : trip.totalKm;
-  // This shift's own FY rate — viewing a June shift in July must not re-rate it.
-  const tripAtoRate = atoRateForDate(trip.ts);
-  const deduction = deductKm * tripAtoRate;
+  const deduction = deductKm * ATO_RATE_PER_KM;
 
   // Compute lifetime averages from all other trips (excluding this one for fairness)
   const otherTrips = trips.filter(t => t.id !== trip.id);
@@ -8891,25 +5063,11 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
         <div className="topbar-title">Shift Detail</div>
       </div>
       <div className="scroll-area" id="detail-scroll">
-        {/* M1 earnings hero */}
-        <div style={{margin:"14px 14px 0",background:"linear-gradient(135deg,#F0562E,#F6863A)",borderRadius:"18px",padding:"18px",color:"#fff"}}>
-          {showScoring && (
-            <div style={{float:"right",background:"rgba(255,255,255,.2)",borderRadius:"12px",padding:"8px 12px",textAlign:"center"}}>
-              <div style={{fontSize:"20px",fontWeight:"800",lineHeight:1}}>{trip.score.toFixed(0)}</div>
-              <div style={{fontSize:"9px",opacity:.9,textTransform:"uppercase",letterSpacing:".05em",marginTop:"2px"}}>score</div>
-            </div>
-          )}
-          <div style={{fontSize:"12px",opacity:.9,fontWeight:600}}>
-            {d.toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric",year:"numeric"})}
-            {trip.platform ? " · " + (trip.platform === "doordash" ? "DoorDash" : trip.platform === "both" ? "Both" : "Uber Eats") : ""}
-          </div>
-          <div style={{fontSize:"30px",fontWeight:"800",letterSpacing:"-.02em",marginTop:"2px"}}>{fmt$(trip.totalEarned)}</div>
-          <div style={{fontSize:"12px",opacity:.92,marginTop:"4px"}}>
-            {trip.totalHrs>0 ? fmt$(trip.hourly)+"/hr" : ""}{trip.totalHrs>0 && trip.dels>0 ? " · " : ""}{trip.dels>0 ? fmt$(trip.perDel)+" per delivery" : ""}
-          </div>
+        <div className="detail-header">
+          <div className="detail-date">{d.toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric",year:"numeric"})} · {d.toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})}</div>
+          <div className="detail-app-name">Shift Summary</div>
         </div>
 
-        {showScoring && (
         <div className="detail-section">
           <div className="detail-section-title">Score</div>
           <div className={`score-block ${sc}`} style={{margin:0}}>
@@ -8927,19 +5085,25 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
             <div className="score-num">{trip.score.toFixed(1)}%</div>
           </div>
         </div>
-        )}
 
         {/* ATO Deduction */}
         <div className="detail-section">
-          <div className="detail-section-title">ATO Deduction ({atoFyLabel(trip.ts)})</div>
+          <div className="detail-section-title">ATO Deduction ({ATO_FY_LABEL})</div>
           <div className="deduction-card" style={{margin:0}}>
             <div>
               <div className="ded-label">Est. Deduction — Cents Per KM</div>
               <div className="ded-value">{fmt$(deduction)}</div>
-              <div className="ded-sub">{deductKm.toFixed(1)} km × ${tripAtoRate.toFixed(2)} · {kmPref==="active"?"delivery km only":"all shift km"}</div>
+              <div className="ded-sub">{deductKm.toFixed(1)} km × ${ATO_RATE_PER_KM.toFixed(2)} · {kmPref==="active"?"delivery km only":"all shift km"}</div>
             </div>
             <div className="ded-icon">🧾</div>
           </div>
+          <FuelCard
+            totalKm={trip.totalKm}
+            totalEarned={trip.totalEarned}
+            fuelEfficiency={fuelEfficiency}
+            fuelPrice={fuelPrice}
+            onSetFuel={onGoToSettings}
+          />
         </div>
 
         <div className="detail-section">
@@ -8955,6 +5119,8 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
         <div className="detail-section">
           <div className="detail-section-title">Time</div>
           <div className="detail-grid">
+            <DI label="Shift Start" value={new Date(trip.ts).toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})} />
+            <DI label="Shift End" value={(() => { const end = new Date(new Date(trip.ts).getTime() + trip.totalMin*60000); return end.toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"}); })()} />
             <DI label="Online Time" value={`${trip.totalMin} min (${trip.totalHrs.toFixed(1)} hrs)`} />
             <DI label="Active Time" value={trip.activeMins ? `${trip.activeMins} min (${(trip.activeMins/60).toFixed(1)} hrs)` : "—"} />
             {trip.activeMins && trip.totalMin ? (
@@ -8988,7 +5154,6 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
           </div>
         </div>
 
-        {showScoring && (
         <div className="detail-section">
           <div className="detail-section-title">Scoring Ratios</div>
           <div className="ratio-grid">
@@ -9012,7 +5177,6 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
             }
           </div>
         </div>
-        )}
 
         {trip.expenses > 0 && (
           <div className="detail-section" style={{marginBottom:"8px"}}>
@@ -9038,9 +5202,9 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
 function SettingsSectionCard({ children, style }) {
   return (
     <div style={{
-      background:"var(--elevated)",
-      border:"1px solid var(--border)",
+      background:"var(--surface)",
       borderRadius:"16px",overflow:"hidden",margin:"0 14px",
+      boxShadow:"var(--shadow-card)",
       ...style,
     }}>
       {children}
@@ -9067,892 +5231,18 @@ function SettingsRow({ label, sub, right, onPress, chevron = true }) {
   );
 }
 
-// ─── PURCHASE HISTORY ─── Read-only list of the user's completed credit packs.
-function PurchaseHistoryScreen({ onBack }) {
-  const [rows, setRows] = useState(undefined); // undefined = loading; [] = none
-  useEffect(() => {
-    let cancelled = false;
-    fetchPurchaseHistory().then(r => { if (!cancelled) setRows(r); });
-    return () => { cancelled = true; };
-  }, []);
-
-  const fmtDate = (iso) => iso
-    ? new Date(iso).toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" })
-    : "";
-  const fmtMoney = (cents, currency) => cents != null
-    ? `$${(cents / 100).toFixed(2)}${currency && currency.toLowerCase() !== "aud" ? " " + currency.toUpperCase() : ""}`
-    : "";
-
-  const totalCredits = Array.isArray(rows) ? rows.reduce((s, r) => s + (r.credits || 0), 0) : 0;
-
-  return (
-    <div className="view active" style={{background:"var(--bg)"}}>
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Purchase history</div>
-      </div>
-      <div className="scroll-area" style={{padding:"16px 18px"}}>
-
-        {rows === undefined && (
-          <div style={{textAlign:"center",color:"var(--muted)",fontSize:"13px",padding:"40px 0"}}>Loading…</div>
-        )}
-
-        {Array.isArray(rows) && rows.length === 0 && (
-          <div style={{textAlign:"center",padding:"48px 18px",display:"flex",flexDirection:"column",alignItems:"center"}}>
-            <div style={{fontSize:"34px",marginBottom:"12px"}}>🧾</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"700",color:"var(--text)",marginBottom:"6px"}}>No purchases yet</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",maxWidth:"260px",lineHeight:"1.5"}}>
-              When you buy a screenshot credit pack, it'll show up here as a record.
-            </div>
-          </div>
-        )}
-
-        {Array.isArray(rows) && rows.length > 0 && (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"14px"}}>
-              {rows.length} purchase{rows.length === 1 ? "" : "s"} · {totalCredits} credits total
-            </div>
-            {rows.map((r, i) => (
-              <div key={i} style={{
-                display:"flex",alignItems:"center",justifyContent:"space-between",
-                padding:"14px 16px",marginBottom:"10px",
-                background:"var(--elevated)",border:"1px solid var(--border)",borderRadius:"14px",
-              }}>
-                <div>
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"800",color:"var(--text)"}}>{r.credits} screenshot credits</div>
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginTop:"2px"}}>{fmtDate(r.completed_at)}</div>
-                </div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"800",color:"var(--text)"}}>{fmtMoney(r.amount_cents, r.currency)}</div>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── ADD TO HOME SCREEN ─── Platform-picked install instructions (no detection;
-// the user taps their own phone type, which is foolproof across browsers).
-function InstallHelpScreen({ onBack }) {
-  const [platform, setPlatform] = useState(null); // null | "ios" | "android"
-
-  const iosSteps = [
-    "Open GigTrack in Safari or Chrome — both work the same way now.",
-    "Tap the Share button. In Chrome it's in the address bar; in Safari, tap the three dots (•••) then Share.",
-    "Tap \"Add to Home Screen\". If you don't see it, tap \"More\" (•••) to find it, then tap it.",
-    "Make sure \"Open as Web App\" stays turned ON, then tap Add. This is what makes it open like a real app.",
-  ];
-  const androidSteps = [
-    "Open GigTrack in Chrome.",
-    "Tap the three-dot menu (⋮) in the top-right corner.",
-    "Tap \"Add to Home screen\" (or \"Install app\" if it appears).",
-    "Tap \"Add\" / \"Install\". GigTrack now sits on your home screen like an app.",
-  ];
-  const steps = platform === "ios" ? iosSteps : platform === "android" ? androidSteps : [];
-
-  const PhoneButton = ({ id, label, icon }) => (
-    <button
-      onClick={() => setPlatform(id)}
-      style={{
-        flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"10px",
-        padding:"22px 12px",cursor:"pointer",
-        background:platform === id ? "var(--coral-dim)" : "var(--elevated)",
-        border:platform === id ? "1.5px solid var(--coral)" : "1px solid var(--border)",
-        borderRadius:"16px",
-      }}
-    >
-      <span style={{color:platform === id ? "var(--coral)" : "var(--muted)"}}>{icon}</span>
-      <span style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)"}}>{label}</span>
-    </button>
-  );
-
-  return (
-    <div className="view active" style={{background:"var(--bg)"}}>
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Add to home screen</div>
-      </div>
-      <div className="scroll-area" style={{padding:"18px"}}>
-
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"20px"}}>
-          Install GigTrack on your phone so it opens like a normal app — full screen, one tap from your home screen. Pick your phone below.
-        </div>
-
-        <div style={{display:"flex",gap:"12px",marginBottom:"22px"}}>
-          <PhoneButton id="ios" label="iPhone"
-            icon={<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg>} />
-          <PhoneButton id="android" label="Android"
-            icon={<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M11 18h2"/></svg>} />
-        </div>
-
-        {platform && (
-          <div style={{
-            background:"var(--elevated)",border:"1px solid var(--border)",borderRadius:"16px",padding:"6px 4px",
-          }}>
-            {steps.map((step, i) => (
-              <div key={i} style={{
-                display:"flex",gap:"14px",alignItems:"flex-start",padding:"14px 14px",
-                borderBottom:i < steps.length - 1 ? "0.5px solid var(--border)" : "none",
-              }}>
-                <div style={{
-                  flexShrink:0,width:"24px",height:"24px",borderRadius:"100px",
-                  background:"var(--coral)",color:"var(--on-coral)",
-                  display:"flex",alignItems:"center",justifyContent:"center",
-                  fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"800",
-                }}>{i + 1}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",lineHeight:"1.5",paddingTop:"2px"}}>{step}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {platform === "ios" && (
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",lineHeight:"1.5",marginTop:"14px",padding:"0 4px"}}>
-            Tip: if GigTrack opens in a browser tab instead of full screen, the "Open as Web App" toggle was probably off — remove it and add it again with that toggle on.
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── WEEKLY CATCH-UP ─── Turns a weekly summary into per-day shift entries.
-// Platform-aware: DoorDash days arrive with real earnings pre-filled (read from
-// the printed dash list); Uber days arrive blank (we only detected which days
-// ─── CSV / EXCEL BULK IMPORT (Stage 1: parse + map + confirm) ─────────────
-// Pick a file → parse (SheetJS) → fuzzy auto-map headers → confirmation screen
-// where the user adjusts the column→field mapping and sees a preview. The actual
-// bulk insert + credit charge + Tasks review-queue come in Stage 2. `onImport`
-// receives the parsed rows + final mapping when the user confirms.
-function CsvImportScreen({ onImport, onPreview, onBack }) {
-  const [stage, setStage] = useState("pick");   // pick | mapping | preview | error
-  const [previewResult, setPreviewResult] = useState(null); // dry-run output
-  const [fileName, setFileName] = useState("");
-  const [headers, setHeaders] = useState([]);
-  const [rows, setRows] = useState([]);          // array of arrays (data rows)
-  const [mapping, setMapping] = useState({});    // fieldKey → headerIdx | null
-  const [filePlatform, setFilePlatform] = useState("uber_eats");
-  // Odometer mode per km field: when on, the field is computed as (finish - start)
-  // from TWO columns instead of one. { totalKm: false, activeKm: false }
-  const [odoMode, setOdoMode] = useState({ totalKm: false, activeKm: false });
-  const [odoCols, setOdoCols] = useState({ totalKm: { start: null, finish: null }, activeKm: { start: null, finish: null } });
-  const ODO_FIELDS = ["totalKm", "activeKm"]; // fields that support odometer entry
-  // Time-unit per time field: "hours" (single col, ×60), "minutes" (single col,
-  // as-is), or "split" (two columns: Hr + Min). Default hours.
-  const [timeUnit, setTimeUnit] = useState({ totalMin: "hours", activeMins: "hours" });
-  const [splitCols, setSplitCols] = useState({ totalMin: { hr: null, min: null }, activeMins: { hr: null, min: null } });
-  const TIME_FIELDS = ["totalMin", "activeMins"]; // fields that support the unit picker
-  const [errMsg, setErrMsg] = useState("");
-  // Lighter mapping view: show only the fields needed to import (required + any
-  // the fuzzy-matcher already filled). Everything else (optional, unmatched) sits
-  // behind a "Show optional columns" toggle so the screen isn't a long scroll.
-  const [showOptionalCols, setShowOptionalCols] = useState(false);
-  const fileRef = useRef(null);
-
-  const handleFile = async (file) => {
-    if (!file) return;
-    setFileName(file.name);
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      // header:1 → array-of-arrays; first row = headers.
-      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
-      const nonEmpty = aoa.filter(r => r.some(c => String(c).trim() !== ""));
-      if (nonEmpty.length < 2) {
-        setErrMsg("This file doesn't have a header row plus at least one data row.");
-        setStage("error");
-        return;
-      }
-      const hdr = nonEmpty[0].map(h => String(h).trim());
-      const dataRows = nonEmpty.slice(1);
-      const auto = csvAutoMap(hdr);
-      setHeaders(hdr);
-      setRows(dataRows);
-      setMapping(auto.mapping);
-      setStage("mapping");
-    } catch (e) {
-      setErrMsg("Couldn't read that file. Make sure it's a .csv, .xlsx or .xls export.");
-      setStage("error");
-    }
-  };
-
-  const setFieldMap = (fieldKey, headerIdx) => {
-    setMapping(prev => {
-      const next = { ...prev };
-      // Clear this header from any other field (one header maps to one field).
-      if (headerIdx !== null) {
-        Object.keys(next).forEach(k => { if (next[k] === headerIdx) next[k] = null; });
-      }
-      next[fieldKey] = headerIdx;
-      return next;
-    });
-  };
-
-  const requiredUnmapped = CSV_FIELDS.filter(f => f.required && (mapping[f.key] == null)).map(f => f.label);
-
-  // Online time is required AND must actually contain values — a column can be
-  // mapped but blank for every row (the exact bug: user mapped active time, left
-  // online empty). Scan the rows with the same unit-aware logic the importer
-  // uses; if online is configured but NO row yields a usable value, block here
-  // in the form (not after a submit that would burn a credit).
-  const onlineHasValues = (() => {
-    const unit = timeUnit?.totalMin || "hours";
-    const readOnline = (rowArr) => {
-      const c = (idx) => idx == null ? "" : (rowArr[idx] ?? "");
-      if (unit === "split") {
-        const cfg = splitCols.totalMin || {};
-        if (cfg.hr == null && cfg.min == null) return null;
-        const h = cfg.hr != null ? (csvNum(c(cfg.hr)) || 0) : 0;
-        const m = cfg.min != null ? (csvNum(c(cfg.min)) || 0) : 0;
-        const mins = Math.round(h * 60 + m);
-        return mins > 0 ? mins : null;
-      }
-      const idx = mapping.totalMin;
-      if (idx == null) return null;
-      if (unit === "minutes") { const nn = csvNum(c(idx)); return nn != null && nn > 0 ? nn : null; }
-      const mins = csvTimeToMin(c(idx));
-      return mins != null && mins > 0 ? mins : null;
-    };
-    // Configured if either a single column is chosen or split has at least one part.
-    const configured = mapping.totalMin != null ||
-      (unit === "split" && (splitCols.totalMin?.hr != null || splitCols.totalMin?.min != null));
-    if (!configured) return false; // not configured → the "unmapped" path handles it
-    return (rows || []).some(r => readOnline(r) != null);
-  })();
-
-  // Online counts as a blocking problem when it's configured but every row is blank.
-  const onlineMappedButEmpty = requiredUnmapped.indexOf("Online time") === -1 && !onlineHasValues;
-  const canImport = requiredUnmapped.length === 0 && !onlineMappedButEmpty;
-
-  const cell = (rowArr, idx) => idx == null ? "" : (rowArr[idx] ?? "");
-
-  return (
-    <div className="view active" style={{background:"var(--bg)"}}>
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Bulk import</div>
-      </div>
-      <div className="scroll-area" style={{padding:"18px"}}>
-
-        {stage === "pick" && (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"18px"}}>
-              Upload a spreadsheet of past shifts (.csv, .xlsx or .xls) and we'll match its columns to your shift fields, then import them in bulk.
-            </div>
-            <input
-              ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}}
-              onChange={(e) => handleFile(e.target.files?.[0])}
-            />
-            <button
-              onClick={() => fileRef.current?.click()}
-              style={{width:"100%",padding:"16px",border:"1.5px dashed var(--coral)",borderRadius:"16px",background:"var(--elevated)",cursor:"pointer",color:"var(--coral)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
-            >📄 Choose a file</button>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginTop:"12px",lineHeight:"1.5"}}>
-              Your file should have a header row (e.g. Date, Earnings, Km). We'll guess the matches — you confirm before anything is imported.
-            </div>
-          </>
-        )}
-
-        {stage === "error" && (
-          <div style={{textAlign:"center",padding:"40px 18px"}}>
-            <div style={{fontSize:"30px",marginBottom:"10px"}}>⚠️</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",marginBottom:"6px"}}>Couldn't read that file</div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",lineHeight:"1.5",marginBottom:"18px"}}>{errMsg}</div>
-            <button onClick={() => { setStage("pick"); setErrMsg(""); }} style={{border:"none",cursor:"pointer",background:"var(--coral)",color:"var(--on-coral)",borderRadius:"10px",padding:"10px 18px",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800"}}>Try another file</button>
-          </div>
-        )}
-
-        {stage === "mapping" && (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"4px"}}>
-              {fileName} · {rows.length} row{rows.length === 1 ? "" : "s"}
-              {(() => {
-                const matched = CSV_FIELDS.filter(f => mapping[f.key] != null).length;
-                return matched > 0 ? <span style={{color:"var(--pos)",fontWeight:"700"}}> · {matched} auto-matched</span> : null;
-              })()}
-            </div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",fontWeight:"700",marginBottom:"6px"}}>Match your columns</div>
-            <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px",background:"var(--bg)",border:"1px solid var(--border)",borderRadius:"10px",padding:"9px 12px"}}>
-              <span style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"800",color:"var(--coral)",textTransform:"uppercase",letterSpacing:".04em"}}>Pick from your file</span>
-              <span style={{color:"var(--muted2)",fontSize:"13px"}}>→</span>
-              <span style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",color:"var(--muted)",textAlign:"center",textTransform:"uppercase",letterSpacing:".04em"}}>Goes to (fixed)</span>
-            </div>
-
-            {CSV_GROUPS.map(group => {
-              const groupFields = CSV_FIELDS.filter(f => f.group === group).filter(f => {
-                if (showOptionalCols) return true;
-                if (f.required) return true;
-                // Keep an optional field visible if it's already mapped/configured
-                // (the fuzzy-matcher found it, or the user set it) — hiding a matched
-                // column would be confusing. Otherwise tuck it behind the toggle.
-                const mapped = mapping[f.key] != null;
-                const odoOn = ODO_FIELDS.includes(f.key) && odoMode[f.key];
-                const splitOn = TIME_FIELDS.includes(f.key) && (timeUnit[f.key] === "split");
-                return mapped || odoOn || splitOn;
-              });
-              if (groupFields.length === 0) return null;
-              return (
-              <div key={group} style={{marginBottom:"20px"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".08em",textTransform:"uppercase",color:"var(--coral)",marginBottom:"10px"}}>{group}</div>
-                {groupFields.map(f => {
-              const isOdoField = ODO_FIELDS.includes(f.key);
-              const odoOn = isOdoField && odoMode[f.key];
-              const odoStart = odoCols[f.key]?.start;
-              const odoFinish = odoCols[f.key]?.finish;
-              // Preview the computed difference when both odo columns are set.
-              let odoPreview = null;
-              if (odoOn && odoStart != null && odoFinish != null && rows[0]) {
-                const s = parseFloat(String(cell(rows[0], odoStart)).replace(/[^0-9.\-]/g, ""));
-                const fin = parseFloat(String(cell(rows[0], odoFinish)).replace(/[^0-9.\-]/g, ""));
-                if (!isNaN(s) && !isNaN(fin)) odoPreview = (fin - s);
-              }
-              // Split-time (two columns: Hr + Min) for time fields.
-              const isTimeField = TIME_FIELDS.includes(f.key);
-              const unit = isTimeField ? (timeUnit[f.key] || "hours") : null;
-              const splitOn = isTimeField && unit === "split";
-              const splitHr = splitCols[f.key]?.hr;
-              const splitMin = splitCols[f.key]?.min;
-              let splitPreview = null;
-              if (splitOn && (splitHr != null || splitMin != null) && rows[0]) {
-                const h = splitHr != null ? parseInt(String(cell(rows[0], splitHr)).replace(/[^0-9]/g, ""), 10) : 0;
-                const m = splitMin != null ? parseInt(String(cell(rows[0], splitMin)).replace(/[^0-9]/g, ""), 10) : 0;
-                if (!isNaN(h) || !isNaN(m)) splitPreview = (h || 0) * 60 + (m || 0);
-              }
-              // A field counts as "done" if singly mapped, or its special mode is on.
-              const fieldDone = mapping[f.key] != null || odoOn || splitOn;
-              return (
-              <div key={f.key} style={{
-                background:"var(--elevated)",
-                border:`1.5px solid ${fieldDone ? "var(--pos)" : (f.required ? "var(--coral)" : "var(--border)")}`,
-                borderRadius:"14px",padding:"13px 14px",marginBottom:"9px",
-              }}>
-                {/* header: field name + status pill */}
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px"}}>
-                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800",color:"var(--text)"}}>
-                    {f.label}{f.required && <span style={{color:"var(--coral)"}}> *</span>}
-                  </div>
-                  {fieldDone ? (
-                    <span style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",textTransform:"uppercase",letterSpacing:".04em",color:"var(--pos)",background:"rgba(30,158,104,.12)",padding:"3px 8px",borderRadius:"100px"}}>✓ matched</span>
-                  ) : (
-                    <span style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",textTransform:"uppercase",letterSpacing:".04em",color:f.required?"var(--coral)":"var(--muted2)",background:f.required?"var(--coral-dim, rgba(240,86,46,.09))":"var(--bg)",padding:"3px 8px",borderRadius:"100px"}}>{f.required ? "choose" : "optional"}</span>
-                  )}
-                </div>
-
-                {/* distance segmented control: Total km / Odometer */}
-                {isOdoField && (
-                  <div style={{marginTop:"9px"}}>
-                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"700",color:"var(--muted2)",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"5px"}}>How is this recorded?</div>
-                    <div style={{display:"flex",gap:"5px"}}>
-                      {[[false,"Total km"],[true,"Odometer"]].map(([val, lbl]) => {
-                        const on = odoOn === val;
-                        return (
-                          <button key={String(val)}
-                            onClick={() => setOdoMode(prev => ({ ...prev, [f.key]: val }))}
-                            style={{flex:1,padding:"7px 4px",borderRadius:"8px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",border:on?"1px solid var(--coral)":"1px solid var(--border)",background:on?"var(--coral)":"var(--elevated)",color:on?"var(--on-coral)":"var(--muted)"}}
-                          >{lbl}</button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* time-unit segmented control: Hours / Minutes / Hr + Min */}
-                {isTimeField && (
-                  <div style={{marginTop:"9px"}}>
-                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"700",color:"var(--muted2)",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"5px"}}>How is this recorded?</div>
-                    <div style={{display:"flex",gap:"5px"}}>
-                      {[["hours","Hours"],["minutes","Minutes"],["split","Hr + Min"]].map(([val, lbl]) => {
-                        const on = unit === val;
-                        return (
-                          <button key={val}
-                            onClick={() => setTimeUnit(prev => ({ ...prev, [f.key]: val }))}
-                            style={{flex:1,padding:"7px 4px",borderRadius:"8px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",border:on?"1px solid var(--coral)":"1px solid var(--border)",background:on?"var(--coral)":"var(--elevated)",color:on?"var(--on-coral)":"var(--muted)"}}
-                          >{lbl}</button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* single-column mapping: source chip → field chip */}
-                {!odoOn && !splitOn && (
-                  <div style={{marginTop:"10px"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                      <div style={{flex:1,position:"relative"}}>
-                        <select
-                          value={mapping[f.key] == null ? "" : mapping[f.key]}
-                          onChange={(e) => setFieldMap(f.key, e.target.value === "" ? null : parseInt(e.target.value, 10))}
-                          style={{width:"100%",padding:"10px 26px 10px 10px",borderRadius:"8px",border:mapping[f.key]==null && f.required ? "1.5px solid var(--coral)" : "1px solid var(--muted2)",background:"var(--elevated)",color:mapping[f.key]==null?"var(--muted2)":"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",textAlign:"left",WebkitAppearance:"none",appearance:"none",backgroundImage:"url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23F0562E' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>\")",backgroundRepeat:"no-repeat",backgroundPosition:"right 9px center"}}
-                        >
-                          <option value="">tap to pick a column</option>
-                          {headers.map((h, i) => (
-                            <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <span style={{color:"var(--muted2)",fontSize:"14px"}}>→</span>
-                      <div style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",textAlign:"center",padding:"9px 6px",color:"var(--muted)"}}>{f.label}</div>
-                    </div>
-                    {mapping[f.key] != null && rows[0] && (
-                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:"var(--muted2)",marginTop:"7px"}}>
-                        {isTimeField ? (() => {
-                          const raw = String(cell(rows[0], mapping[f.key]));
-                          const mins = unit === "minutes"
-                            ? (csvNum(raw) != null ? Math.round(csvNum(raw)) : null)
-                            : csvTimeToMin(raw); // hours
-                          return mins != null
-                            ? `e.g. "${raw.slice(0,20)}" → ${Math.floor(mins/60)}h ${mins%60}m (read as ${unit})`
-                            : `e.g. "${raw.slice(0,30)}"`;
-                        })() : `e.g. "${String(cell(rows[0], mapping[f.key])).slice(0, 30)}"`}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* odometer: two source chips (start + finish) */}
-                {odoOn && (
-                  <div style={{marginTop:"10px"}}>
-                    <div style={{display:"flex",gap:"8px"}}>
-                      {["start", "finish"].map(which => (
-                        <div key={which} style={{flex:1}}>
-                          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",color:"var(--muted2)",marginBottom:"3px",textTransform:"uppercase",letterSpacing:".04em",fontWeight:"700"}}>Odometer {which}</div>
-                          <select
-                            value={odoCols[f.key]?.[which] == null ? "" : odoCols[f.key][which]}
-                            onChange={(e) => setOdoCols(prev => ({ ...prev, [f.key]: { ...prev[f.key], [which]: e.target.value === "" ? null : parseInt(e.target.value, 10) } }))}
-                            style={{width:"100%",padding:"9px",borderRadius:"8px",border:"1px solid var(--border)",background:"var(--bg)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",WebkitAppearance:"none",appearance:"none"}}
-                          >
-                            <option value="">— pick —</option>
-                            {headers.map((h, i) => (
-                              <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                    {odoPreview != null && (
-                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:odoPreview < 0 ? "var(--coral)" : "var(--muted2)",marginTop:"7px"}}>
-                        {odoPreview < 0
-                          ? `⚠ First row gives ${odoPreview.toFixed(1)} km — finish is less than start (check the columns).`
-                          : `e.g. first row = ${odoPreview.toFixed(1)} km (finish − start)`}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* split-time: two columns (Hr + Min) */}
-                {splitOn && (
-                  <div style={{marginTop:"10px"}}>
-                    <div style={{display:"flex",gap:"8px"}}>
-                      {[["hr","Hours column"],["min","Minutes column"]].map(([which, lbl]) => (
-                        <div key={which} style={{flex:1}}>
-                          <div style={{fontFamily:"'Inter',sans-serif",fontSize:"9px",color:"var(--muted2)",marginBottom:"3px",textTransform:"uppercase",letterSpacing:".04em",fontWeight:"700"}}>{lbl}</div>
-                          <select
-                            value={splitCols[f.key]?.[which] == null ? "" : splitCols[f.key][which]}
-                            onChange={(e) => setSplitCols(prev => ({ ...prev, [f.key]: { ...prev[f.key], [which]: e.target.value === "" ? null : parseInt(e.target.value, 10) } }))}
-                            style={{width:"100%",padding:"9px",borderRadius:"8px",border:"1px solid var(--border)",background:"var(--bg)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"12px",WebkitAppearance:"none",appearance:"none"}}
-                          >
-                            <option value="">— pick —</option>
-                            {headers.map((h, i) => (
-                              <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                    {splitPreview != null && (
-                      <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10.5px",color:"var(--muted2)",marginTop:"7px"}}>
-                        e.g. first row = {Math.floor(splitPreview/60)}h {splitPreview%60}m ({splitPreview} min)
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              );
-                })}
-              </div>
-              );
-            })}
-
-            {/* Toggle to reveal the optional, unmatched columns kept hidden for a
-                lighter default view. Count = optional fields not required and not
-                already mapped/configured. */}
-            {(() => {
-              const hiddenCount = CSV_FIELDS.filter(f => {
-                if (f.required) return false;
-                const mapped = mapping[f.key] != null;
-                const odoOn = ODO_FIELDS.includes(f.key) && odoMode[f.key];
-                const splitOn = TIME_FIELDS.includes(f.key) && (timeUnit[f.key] === "split");
-                return !(mapped || odoOn || splitOn);
-              }).length;
-              if (showOptionalCols && hiddenCount === 0) return null;
-              return (
-                <button
-                  onClick={() => setShowOptionalCols(v => !v)}
-                  style={{
-                    width:"100%",padding:"12px",marginBottom:"18px",cursor:"pointer",
-                    background:"var(--elevated)",border:"0.5px dashed var(--muted2)",
-                    borderRadius:"12px",color:"var(--muted)",
-                    fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
-                    display:"flex",alignItems:"center",justifyContent:"center",gap:"7px",
-                  }}
-                >
-                  {showOptionalCols
-                    ? <>Hide optional columns</>
-                    : <><span style={{fontSize:"15px"}}>+</span> Show optional columns
-                        {hiddenCount > 0 && <span style={{fontSize:"11px",fontWeight:"500",color:"var(--muted2)"}}>· {hiddenCount} more</span>}</>}
-                </button>
-              );
-            })()}
-
-            {/* File-wide platform — only shown when NO platform column is mapped.
-                If the sheet has a platform column, the user maps it above and each
-                row uses its own value instead. */}
-            {mapping.platform == null && (
-              <div style={{marginTop:"18px",marginBottom:"12px"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)",marginBottom:"4px"}}>Platform for all these shifts</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",marginBottom:"6px"}}>Your file has no platform column, so pick one for the whole file.</div>
-                <select value={filePlatform} onChange={(e) => setFilePlatform(e.target.value)}
-                  style={{width:"100%",padding:"11px 12px",borderRadius:"10px",border:"1px solid var(--border)",background:"var(--elevated)",color:"var(--text)",fontFamily:"'Inter',sans-serif",fontSize:"13px"}}>
-                  <option value="uber_eats">Uber Eats</option>
-                  <option value="doordash">DoorDash</option>
-                  <option value="both">Both</option>
-                </select>
-              </div>
-            )}
-            {mapping.platform != null && (
-              <div style={{marginTop:"18px",marginBottom:"12px",fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",lineHeight:"1.5"}}>
-                Platform will be read per-row from your "{headers[mapping.platform] || "Platform"}" column. Values like "uber"/"doordash" are matched automatically; anything unrecognised falls back per row.
-              </div>
-            )}
-
-            {!canImport && (
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--coral)",fontWeight:"600",margin:"10px 0",lineHeight:"1.5"}}>
-                {requiredUnmapped.length > 0
-                  ? `Please match: ${requiredUnmapped.join(", ")} — these are required to import.`
-                  : onlineMappedButEmpty
-                    ? "Online time is required, but the column you picked has no values. Choose the column that holds your online/total time (or the Hr + Min columns) before importing."
-                    : "Some required fields still need attention before you can import."}
-              </div>
-            )}
-
-            <button
-              onClick={() => {
-                if (!canImport) return;
-                const result = onPreview({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform: filePlatform, fileName });
-                setPreviewResult(result);
-                setStage("preview");
-              }}
-              disabled={!canImport}
-              style={{width:"100%",marginTop:"8px",padding:"15px",border:"none",borderRadius:"14px",cursor:canImport ? "pointer" : "default",background:canImport ? "var(--coral)" : "var(--border)",color:canImport ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
-            >Preview import ({rows.length} row{rows.length === 1 ? "" : "s"})</button>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",textAlign:"center",marginTop:"10px"}}>Nothing is imported yet — you'll confirm on the next step.</div>
-          </>
-        )}
-
-        {stage === "preview" && previewResult && (() => {
-          const { toAdd = [], dupes = 0, incomplete = 0, noOnline = 0 } = previewResult;
-          const canCommit = toAdd.length > 0;
-          const sample = toAdd.slice(0, 5);
-          const platLabel = (p) => p === "doordash" ? "DoorDash" : p === "both" ? "Both" : p === "uber_eats" ? "Uber" : "—";
-          const fmtMin = (m) => m == null ? "—" : `${Math.floor(m/60)}h${String(Math.round(m%60)).padStart(2,"0")}`;
-          const fmtNum = (v, d=0) => v == null ? "—" : Number(v).toFixed(d);
-          const fmtDate = (ts) => { try { return new Date(ts).toLocaleDateString("en-AU", { day:"numeric", month:"short" }); } catch { return "—"; } };
-          // High-risk columns first (the ones a mismap corrupts most visibly),
-          // optional/extra columns after — so what you most want to verify is on
-          // screen before you swipe.
-          const cols = [
-            { h:"Date",     w:58,  align:"left",  get:(r)=>fmtDate(r.ts) },
-            { h:"Earned",   w:60,  align:"right", get:(r)=>`$${fmtNum(r.totalEarned,2)}` },
-            { h:"Online",   w:52,  align:"right", get:(r)=>fmtMin(r.totalMin) },
-            { h:"Km",       w:46,  align:"right", get:(r)=>fmtNum(r.totalKm,1) },
-            { h:"Dels",     w:40,  align:"right", get:(r)=>fmtNum(r.dels) },
-            { h:"Tips",     w:48,  align:"right", get:(r)=>`$${fmtNum(r.tip,2)}` },
-            { h:"Bonus",    w:52,  align:"right", get:(r)=>`$${fmtNum(r.bonus,2)}` },
-            { h:"Active",   w:52,  align:"right", get:(r)=>fmtMin(r.activeMins) },
-            { h:"Act km",   w:52,  align:"right", get:(r)=>fmtNum(r.activeKm,1) },
-            { h:"Platform", w:64,  align:"right", get:(r)=>platLabel(r.platform) },
-          ];
-          const tableWidth = cols.reduce((s,c)=>s+c.w,0) + 16;
-          return (
-          <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800",color:"var(--text)",marginBottom:"12px"}}>Ready to import</div>
-
-            {/* Counts summary */}
-            <div style={{display:"flex",gap:"7px",marginBottom:"16px"}}>
-              <div style={{flex:1,background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",padding:"11px 6px",textAlign:"center"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"21px",fontWeight:"800",color:"var(--pos)"}}>{toAdd.length}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)"}}>new</div>
-              </div>
-              <div style={{flex:1,background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",padding:"11px 6px",textAlign:"center"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"21px",fontWeight:"800",color:"var(--muted2)"}}>{dupes}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)"}}>duplicate{dupes===1?"":"s"}</div>
-              </div>
-              <div style={{flex:1,background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",padding:"11px 6px",textAlign:"center"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"21px",fontWeight:"800",color:"var(--red)"}}>{noOnline + incomplete}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)"}}>skipped</div>
-              </div>
-            </div>
-
-            {(noOnline > 0 || incomplete > 0) && (
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginBottom:"16px",lineHeight:"1.5"}}>
-                {noOnline > 0 && `${noOnline} row${noOnline===1?"":"s"} skipped for missing online time. `}
-                {incomplete > 0 && `${incomplete} row${incomplete===1?"":"s"} skipped for missing required data.`}
-              </div>
-            )}
-
-            {/* Sample rows — verify the columns mapped correctly before you commit */}
-            {sample.length > 0 && (
-              <>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".04em",textTransform:"uppercase",color:"var(--muted2)",marginBottom:"6px"}}>
-                  First {sample.length} row{sample.length===1?"":"s"}, as read · swipe →
-                </div>
-                <div style={{background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",overflowX:"auto",marginBottom:"8px"}}>
-                  <div style={{minWidth:`${tableWidth}px`}}>
-                    <div style={{display:"flex",padding:"7px 8px",background:"var(--elevated)"}}>
-                      {cols.map(c => (
-                        <div key={c.h} style={{width:`${c.w}px`,flexShrink:0,textAlign:c.align,fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",color:"var(--muted2)",textTransform:"uppercase",letterSpacing:".03em"}}>{c.h}</div>
-                      ))}
-                    </div>
-                    {sample.map((r, i) => (
-                      <div key={i} style={{display:"flex",padding:"8px",borderTop:"0.5px solid var(--border)"}}>
-                        {cols.map(c => (
-                          <div key={c.h} style={{width:`${c.w}px`,flexShrink:0,textAlign:c.align,fontFamily:"'Inter',sans-serif",fontSize:"10.5px",fontWeight:"600",color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>{c.get(r)}</div>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",textAlign:"center",marginBottom:"18px"}}>Check the columns look right before importing ↑</div>
-              </>
-            )}
-
-            {/* Confirm — THIS is what charges the credits + inserts */}
-            <button
-              onClick={() => canCommit && onImport(toAdd)}
-              disabled={!canCommit}
-              style={{width:"100%",padding:"15px",border:"none",borderRadius:"14px",cursor:canCommit ? "pointer" : "default",background:canCommit ? "var(--coral)" : "var(--border)",color:canCommit ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
-            >{canCommit ? `Import ${toAdd.length} shift${toAdd.length===1?"":"s"} · ${CREDIT_COST_CSV} credits` : "Nothing to import"}</button>
-            <button
-              onClick={() => { setStage("mapping"); setPreviewResult(null); }}
-              style={{width:"100%",marginTop:"8px",padding:"12px",border:"none",borderRadius:"12px",cursor:"pointer",background:"transparent",color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700"}}
-            >← Back to fix mapping</button>
-          </>
-          );
-        })()}
-      </div>
-    </div>
-  );
-}
-
-// had a bar). The weekly totals show as a reference strip — never split.
-// Each day routes into the SAME new-shift form via gt_entry_prefill, so all the
-// derived fields (score, deduction, ratios) compute exactly like any shift.
-function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay, onBack }) {
-  const { platform, week_start, week_end, days = [], week_totals = {}, screenshotUrl = null } = detection || {};
-  const platLabel = platform === "doordash" ? "DoorDash" : "Uber Eats";
-  const [shotExpanded, setShotExpanded] = useState(false);
-  // Clear the one-shot "which day am I editing" marker whenever we land back on
-  // the list (handleSaved's navigation has already used it to return here).
-  useEffect(() => { DB.remove("gt_catchup_pending_date"); }, []);
-
-  // Running tally of what the user has ENTERED so far this week (from the real
-  // saved shifts that fall in this week), to compare against the weekly totals.
-  // Honest sanity check — we sum the user's own entered figures, nothing guessed.
-  // Timezone-safe local date key ("YYYY-MM-DD") from a stored ts. The stored ts
-  // is local-midnight converted to UTC, so slicing the ISO string can shift the
-  // day on +10 (Brisbane). Read LOCAL components instead.
-  const localDateKey = (iso) => {
-    const d = new Date(iso);
-    const pad = n => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
-  // Map each week day-date → its saved shift (if any), matching on date AND
-  // platform. A shift only counts toward THIS week if its platform matches the
-  // week's platform, or is "both" (worked both apps that day). This prevents a
-  // DoorDash shift from marking an Uber-week day as done, and vice versa — a
-  // driver may work both apps on the same day, so each platform's shift is
-  // tracked separately.
-  const platformMatches = (t) => t.platform === platform || t.platform === "both";
-  const tripByDate = {};
-  trips.forEach(t => {
-    if (t.ts && platformMatches(t)) tripByDate[localDateKey(t.ts)] = t;
-  });
-  const savedWeekTrips = days.map(d => tripByDate[d.date]).filter(Boolean);
-  const enteredEarned = savedWeekTrips.reduce((s, t) => s + (t.totalEarned || 0), 0);
-  const enteredMins = savedWeekTrips.reduce((s, t) => s + (t.totalMin || 0), 0);
-  const parseHrsLabel = (lbl) => {
-    if (!lbl || typeof lbl !== "string") return null;
-    const m = lbl.match(/(\d+)\s*h\s*(\d+)?/i);
-    if (!m) return null;
-    return parseInt(m[1], 10) * 60 + (m[2] ? parseInt(m[2], 10) : 0);
-  };
-  const weekEarnedTotal = week_totals.earned != null ? Number(week_totals.earned) : null;
-  const weekMinsTotal = parseHrsLabel(week_totals.online_hrs);
-  const remainEarned = weekEarnedTotal != null ? Math.max(0, weekEarnedTotal - enteredEarned) : null;
-  const remainMins = weekMinsTotal != null ? Math.max(0, weekMinsTotal - enteredMins) : null;
-  const fmtMins = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
-
-  const fmtRange = (a, b) => {
-    if (!a || !b) return "";
-    const opt = { day: "numeric", month: "short" };
-    return `${new Date(a).toLocaleDateString("en-AU", opt)} – ${new Date(b).toLocaleDateString("en-AU", opt)}`;
-  };
-  const fmtDay = (iso) => new Date(iso).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
-  const savedSet = new Set(savedDates);
-  const isDayDone = (date) => !!tripByDate[date] || savedSet.has(date);
-  const remaining = days.filter(d => !isDayDone(d.date)).length;
-
-  // Reference chips from whatever totals the AI got (all optional).
-  const refChips = [];
-  if (week_totals.earned != null) refChips.push(`$${Number(week_totals.earned).toFixed(2)} earned`);
-  if (week_totals.trips != null) refChips.push(`${week_totals.trips} trips`);
-  if (week_totals.deliveries != null) refChips.push(`${week_totals.deliveries} deliveries`);
-  if (week_totals.online_hrs != null) refChips.push(`${week_totals.online_hrs} online`);
-  if (week_totals.active_hrs != null) refChips.push(`${week_totals.active_hrs} active`);
-
-  return (
-    <div className="view active" style={{background:"var(--bg)"}}>
-      <div className="topbar">
-        <button className="topbar-back" onClick={onBack}>←</button>
-        <div className="topbar-title">Catch up your week</div>
-      </div>
-      <div className="scroll-area" style={{padding:"18px"}}>
-
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"16px"}}>
-          This looks like your {platLabel} week{week_start ? ` (${fmtRange(week_start, week_end)})` : ""}. We found the days you worked — tap each to add its details. {platform === "doordash" ? "Earnings are filled in from your dash list; add your km and hours." : "Add your earnings, km and hours for each day."}
-        </div>
-
-        {/* Screenshot thumbnail — tap to expand. Shows the user's own weekly
-            screenshot in the real flow (blob URL); a labelled placeholder in mock. */}
-        <div style={{marginBottom:"18px"}}>
-          <div
-            onClick={() => screenshotUrl && setShotExpanded(v => !v)}
-            style={{
-              borderRadius:"14px",overflow:"hidden",border:"1px solid var(--border)",
-              cursor:screenshotUrl ? "pointer" : "default",background:"var(--elevated)",
-              maxHeight:shotExpanded ? "none" : "150px",
-              display:"flex",alignItems:shotExpanded ? "flex-start" : "center",justifyContent:"center",
-              position:"relative",
-            }}
-          >
-            {screenshotUrl ? (
-              <img src={screenshotUrl} alt="Your weekly summary"
-                style={{width:"100%",display:"block",objectFit:shotExpanded ? "contain" : "cover",objectPosition:"top"}} />
-            ) : (
-              <div style={{padding:"28px 16px",textAlign:"center"}}>
-                <div style={{fontSize:"26px",marginBottom:"6px"}}>🖼️</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"700",color:"var(--text)"}}>Your weekly screenshot appears here</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"3px"}}>(placeholder — the real one shows in the live flow)</div>
-              </div>
-            )}
-            {screenshotUrl && !shotExpanded && (
-              <div style={{
-                position:"absolute",bottom:0,left:0,right:0,padding:"18px 0 8px",
-                background:"linear-gradient(transparent, rgba(0,0,0,.55))",
-                color:"#fff",fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",textAlign:"center",
-              }}>Tap to expand ↓</div>
-            )}
-          </div>
-          {screenshotUrl && shotExpanded && (
-            <button onClick={() => setShotExpanded(false)} style={{
-              width:"100%",marginTop:"8px",padding:"8px",border:"none",cursor:"pointer",
-              background:"transparent",color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",
-            }}>Collapse ↑</button>
-          )}
-        </div>
-
-        {/* Reference strip — the real weekly totals, as a sanity check only */}
-        {refChips.length > 0 && (
-          <div style={{
-            background:"var(--elevated)",border:"1px solid var(--border)",borderRadius:"14px",
-            padding:"12px 14px",marginBottom:"20px",
-          }}>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".06em",textTransform:"uppercase",color:"var(--muted2)",marginBottom:"8px"}}>Your week (for reference)</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:"7px"}}>
-              {refChips.map((c, i) => (
-                <span key={i} style={{
-                  fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",color:"var(--text)",
-                  background:"var(--bg)",border:"1px solid var(--border)",borderRadius:"100px",padding:"4px 10px",
-                }}>{c}</span>
-              ))}
-            </div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted2)",marginTop:"9px",lineHeight:"1.4"}}>These are your whole-week totals — we don't split them across days, you enter each day's real figures.</div>
-          </div>
-        )}
-
-        {/* Running "remaining" banner — how much of the week's totals is left to
-            account for, based on what the user has entered so far. Honest tally. */}
-        {(remainEarned != null || remainMins != null) && (
-          <div style={{
-            background:"var(--coral-dim, rgba(240,86,46,.1))",border:"1px solid var(--coral)",
-            borderRadius:"14px",padding:"12px 14px",marginBottom:"20px",
-          }}>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"800",color:"var(--coral)",marginBottom:"4px"}}>
-              Still to account for
-            </div>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",lineHeight:"1.5"}}>
-              {remainEarned != null && <span><strong>${remainEarned.toFixed(2)}</strong> of earnings{remainMins != null ? " · " : ""}</span>}
-              {remainMins != null && <span><strong>{fmtMins(remainMins)}</strong> of online time</span>}
-              {" "}left, based on what you've entered so far.
-            </div>
-          </div>
-        )}
-
-        {/* Per-day cards */}
-        {days.map((d, i) => {
-          const savedTrip = tripByDate[d.date];
-          const done = !!savedTrip || savedSet.has(d.date);
-          const doneSummary = savedTrip
-            ? `Added ✓  ·  $${(savedTrip.totalEarned || 0).toFixed(2)}${savedTrip.totalMin ? `  ·  ${fmtMins(savedTrip.totalMin)}` : ""}`
-            : "Added ✓";
-          return (
-            <div key={i} style={{
-              display:"flex",alignItems:"center",justifyContent:"space-between",
-              padding:"14px 16px",marginBottom:"10px",
-              background:done ? "var(--pos-dim, var(--elevated))" : "var(--elevated)",
-              border:done ? "1.5px solid var(--pos, #1E9E68)" : "1px solid var(--border)",
-              borderRadius:"14px",opacity:done ? 0.92 : 1,
-            }}>
-              <div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"800",color:"var(--text)"}}>{fmtDay(d.date)}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:done ? "var(--pos, #1E9E68)" : "var(--muted)",marginTop:"2px",fontWeight:done ? "700" : "400"}}>
-                  {done ? doneSummary : d.earned != null ? `$${Number(d.earned).toFixed(2)} earned · add km & hours` : "Add this day's details"}
-                </div>
-              </div>
-              {!done && (
-                <button
-                  onClick={() => onAddDay(d)}
-                  style={{
-                    border:"none",cursor:"pointer",background:"var(--coral)",color:"var(--on-coral)",
-                    borderRadius:"10px",padding:"9px 15px",
-                    fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800",
-                  }}
-                >Add</button>
-              )}
-            </div>
-          );
-        })}
-
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",textAlign:"center",marginTop:"18px"}}>
-          {remaining === 0 ? "All days added — nice work! 🎉" : `${remaining} day${remaining === 1 ? "" : "s"} left to add`}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, fuelEfficiency, onFuelEfficiency, fuelPrice, onFuelPrice, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
   const [defaultPlatform, setDefaultPlatform] = useState(DB.get("gt_default_platform") || "none");
 
   // Advanced
-  const [rate,     setRate]     = useState(String(atoRate ?? ATO_RATE_PER_KM));
+  const [rate,     setRate]     = useState(String(atoRate));
   const [odo,      setOdo]      = useState(String(user?.startOdo || ""));
   const [goalInput,setGoalInput]= useState(String(weeklyGoal || 800));
+  const [fuelEff,  setFuelEff]  = useState(fuelEfficiency ? String(fuelEfficiency) : "");
+  const [fuelPr,   setFuelPr]   = useState(fuelPrice ? String(fuelPrice) : "");
   const [tHourly,     setTHourly]    = useState(String(targets.hourly));
   const [tPerDel,     setTPerDel]    = useState(String(targets.perDel));
   const [tActiveKm,   setTActiveKm]  = useState(String(targets.activeKm));
@@ -9983,7 +5273,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
   const save = () => {
     const r = parseFloat(rate);
     if (!isNaN(r) && r > 0) onAtoRate(r);
-    onUpdateUser({ name: name.trim() || user.name, startOdo: parseFloat(odo) || user.startOdo, isPro: user.isPro, isGuest: user.isGuest, isBeta: user.isBeta, plan: user.plan });
+    onUpdateUser({ name: name.trim() || user.name, startOdo: parseFloat(odo) || user.startOdo, isPro: user.isPro, isGuest: user.isGuest });
     const newTargets = {
       hourly:     parseFloat(tHourly)     || DEFAULT_TARGETS.hourly,
       perDel:     parseFloat(tPerDel)     || DEFAULT_TARGETS.perDel,
@@ -9991,13 +5281,14 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
       activeTime: parseFloat(tActiveTime) || DEFAULT_TARGETS.activeTime,
     };
     onTargets(newTargets);
-    if (isPro) {
-      const g = parseFloat(goalInput);
-      if (!isNaN(g) && g > 0) onWeeklyGoal(g);
-    } else {
-      // Free users locked at $800 regardless of input
-      onWeeklyGoal(800);
-    }
+    const g = parseFloat(goalInput);
+    if (!isNaN(g) && g > 0) onWeeklyGoal(g);
+    const fe = parseFloat(fuelEff);
+    if (!isNaN(fe) && fe > 0) onFuelEfficiency(fe);
+    else if (fuelEff === "") onFuelEfficiency(null);
+    const fp = parseFloat(fuelPr);
+    if (!isNaN(fp) && fp > 0) onFuelPrice(fp);
+    else if (fuelPr === "") onFuelPrice(null);
     onRegion(regionVal || null);
     DB.set("gt_default_platform", defaultPlatform);
     setSaved(true);
@@ -10016,13 +5307,13 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Account card ── */}
           <div>
-            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 18px 8px"}}>Account</div>
+            <div style={{fontSize:"11px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 18px 8px"}}>Account</div>
             <SettingsSectionCard>
               {/* Avatar + name row */}
               <div style={{display:"flex",alignItems:"center",gap:"14px",padding:"16px",borderBottom:"0.5px solid var(--border)"}}>
                 <div style={{
                   width:"46px",height:"46px",borderRadius:"50%",
-                  background:"var(--coral-grad)",
+                  background:"linear-gradient(135deg, #00A050 0%, #008F44 100%)",
                   display:"flex",alignItems:"center",justifyContent:"center",
                   color:"#fff",fontSize:"19px",fontWeight:"700",flexShrink:0,
                   boxShadow:"0 2px 6px rgba(0,143,68,.25)",
@@ -10032,20 +5323,9 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:"15px",fontWeight:"700",color:"var(--text)",marginBottom:"2px",letterSpacing:"-.01em"}}>{user?.name || "Driver"}</div>
                   <div style={{fontSize:"11px",fontWeight:"600"}}>
-                    {isBeta
-                      ? <span style={{color:"var(--coral)",display:"inline-flex",alignItems:"center",gap:"5px"}}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l2.9 6.3 6.6.7-5 4.4 1.5 6.5L12 17l-5.5 3.4L8 13.9l-5-4.4 6.6-.7z"/></svg>
-                          Beta Plan
-                        </span>
-                      : isPro
-                      ? <span style={{color:"var(--coral)",display:"inline-flex",alignItems:"center",gap:"5px"}}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l2.9 6.3 6.6.7-5 4.4 1.5 6.5L12 17l-5.5 3.4L8 13.9l-5-4.4 6.6-.7z"/></svg>
-                          GigTrack Pro
-                        </span>
-                      : <span style={{color:"var(--muted)",display:"inline-flex",alignItems:"center",gap:"5px"}}>
-                          <span style={{width:"6px",height:"6px",borderRadius:"50%",background:"var(--muted2)",display:"inline-block"}}/>
-                          Free Plan
-                        </span>
+                    {isPro
+                      ? <span style={{color:"var(--green)"}}>🚀 GigTrack Pro</span>
+                      : <span style={{color:"var(--muted)"}}>⚡ Free Plan</span>
                     }
                   </div>
                 </div>
@@ -10054,7 +5334,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                     onClick={onUpgrade}
                     style={{
                       padding:"8px 14px",
-                      background:"var(--coral-grad)",
+                      background:"linear-gradient(180deg, #00A050 0%, #008F44 100%)",
                       color:"#fff",border:"none",borderRadius:"10px",
                       fontSize:"12px",fontWeight:"700",cursor:"pointer",flexShrink:0,
                       boxShadow:"0 4px 12px -2px rgba(0,143,68,.35)",
@@ -10085,7 +5365,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                   className="input-field"
                   value={regionVal}
                   onChange={e => setRegionVal(e.target.value)}
-                  style={{width:"100%",fontSize:"14px",fontFamily:"'Inter',sans-serif",fontWeight:"600"}}
+                  style={{colorScheme:"dark",width:"100%",fontSize:"13px"}}
                 >
                   <option value="">— No region selected —</option>
                   {Object.entries(regionsByState).map(([state, groups]) => (
@@ -10104,7 +5384,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Preferences ── */}
           <div>
-            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Preferences</div>
+            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Preferences</div>
             <SettingsSectionCard>
               {/* Default Platform */}
               <div style={{padding:"13px 15px",borderBottom:"0.5px solid var(--border)"}}>
@@ -10197,200 +5477,41 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
             </SettingsSectionCard>
           </div>
 
-          {/* ── Tools & Export ── */}
-          <div>
-            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Tools & Export</div>
-            <SettingsSectionCard>
-              {/* Screenshot credits — buy top-up packs (beta) */}
-              {isBeta && (
-                <div
-                  className="settings-item"
-                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                  onClick={onBuyCredits}
-                >
-                  <div className="settings-item-left">
-                    <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg>
-                      Screenshot credits
-                    </div>
-                    <div className="settings-item-sub">{screenshotsRemaining != null ? `${screenshotsRemaining} left · tap to top up` : "Buy one-time import packs"}</div>
-                  </div>
-                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-                </div>
-              )}
-
-              {/* Purchase history — receipts for past credit packs */}
-              {isBeta && (
-                <div
-                  className="settings-item"
-                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                  onClick={onPurchaseHistory}
-                >
-                  <div className="settings-item-left">
-                    <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
-                      Purchase history
-                    </div>
-                    <div className="settings-item-sub">Your past screenshot credit purchases</div>
-                  </div>
-                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-                </div>
-              )}
-              <div
-                className="settings-item"
-                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={onCompareRegion}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-                    Compare a Region
-                  </div>
-                  <div className="settings-item-sub">See best times & earnings for any zone before you go</div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
-
-              {/* Export as PDF (Pro only) */}
-              <div
-                className="settings-item"
-                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={() => exportPDF(trips, user)}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    Export as PDF
-                  </div>
-                  <div className="settings-item-sub">
-                    ATO-ready shift log report
-                  </div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
-
-              {/* Export as CSV */}
-              <div
-                className="settings-item"
-                style={{cursor:"pointer"}}
-                onClick={() => exportCSV(trips, user)}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    Export as CSV
-                  </div>
-                  <div className="settings-item-sub">
-                    Raw shift data for spreadsheets & accountants
-                  </div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
-            </SettingsSectionCard>
-          </div>
-
-          {/* ── Feedback (beta) ── */}
-          <div>
-            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Feedback</div>
-            <SettingsSectionCard>
-              {/* Add to home screen — install instructions per platform */}
-              <div
-                className="settings-item"
-                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={onInstallHelp}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/><path d="M12 7v6M9.5 10.5L12 13l2.5-2.5"/></svg>
-                    Add to home screen
-                  </div>
-                  <div className="settings-item-sub">Install GigTrack like an app on your phone</div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
-
-              {/* What's new — reopen the current version's changelog anytime */}
-              <div
-                className="settings-item"
-                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={onWhatsNew}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
-                    What's new
-                  </div>
-                  <div className="settings-item-sub">See what changed in {CURRENT_VERSION}</div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
-
-              <div
-                className="settings-item"
-                style={{cursor:"pointer"}}
-                onClick={() => {
-                  const base = "https://docs.google.com/forms/d/e/1FAIpQLSfLnW0Tf9zrTPZUV_IVzTo1SkalQwp_0NrD02dXoNfdwd1Edg/viewform";
-                  window.open(`${base}?usp=pp_url`, "_blank", "noopener,noreferrer");
-                }}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-                    Submit your feedback
-                  </div>
-                  <div className="settings-item-sub">Tell us what's working, report a bug, or suggest an idea ({CURRENT_VERSION})</div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
-              </div>
-            </SettingsSectionCard>
-          </div>
-
           {/* ── Data & Security ── */}
           <div>
-            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data & Security</div>
+            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Data &amp; Security</div>
             <SettingsSectionCard>
-              {/* Account — always signed in, just shows email + sign-out */}
-              {authUser && (
-                <div
-                  className="settings-item"
-                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                  onClick={onSignOut}
-                >
-                  <div className="settings-item-left">
-                    <div className="settings-item-label">Signed in</div>
-                    <div className="settings-item-sub" style={{fontSize:"11px"}}>
-                      {authUser.email || "—"} · tap to sign out
-                    </div>
-                  </div>
-                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              {/* Backup & Sync */}
+              <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)",opacity:0.5,pointerEvents:"none"}}>
+                <div className="settings-item-left">
+                  <div className="settings-item-label">Backup &amp; Sync</div>
+                  <div className="settings-item-sub">Cloud sync — coming soon</div>
                 </div>
-              )}
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
 
-              {/* Change password — signed-in users can set/update a password */}
-              {authUser && (
-                <div
-                  className="settings-item"
-                  style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                  onClick={onChangePassword}
-                >
-                  <div className="settings-item-left">
-                    <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-                      Change password
-                    </div>
-                    <div className="settings-item-sub" style={{fontSize:"11px"}}>Set or update your sign-in password</div>
-                  </div>
-                  <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              {/* Export Data */}
+              <div
+                className="settings-item"
+                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                onClick={isPro ? () => exportPDF(trips, user) : onUpgrade}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label">{!isPro && "🔒 "}Export Data</div>
+                  <div className="settings-item-sub">Download your shift log as PDF</div>
                 </div>
-              )}
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
 
-              {/* Delete Account and Data */}
+              {/* Clear Local Data */}
               <div
                 className="settings-item"
                 style={{cursor:"pointer"}}
                 onClick={() => setDeleteStep(1)}
               >
                 <div className="settings-item-left">
-                  <div className="settings-item-label" style={{color:"var(--red)"}}>Delete Account and Data</div>
-                  <div className="settings-item-sub">Permanently erase your account, shifts and settings</div>
+                  <div className="settings-item-label" style={{color:"var(--red)"}}>Clear Local Data</div>
+                  <div className="settings-item-sub">Erase all shifts and settings</div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--red)"}}>›</span>
               </div>
@@ -10401,9 +5522,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
               <div style={{margin:"8px 14px 0",background:"var(--red-dim)",border:"0.5px solid var(--red-border)",borderRadius:"12px",padding:"16px",display:"flex",flexDirection:"column",gap:"12px"}}>
                 <div style={{fontSize:"14px",fontWeight:"700",color:"var(--red)"}}>Are you absolutely sure?</div>
                 <div style={{fontSize:"12px",color:"var(--muted)",lineHeight:"1.7"}}>
-                  This permanently deletes <strong style={{color:"var(--text)"}}>your account and everything in it</strong> — all your shifts, earnings history and settings, from this device and from the cloud.
-                  <br /><br />
-                  <strong style={{color:"var(--text)"}}>Your profile cannot be recovered.</strong> Signing in with the same email later will start a brand-new, empty account. If you want a copy of your data, export it first.
+                  This will permanently delete <strong style={{color:"var(--text)"}}>all your shifts, settings, and account data</strong>. This cannot be undone.
                 </div>
                 <div style={{display:"flex",gap:"8px"}}>
                   <button className="btn btn-outline" style={{flex:1,padding:"12px"}} onClick={() => setDeleteStep(0)}>Cancel</button>
@@ -10435,7 +5554,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
 
           {/* ── Advanced ── */}
           <div>
-            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Advanced</div>
+            <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".1em",textTransform:"uppercase",padding:"0 14px 8px"}}>Advanced</div>
             <SettingsSectionCard>
               {/* Toggle row */}
               <div
@@ -10444,7 +5563,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 onClick={() => setShowAdvanced(v => !v)}
               >
                 <div className="settings-item-left">
-                  <div className="settings-item-label">ATO rate, goals & scoring</div>
+                  <div className="settings-item-label">ATO rate, goals, fuel &amp; scoring</div>
                   <div className="settings-item-sub">Tap to {showAdvanced ? "collapse" : "expand"}</div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)",transform: showAdvanced ? "rotate(90deg)" : "none",transition:"transform .2s ease",display:"inline-block"}}>›</span>
@@ -10461,67 +5580,54 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                   <input className="settings-input" type="number" step="0.01" min="0" value={rate} onChange={e => setRate(e.target.value)} />
                 </div>
 
-                {/* Weekly Goal — locked for free users */}
-                <div
-                  className="settings-item"
-                  style={{borderBottom:"0.5px solid var(--border)", cursor: isPro ? "default" : "pointer"}}
-                  onClick={() => {}}
-                >
+                {/* Weekly Goal */}
+                <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
                   <div className="settings-item-left">
-                    <div className="settings-item-label">
-                      Weekly Earnings Goal
-                    </div>
-                    <div className="settings-item-sub">
-                      Shown as progress on home screen
-                    </div>
+                    <div className="settings-item-label">Weekly Earnings Goal</div>
+                    <div className="settings-item-sub">Shown as progress on home screen</div>
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
                     <span style={{color:"var(--muted2)",fontSize:"13px"}}>$</span>
-                    <input
-                      className="settings-input"
-                      type="number"
-                      min="0"
-                      step="50"
-                      value={goalInput}
-                      onChange={e => setGoalInput(e.target.value)}
-                    />
+                    <input className="settings-input" type="number" min="0" step="50" value={goalInput} onChange={e => setGoalInput(e.target.value)} />
+                  </div>
+                </div>
+
+                {/* Fuel efficiency */}
+                <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
+                  <div className="settings-item-left">
+                    <div className="settings-item-label">Fuel Efficiency</div>
+                    <div className="settings-item-sub">L/100km</div>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                    <input className="settings-input" type="number" min="0" step="0.1" placeholder="8.5" value={fuelEff} onChange={e => setFuelEff(e.target.value)} />
+                    <span style={{fontSize:"11px",color:"var(--muted2)"}}>L</span>
+                  </div>
+                </div>
+
+                {/* Fuel price */}
+                <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
+                  <div className="settings-item-left">
+                    <div className="settings-item-label">Fuel Price</div>
+                    <div className="settings-item-sub">Current pump price</div>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                    <span style={{color:"var(--muted2)",fontSize:"13px"}}>$</span>
+                    <input className="settings-input" type="number" min="0" step="0.01" placeholder="2.05" value={fuelPr} onChange={e => setFuelPr(e.target.value)} />
                   </div>
                 </div>
 
                 {/* Scoring targets */}
                 <div style={{padding:"13px 15px"}}>
                   <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"10px"}}>
-                    Scoring Targets
+                    Scoring Targets {!isPro && <span style={{fontSize:"10px",color:"var(--purple)",background:"var(--purple-dim)",padding:"2px 7px",borderRadius:"10px",marginLeft:"6px"}}>Pro</span>}
                   </div>
-                  {(
+                  {!isPro ? (
+                    <div style={{textAlign:"center",padding:"12px 0"}}>
+                      <div style={{fontSize:"12px",color:"var(--muted)",marginBottom:"10px"}}>Unlock custom scoring targets with Pro.</div>
+                      <button onClick={onUpgrade} style={{padding:"9px 20px",background:"var(--green)",color:"#0B0F14",border:"none",borderRadius:"8px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Upgrade to Pro →</button>
+                    </div>
+                  ) : (
                     <>
-                      {/* Pro-only: show/hide scoring display. Calcs always run. */}
-                      <div style={{padding:"4px 0 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                        <div style={{flex:1,paddingRight:"12px"}}>
-                          <div style={{fontSize:"13px",fontWeight:"600",color:"var(--text)"}}>Show shift scoring</div>
-                          <div style={{fontSize:"11px",color:"var(--muted)",marginTop:"2px",lineHeight:1.35}}>
-                            Display the score badge and ratio bars on shifts and insights. Your data is still tracked either way.
-                          </div>
-                        </div>
-                        <button
-                          role="switch"
-                          aria-checked={showScoring}
-                          onClick={() => onShowScoring?.(!showScoring)}
-                          style={{
-                            flexShrink:0,width:"46px",height:"28px",borderRadius:"14px",border:"none",cursor:"pointer",
-                            background: showScoring ? "var(--green)" : "var(--border)",
-                            position:"relative",transition:"background .2s ease",padding:0,
-                          }}
-                        >
-                          <span style={{
-                            position:"absolute",top:"3px",left: showScoring ? "21px" : "3px",
-                            width:"22px",height:"22px",borderRadius:"50%",background:"#fff",
-                            transition:"left .2s ease",boxShadow:"0 1px 2px rgba(0,0,0,.3)",
-                          }} />
-                        </button>
-                      </div>
-
-                      <div style={{opacity: showScoring ? 1 : 0.45, pointerEvents: showScoring ? "auto" : "none", transition:"opacity .2s ease"}}>
                       {[
                         {label:"Hourly Rate",  value:tHourly,     set:setTHourly,     pre:"$",suf:"/hr"},
                         {label:"Per Delivery", value:tPerDel,     set:setTPerDel,     pre:"$",suf:""},
@@ -10532,7 +5638,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                           <div className="settings-item-label" style={{fontSize:"12px"}}>{label}</div>
                           <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
                             {pre && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{pre}</span>}
-                            <input className="settings-input" type="number" min="0" step="0.5" value={value} onChange={e => set(e.target.value)} disabled={!showScoring} style={{width:"70px"}} />
+                            <input className="settings-input" type="number" min="0" step="0.5" value={value} onChange={e => set(e.target.value)} style={{width:"70px"}} />
                             {suf && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{suf}</span>}
                           </div>
                         </div>
@@ -10540,7 +5646,6 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                       {isCustom && (
                         <button className="btn btn-outline" style={{width:"100%",padding:"10px",fontSize:"12px",marginTop:"8px"}} onClick={resetTargets}>↺ Reset Defaults</button>
                       )}
-                      </div>
                     </>
                   )}
                 </div>
@@ -10732,17 +5837,13 @@ function OrderSessionScreen({ onBack, onFinish, atoRate }) {
 export default function GigTrack() {
   const [screen, setScreen]     = useState("loading");
   const [user, setUser]         = useState(null);
-  const [authUser, setAuthUser] = useState(null); // Supabase auth user (cloud identity)
   const [trips, setTrips]       = useState([]);
-  const [screenshotImportsUsed, setScreenshotImportsUsed] = useState(0); // Cloud-tracked cumulative counter
-  const [screenshotCredits, setScreenshotCredits] = useState(FREE_SCREENSHOT_CREDITS); // total credits (free + purchased); cap on imports
-  const [accountCreatedAt, setAccountCreatedAt] = useState(null); // ISO date from profile.created_at, used for the 30-day benchmark grace
   const [kmPref, setKmPref]     = useState("active");
-  // null = no user override → each shift uses its own FY rate via atoRateForDate().
-  const [atoRate, setAtoRate]   = useState(null);
+  const [atoRate, setAtoRate]   = useState(ATO_RATE_PER_KM);
   const [targets, setTargets]   = useState(DEFAULT_TARGETS);
-  const [showScoring, setShowScoring] = useState(true); // Pro-only display toggle; calcs always run
   const [weeklyGoal, setWeeklyGoal] = useState(800);
+  const [fuelEfficiency, setFuelEfficiency] = useState(null);
+  const [fuelPrice, setFuelPrice]           = useState(null);
   const [region, setRegion]                 = useState(null);
   const [theme, setTheme] = useState(() => DB.get("gt_theme") || "light"); // 'light' | 'dark' | 'system'
   const [editId, setEditId]         = useState(null);
@@ -10751,139 +5852,8 @@ export default function GigTrack() {
   const [timerPrefill, setTimerPrefill] = useState(null);
   const [toast, setToast]           = useState("");
   const [confirm, setConfirm]   = useState(null);
-
-  // PWA update banner: main.jsx registers the service worker with
-  // registerType:"prompt" and pushes the signal into pwaUpdate.js. Subscribe here
-  // so we can show a banner when a new version is waiting. onNeedRefresh fires
-  // immediately if the update landed before React mounted.
-  const [updateReady, setUpdateReady] = useState(false);
-  useEffect(() => onNeedRefresh(() => setUpdateReady(true)), []);
-  const [benchmarksScout, setBenchmarksScout] = useState(false);
-
-  // ── Install nudge ── After the 2nd shift, offer "add to home screen" ONCE
-  // (one-and-done). Skipped entirely if already running as an installed PWA, or
-  // if the user has previously seen/dismissed it (gt_install_nudge_done).
-  const [installBanner, setInstallBanner] = useState(false);
-  const isStandalonePWA = () =>
-    (typeof window !== "undefined" &&
-      ((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
-        window.navigator.standalone === true));
-  const dismissInstallBanner = () => {
-    setInstallBanner(false);
-    DB.set("gt_install_nudge_done", true); // never show again
-  };
-
-  // ── Weekly catch-up (Stage 2: mock-data build) ──
-  // `catchup` holds the detection result from the Edge Function (mocked for now).
-  // `catchupSaved` tracks which day-dates have been added, so cards flip to done.
-  // The task is PERSISTED to localStorage (gt_catchup_task) so it survives reloads
-  // and shows as a resumable "task" on the Home screen until the week is done.
-  const [catchup, setCatchup] = useState(() => DB.get("gt_catchup_task") || null);
-  const [catchupSaved, setCatchupSaved] = useState([]);
-  // Reference weekly-detection shapes (was: mock buttons in Settings, now
-  // removed — weekly is auto-detected from a real screenshot import). Kept as
-  // the canonical example of the Edge Function's `type:"weekly"` output that
-  // openCatchup expects. Not referenced in the UI anymore; safe to delete if
-  // you don't want the reference. Note the platform asymmetry: UE days carry
-  // earned:null (bar chart, no per-day $), DoorDash days carry summed earned.
-  const MOCK_CATCHUP_UBER = {
-    type: "weekly", platform: "uber_eats",
-    week_start: "2026-07-20", week_end: "2026-07-26",
-    days: [
-      { date: "2026-07-20", earned: null },
-      { date: "2026-07-21", earned: null },
-      { date: "2026-07-22", earned: null },
-      { date: "2026-07-24", earned: null },
-      { date: "2026-07-25", earned: null },
-      { date: "2026-07-26", earned: null },
-    ],
-    week_totals: { earned: 2020.54, trips: 111, online_hrs: "44h39m", active_hrs: "43h22m" },
-  };
-  const MOCK_CATCHUP_DOORDASH = {
-    type: "weekly", platform: "doordash",
-    week_start: "2026-03-24", week_end: "2026-03-30",
-    days: [
-      { date: "2026-03-26", earned: 31.55 }, // 11.97 + 19.58 summed
-      { date: "2026-03-27", earned: 22.76 },
-      { date: "2026-03-28", earned: 35.77 }, // 23.33 + 12.44 summed
-    ],
-    week_totals: { earned: 90.08, deliveries: 9, online_hrs: "7h41m", active_hrs: "3h44m" },
-  };
-  const openCatchup = (detection) => {
-    setCatchup(detection);
-    DB.set("gt_catchup_task", detection); // persist so it survives reloads
-    setCatchupSaved([]);
-    setScreen("catchup");
-  };
-  // Route a single day into the existing new-shift form, pre-filled.
-  const addCatchupDay = (day) => {
-    DB.set("gt_entry_prefill", {
-      date: day.date,
-      platform: catchup?.platform || null,
-      earned: day.earned != null ? day.earned : undefined,
-    });
-    // Remember which day this was so we can mark it done on return.
-    DB.set("gt_catchup_pending_date", day.date);
-    setScreen("newtrip");
-  };
-  // Timezone-safe local date key from a stored ts (mirrors the catch-up screen).
-  const catchupLocalKey = (iso) => {
-    const d = new Date(iso);
-    const pad = n => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
-  // Days of the active task that still have no saved shift. Matches on date AND
-  // platform (or "both") — same rule as the catch-up screen, so the Home count
-  // and the screen agree.
-  const catchupRemainingDays = () => {
-    if (!catchup?.days) return 0;
-    const plat = catchup.platform;
-    const have = new Set(
-      trips
-        .filter(t => t.ts && (t.platform === plat || t.platform === "both"))
-        .map(t => catchupLocalKey(t.ts))
-    );
-    return catchup.days.filter(d => !have.has(d.date)).length;
-  };
-  const resumeCatchup = () => { if (catchup) setScreen("catchup"); };
-  const dismissCatchup = () => {
-    setCatchup(null);
-    setCatchupSaved([]);
-    DB.remove("gt_catchup_task");
-    DB.remove("gt_catchup_pending_date");
-  };
-  // When every day of the active task has a saved shift, the task is finished —
-  // keep it around while the user is ON the catch-up screen (so they see the
-  // "all done 🎉" state), but clear it once they leave, so Home doesn't keep
-  // showing a completed task.
-  useEffect(() => {
-    if (catchup && screen !== "catchup" && screen !== "newtrip" && catchupRemainingDays() === 0) {
-      dismissCatchup();
-    }
-  }, [screen, trips]);
-
-
-  // "What's new" modal: after an update reload, show the current version's
-  // changelog once. First-ever launch just stamps the version silently (a new
-  // user doesn't need a changelog for a version they never saw the prior one of).
-  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
-  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const [betaCreditsOpen, setBetaCreditsOpen] = useState(false);
-  useEffect(() => {
-    const seen = DB.get("gt_last_seen_version");
-    if (seen == null) {
-      DB.set("gt_last_seen_version", CURRENT_VERSION); // first launch: no modal
-    } else if (seen !== CURRENT_VERSION) {
-      setWhatsNewOpen(true);
-    }
-  }, []);
-  const dismissWhatsNew = () => {
-    DB.set("gt_last_seen_version", CURRENT_VERSION);
-    setWhatsNewOpen(false);
-  };
   const [liveStatus, setLiveStatus] = useState(null); // {online, platform, zone, since}
   const [platformPickerOpen, setPlatformPickerOpen] = useState(false);
-  const [signInOpen, setSignInOpen] = useState(false);
   const toastTimer = useRef(null);
 
   // ── Theme management ──
@@ -10903,230 +5873,6 @@ export default function GigTrack() {
       return () => mq.removeEventListener("change", handler);
     }
   }, [theme]);
-
-  // ── Supabase auth + routing on boot ──
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!mounted) return;
-        setAuthUser(user);
-      } catch (e) {
-        console.warn("[GigTrack] Supabase auth check failed:", e.message);
-      }
-    })();
-    // Subscribe to future auth state changes (sign in/out)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!mounted) return;
-      const newUser = session?.user || null;
-      setAuthUser(prev => {
-        // Detect sign-in (prev was null/undefined, now there's a user)
-        if (!prev && newUser) {
-          // ── SECURITY: If a DIFFERENT user is signing in than was previously seen
-          // on this device, wipe all local state before doing anything else. This
-          // prevents one user's localStorage data from being pushed to another user's
-          // cloud account during reconciliation. ──
-          const lastUid = DB.get("gt_last_user_id");
-          if (lastUid && lastUid !== newUser.id) {
-            console.warn("[GigTrack] User switch detected — wiping local data for safety.");
-            // Prefix-wipe every gt_* key (keeps device-level prefs like theme).
-            // Covers any current or future per-user key without a hand-kept list.
-            wipeUserData();
-            setUser(null);
-            setTrips([]);
-            setRegion(null);
-            setKmPref("active");
-            setWeeklyGoal(800);
-            setActiveShift(null);
-            setLiveStatus(null);
-            // Reset credit state to the clean default. Cloud is authoritative and
-            // will re-hydrate the new account's real balance — but a first-time
-            // signup routes to onboarding BEFORE that hydration runs, so without
-            // this reset the previous account's balance would show on the new
-            // account until its profile loaded. (Bug: new account showed the old
-            // account's credits.)
-            setScreenshotCredits(FREE_SCREENSHOT_CREDITS);
-            setScreenshotImportsUsed(0);
-            reconciledRef.current = false;
-          }
-          DB.set("gt_last_user_id", newUser.id);
-
-          // Async — fetch profile and route appropriately
-          (async () => {
-            const profile = await fetchProfile();
-            if (profile && profile.name) {
-              // Returning user — hydrate state from profile
-              const u = {
-                name: profile.name,
-                email: profile.email,
-                startOdo: profile.start_odo,
-                isGuest: !!profile.is_guest,
-                isPro: !!profile.is_pro,
-                isBeta: !!profile.is_beta,
-                plan: profile.plan || (profile.is_pro ? "pro" : "free"),
-              };
-              DB.set("gt_user", u);
-              setUser(u);
-              if (profile.region) {
-                setRegion(profile.region);
-                DB.set("gt_region", profile.region);
-              }
-              if (profile.km_pref) {
-                setKmPref(profile.km_pref);
-                DB.set("gt_kmpref", profile.km_pref);
-              }
-              if (profile.weekly_goal != null) {
-                setWeeklyGoal(profile.weekly_goal);
-                DB.set("gt_weeklygoal", profile.weekly_goal);
-              }
-              if (profile.show_scoring != null) {
-                setShowScoring(!!profile.show_scoring);
-                DB.set("gt_show_scoring", !!profile.show_scoring);
-              }
-              // Hydrate screenshot import counter from cloud
-              setScreenshotImportsUsed(profile.screenshot_imports_used || 0);
-              setScreenshotCredits(profile.screenshot_credits || FREE_SCREENSHOT_CREDITS);
-              setAccountCreatedAt(profile.created_at || null);
-              showToast(`Welcome back, ${profile.name}!`);
-              setScreen("home");
-              reconciledRef.current = false;
-
-              // Pull cloud shifts into local
-              const cloudShifts = await fetchAllShifts();
-              // Defense-in-depth: drop any LOCAL trip stamped with a different
-              // owner before merging. Trips with _owner null (seeds / pre-stamp
-              // records) are kept — only a foreign non-null owner is filtered.
-              // The wipe-on-switch already prevents this; this is a second layer
-              // in case a wipe is ever missed.
-              const rawLocal = DB.get("gt_trips") || [];
-              const localTrips = rawLocal.filter(t => t._owner == null || t._owner === newUser.id);
-              if (cloudShifts.length > 0 || localTrips.length !== rawLocal.length) {
-                const localIds = new Set(localTrips.map(t => t.id));
-                const newOnes = cloudShifts.filter(t => !localIds.has(t.id));
-                const merged = [...localTrips, ...newOnes];
-                DB.set("gt_trips", merged);
-                setTrips(merged);
-              }
-            } else {
-              // First-time sign-in — no profile yet, send through onboarding
-              showToast(`Signed in as ${newUser.email}`);
-              setScreen("setup");
-            }
-          })();
-        }
-        // Detect sign-out (had a user, now null)
-        if (prev && !newUser) {
-          // Wipe everything and go to welcome. Prefix-wipe so no per-user key
-          // lingers on a shared device after sign-out (keeps device theme).
-          setUser(null);
-          setTrips([]);
-          setRegion(null);
-          setKmPref("active");
-          setWeeklyGoal(800);
-          setShowScoring(true);
-          setScreenshotCredits(FREE_SCREENSHOT_CREDITS);
-          setScreenshotImportsUsed(0);
-          wipeUserData();
-          reconciledRef.current = false;
-          setScreen("welcome");
-        }
-        return newUser;
-      });
-    });
-    return () => {
-      mounted = false;
-      subscription?.unsubscribe();
-    };
-  }, []);
-
-  // ── Hydrate screenshot import counter from profile (cloud) on auth ready ──
-  useEffect(() => {
-    if (!authUser) return;
-    (async () => {
-      const p = await fetchProfile();
-      if (p) {
-        setScreenshotImportsUsed(p.screenshot_imports_used || 0);
-        setScreenshotCredits(p.screenshot_credits || FREE_SCREENSHOT_CREDITS);
-        setAccountCreatedAt(p.created_at || null);
-        // Reconcile plan/beta from the cloud source of truth — the cached
-        // gt_user (localStorage) may be stale (e.g. saved as free before beta),
-        // which was causing the plan to reset to Free on reload.
-        setUser(prev => {
-          if (!prev) return prev;
-          const refreshed = {
-            ...prev,
-            isPro: !!p.is_pro,
-            isBeta: !!p.is_beta,
-            plan: p.plan || (p.is_pro ? "pro" : "free"),
-          };
-          DB.set("gt_user", refreshed);
-          return refreshed;
-        });
-      }
-    })();
-  }, [authUser]);
-
-  // ── Return from Stripe checkout ──
-  // Stripe redirects back to ?checkout=success (or =cancelled) after payment.
-  // The webhook grants credits server-side, but it fires asynchronously — it may
-  // land a moment before OR after this redirect. So on success we re-fetch the
-  // profile a few times (short backoff) until the balance reflects the new
-  // credits, then show a toast and clean the URL. This runs once on mount.
-  const checkoutHandledRef = useRef(false);
-  useEffect(() => {
-    if (checkoutHandledRef.current) return;
-    if (!authUser) return; // need auth before we can fetch the profile
-    const params = new URLSearchParams(window.location.search);
-    const checkout = params.get("checkout");
-    if (!checkout) return;
-    checkoutHandledRef.current = true;
-
-    // Always strip the query params so a refresh doesn't re-trigger.
-    const cleanUrl = () => {
-      const u = new URL(window.location.href);
-      u.searchParams.delete("checkout");
-      u.searchParams.delete("session_id");
-      window.history.replaceState({}, "", u.pathname + u.search);
-    };
-
-    if (checkout === "cancelled") {
-      showToast("Checkout cancelled — no charge made");
-      cleanUrl();
-      return;
-    }
-
-    if (checkout === "success") {
-      (async () => {
-        const before = screenshotCredits;
-        let applied = false;
-        // Try up to 4 times over ~6s to catch the webhook grant.
-        for (let attempt = 0; attempt < 4; attempt++) {
-          const p = await fetchProfile();
-          if (p && typeof p.screenshot_credits === "number") {
-            setScreenshotCredits(p.screenshot_credits);
-            setScreenshotImportsUsed(p.screenshot_imports_used || 0);
-            if (p.screenshot_credits > before) { applied = true; break; }
-          }
-          await new Promise(r => setTimeout(r, 1500));
-        }
-        showToast(applied
-          ? "Payment successful — credits added!"
-          : "Payment received — your credits will appear shortly");
-        cleanUrl();
-      })();
-    }
-  }, [authUser]);
-
-  // ── Boot-time cloud reconciliation: push any local shifts not yet in cloud ──
-  const reconciledRef = useRef(false);
-  useEffect(() => {
-    if (reconciledRef.current) return;          // already done this session
-    if (!authUser) return;                       // wait for auth
-    if (!trips || trips.length === 0) return;    // wait for localStorage hydration
-    reconciledRef.current = true;
-    reconcileShifts(trips).catch(() => {});      // fire-and-forget
-  }, [authUser, trips]);
 
   // ── Boot ──
   useEffect(() => {
@@ -11156,7 +5902,7 @@ export default function GigTrack() {
           ...inputs,
           ...c,
           totalKm: newTotalKm,
-          deduction: newTotalKm * atoRateForDate(trip.ts),
+          deduction: newTotalKm * ATO_RATE_PER_KM,
         };
       });
       DB.set("gt_trips", t);
@@ -11190,66 +5936,38 @@ export default function GigTrack() {
       DB.set("gt_migrated_seed_activekm_1p2x_v1", true);
     }
 
-    // Note: SEED_SHIFTS no longer auto-merged for new users.
-    // Anyone with seed shifts already in localStorage keeps them; future installs start empty.
+    // Merge SEED_SHIFTS — only add seeds whose id isn't already in trips AND hasn't been deleted previously
+    const deletedSeeds = DB.get("gt_deleted_seeds") || [];
+    const existingIds = new Set(t.map(x => x.id));
+    const seedsToAdd = SEED_SHIFTS.filter(s => !existingIds.has(s.id) && !deletedSeeds.includes(s.id));
+    const mergedTrips = seedsToAdd.length ? [...t, ...seedsToAdd] : t;
+    if (seedsToAdd.length) DB.set("gt_trips", mergedTrips);
     const k = DB.get("gt_kmpref") || "active";
-    // The rate is now derived from each shift's date, so a stored value is only
-    // meaningful as a DELIBERATE user override. Existing users have last year's
-    // default (0.88) sitting in localStorage — if we honoured that, they'd be
-    // stuck on the old rate forever and never pick up 91c. So discard a stored
-    // value that merely equals a known past FY default; keep genuinely custom ones.
-    const storedRate = DB.get("gt_atorate");
-    const isStaleDefault = storedRate != null &&
-      Object.values(ATO_RATES).includes(Number(storedRate)) &&
-      Number(storedRate) !== ATO_RATE_PER_KM;
-    if (isStaleDefault) DB.remove("gt_atorate");
-    const r = (storedRate != null && !isStaleDefault) ? storedRate : null;
+    const r = DB.get("gt_atorate") || ATO_RATE_PER_KM;
     const tg = DB.get("gt_targets") || DEFAULT_TARGETS;
     const wg = DB.get("gt_weeklygoal");
+    const fe = DB.get("gt_fuel_efficiency");
+    const fp = DB.get("gt_fuel_price");
     const rg = DB.get("gt_region");
-    const ss = DB.get("gt_show_scoring");
     const a = DB.get("gt_activeshift") || null;
     const ls = DB.get("gt_live_status") || null;
-    setTrips(t);
+    setTrips(mergedTrips);
     setKmPref(k);
     setAtoRate(r);
     setTargets(tg);
     if (wg != null) setWeeklyGoal(wg);
+    if (fe != null) setFuelEfficiency(fe);
+    if (fp != null) setFuelPrice(fp);
     if (rg != null) setRegion(rg);
-    if (ss != null) setShowScoring(!!ss);
-    if (ls && ls.online) {
-      if (!LIVE_DRIVERS_ENABLED) {
-        // Beta: feature is off. Drop any leftover online session from a build
-        // where it was enabled — don't restore it, don't write to the cloud.
-        DB.remove("gt_live_status");
-      } else {
-      // Auto-expire a forgotten "online" session: if it hasn't pinged in over
-      // LIVE_SESSION_MAX_IDLE_MS (3h), the driver almost certainly finished work
-      // without tapping offline. Flip them offline instead of resurrecting them
-      // (otherwise opening the app next morning would re-ping them live).
-      const lastPing = ls.lastPing || ls.since || 0;
-      if (Date.now() - lastPing > LIVE_SESSION_MAX_IDLE_MS) {
-        DB.remove("gt_live_status");
-        // best-effort cloud offline (their bucket may be stale but that's fine)
-        if (ls.zone || rg) updatePresence({ zone: presenceBucket(ls.zone || rg), platform: ls.platform, online: false });
-      } else {
-        setLiveStatus(ls);
-      }
-      }
-    }
+    if (ls && ls.online) setLiveStatus(ls);
     if (a) {
       setActiveShift(a);
       // If there was an active shift, go straight back to the shift screen
       if (u) setScreen("activeshift");
     }
-    // Auth gate: only go to home if there's both a stored user AND we'll re-validate
-    // the session via the supabase auth effect. Otherwise route to welcome.
-    // (The supabase auth effect runs separately; if it finds no session, the user
-    // already saw welcome here. If it finds a session, it'll route them properly.)
-    const hasAuthSession = !!DB.get("gt_supabase_auth"); // supabase persistence key
-    if (u && hasAuthSession && !a) { setUser(u); setScreen("home"); }
-    else if (u && hasAuthSession && a) { setUser(u); }
-    else setScreen("welcome");
+    if (u && !a) { setUser(u); setScreen("home"); }
+    else if (u && a) { setUser(u); }
+    else setScreen("setup");
   }, []);
 
   const showToast = (msg) => {
@@ -11258,132 +5976,41 @@ export default function GigTrack() {
     toastTimer.current = setTimeout(() => setToast(""), 2400);
   };
 
-  // Heartbeat: while online, refresh presence last_seen every 4 min so the user
-  // stays "live". Also re-asserts on mount if already online (reopened the app),
-  // AND re-pings immediately whenever the app returns to the foreground
-  // (visibilitychange). On PWA the interval pauses when backgrounded, so the
-  // foreground ping is the main mechanism keeping an active driver live —
-  // every time they switch back to the app from Maps/UE/DD, they're re-marked.
-  useEffect(() => {
-    if (!LIVE_DRIVERS_ENABLED) return; // beta: no presence writes at all
-    if (!liveStatus?.online) return;
-    const ping = () => {
-      updatePresence({
-        zone: presenceBucket(liveStatus.zone || region),
-        platform: liveStatus.platform,
-        online: true,
-      });
-      // Record last activity locally so a fresh boot can tell a still-active
-      // session from a forgotten one. Update localStorage directly (not state)
-      // to avoid re-triggering this effect on every ping.
-      const cur = DB.get("gt_live_status");
-      if (cur && cur.online) DB.set("gt_live_status", { ...cur, lastPing: Date.now() });
-    };
-    ping(); // assert now (mount / status change)
-    const id = setInterval(ping, 4 * 60 * 1000);
-    const onVisible = () => { if (document.visibilityState === "visible") ping(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [liveStatus?.online, liveStatus?.zone, liveStatus?.platform, region]);
-
   const saveUser = (u) => {
-    // Merge into the existing user rather than replace, so a partial update
-    // (e.g. save-settings passing only name/odo) can't drop fields like
-    // plan/isBeta/email and silently reset the account to Free.
-    setUser(prev => {
-      const merged = { ...(prev || {}), ...u };
-      DB.set("gt_user", merged);
-      return merged;
-    });
+    DB.set("gt_user", u);
+    setUser(u);
   };
 
-  // Push current profile settings to the cloud. Pass overrides for the field
-  // just changed (state setters are async, so the new value isn't in state yet).
-  // Without this, settings changes only hit localStorage and get overwritten by
-  // the stale cloud profile on the next sign-in/refresh.
-  const syncProfile = (overrides = {}) => {
-    saveProfile({
-      name: user?.name,
-      region,
-      kmPref,
-      weeklyGoal,
-      isPro: !!user?.isPro,
-      isGuest: !!user?.isGuest,
-      startOdo: user?.startOdo,
-      showScoring,
-      ...overrides,
-    }).catch(() => {});
-  };
-
-  // Persist the Pro-only "Show shift scoring" display toggle (state + local + cloud).
-  const saveShowScoring = (val) => {
-    const v = !!val;
-    setShowScoring(v);
-    DB.set("gt_show_scoring", v);
-    syncProfile({ showScoring: v });
-  };
-
-  const handleDeleteAccount = async () => {
-    // Delete the CLOUD data + auth account FIRST — this needs the auth session
-    // to still exist, so it must happen before we wipe local state / sign out.
-    // If the user is signed in and this fails, do NOT pretend it worked: their
-    // shifts would still be sitting in Supabase while the UI claims otherwise.
-    if (authUser) {
-      const res = await deleteMyAccount();
-      if (!res.ok) {
-        showToast("Couldn't delete your account — check your connection and try again");
-        return; // stay put; nothing has been destroyed
-      }
-    }
-
-    // Wipe every GigTrack localStorage key by prefix — including legacy keys
-    // (gt_fuel_*) from older installs and any future key. "Delete my data" is a
-    // full erase, so nothing is kept (not even theme).
-    wipeUserData({ keep: new Set() });
-
-    // Sign out — the auth user is gone server-side, so clear the local session too.
-    try { await signOut(); } catch { /* already gone; ignore */ }
-
+  const handleDeleteAccount = () => {
+    // Wipe every known localStorage key
+    ["gt_user","gt_trips","gt_kmpref","gt_atorate","gt_targets","gt_weeklygoal",
+     "gt_fuel_efficiency","gt_fuel_price","gt_region","gt_activeshift",
+     "gt_active_orders","gt_order_prefill","gt_live_status"].forEach(k => DB.remove(k));
     // Reset all app state
     setUser(null);
     setTrips([]);
     setKmPref("active");
-    setAtoRate(null);
+    setAtoRate(ATO_RATE_PER_KM);
     setTargets(DEFAULT_TARGETS);
     setWeeklyGoal(800);
-    setShowScoring(true);
+    setFuelEfficiency(null);
+    setFuelPrice(null);
     setRegion(null);
     setActiveShift(null);
     setLiveStatus(null);
     setEditId(null);
     setDetailId(null);
     setTimerPrefill(null);
-    reconciledRef.current = false;
-    setScreen("welcome");
+    setScreen("setup");
   };
 
   const handleSetupComplete = (data) => {
-    const u = { name: data.name, email: data.email, startOdo: data.startOdo, isGuest: data.isGuest !== false, isPro: !!data.isPro, isBeta: !!data.isBeta, plan: data.plan || (data.isPro ? "pro" : "free") };
+    const u = { name: data.name, email: data.email, startOdo: data.startOdo, isGuest: data.isGuest !== false, isPro: !!data.isPro };
     saveUser(u);
     setKmPref(data.kmPref);
     DB.set("gt_kmpref", data.kmPref);
     if (data.region) { setRegion(data.region); DB.set("gt_region", data.region); }
     setScreen("home");
-    // Sync profile to cloud — fire-and-forget
-    saveProfile({
-      name: u.name,
-      region: data.region,
-      kmPref: data.kmPref,
-      weeklyGoal: weeklyGoal,
-      isPro: u.isPro,
-      isBeta: u.isBeta,
-      plan: u.plan,
-      isGuest: u.isGuest,
-      startOdo: u.startOdo,
-    }).catch(() => {});
   };
 
   const handleStartTimer = () => {
@@ -11416,100 +6043,26 @@ export default function GigTrack() {
     setActiveShift(null);
     setTimerPrefill({ startedAt, totalMin, totalKm });
     setEditId(null);
-    setScreen("confirm");
+    setScreen("newtrip");
   };
 
-  // onCommitted (optional) runs ONLY if the shift is actually saved — not when the
-  // user backs out of the 0-km warning. Callers use it for side effects that must
-  // not happen on a cancelled save (e.g. burning a screenshot-import credit).
-  const handleSaved = (rawRecord, isEdit, onCommitted) => {
-    // Tag with owner user id for safety. Prevents this shift from being
-    // pushed to a different user's cloud account if accounts switch on this device.
-    // Stamp the zone the shift was done in (current region) so it stays put even
-    // if the driver later changes zones — but only for NEW shifts; editing an old
-    // one must not relocate it. Preserve an existing region on edit.
-    //
-    // Time-of-day is not a factor anywhere in the app — all benchmarks and
-    // insights work at DATE level. So normalise every shift's ts to local
-    // midnight here, at the single save choke point, regardless of entry path
-    // (manual, screenshot, timer). This keeps the data model consistent and
-    // means no screen ever shows a phantom "12:00 am".
-    const dateOnlyTs = (tsIso) => {
-      const d = tsIso ? new Date(tsIso) : new Date();
-      d.setHours(0, 0, 0, 0); // local midnight
-      return d.toISOString();
-    };
-    const record = {
-      ...rawRecord,
-      ts: dateOnlyTs(rawRecord.ts),
-      _owner: authUser?.id || null,
-      region: isEdit ? (rawRecord.region ?? null) : (region ?? null),
-    };
-
-    // The actual save — extracted so the 0-km warning can defer it.
-    const commit = () => {
-      // Fire the caller's post-save hook first: this only ever runs on a real
-      // save, so a cancelled 0-km warning can't trigger it.
-      if (typeof onCommitted === "function") onCommitted();
-      let updated;
-      if (isEdit) {
-        updated = trips.map(t => t.id === record.id ? record : t);
-        showToast("Shift updated ✅");
-      } else {
-        updated = [...trips, record];
-        showToast("Shift saved");
-      }
-      setTrips(updated);
-      DB.set("gt_trips", updated);
-      setEditId(null);
-      setTimerPrefill(null);
-
-      // Install nudge: the moment they save their 2nd shift (a returning, engaged
-      // user), offer "add to home screen" once. Never if already installed or
-      // already shown before.
-      if (!isEdit && updated.length === 2 && !isStandalonePWA() && !DB.get("gt_install_nudge_done")) {
-        setInstallBanner(true);
-      }
-
-      // Cloud sync — fire and forget. If it fails (offline, etc), the synced
-      // flag stays false and Pass 4's reconciliation will catch it on next boot.
-      syncShift(record).then(result => {
-        if (result.ok) {
-          const synced = trips.map(t => t.id === record.id ? { ...record, _synced: true } : t);
-          const finalList = isEdit
-            ? synced
-            : [...trips, { ...record, _synced: true }];
-          DB.set("gt_trips", finalList);
-          setTrips(finalList);
-        }
-      });
-
-      setTimeout(() => {
-        // If saving a catch-up day, return to the week list to keep completing
-        // it — not home/detail. (The catch-up onSaved also marks the day done.)
-        if (DB.get("gt_catchup_pending_date")) { setScreen("catchup"); return; }
-        if (isEdit) { setDetailId(record.id); setScreen("detail"); }
-        else setScreen("home");
-      }, 700);
-    };
-
-    // Warn (but allow) if total km is zero/missing — km drives the ATO deduction,
-    // so a 0-km shift silently loses the driver a tax claim. Applies to ALL entry
-    // paths (manual, screenshot, timer) since they all route through here.
-    const km = Number(record.totalKm) || 0;
-    if (km <= 0) {
-      setConfirm({
-        title: "Save with no distance?",
-        sub: "This shift has 0 km, so it won't earn an ATO tax deduction. You can add the distance now, or save it anyway.",
-        confirmLabel: "Save anyway",
-        cancelLabel: "Go back & add km",
-        onConfirm: () => { setConfirm(null); commit(); },
-        onCancel:  () => setConfirm(null),
-      });
-      return;
+  const handleSaved = (record, isEdit) => {
+    let updated;
+    if (isEdit) {
+      updated = trips.map(t => t.id === record.id ? record : t);
+      showToast("Shift updated ✅");
+    } else {
+      updated = [...trips, record];
+      showToast("Shift saved 🎉");
     }
-
-    commit();
+    setTrips(updated);
+    DB.set("gt_trips", updated);
+    setEditId(null);
+    setTimerPrefill(null);
+    setTimeout(() => {
+      if (isEdit) { setDetailId(record.id); setScreen("detail"); }
+      else setScreen("home");
+    }, 700);
   };
 
   const handleDelete = (id) => {
@@ -11528,8 +6081,6 @@ export default function GigTrack() {
             DB.set("gt_deleted_seeds", [...deletedSeeds, id]);
           }
         }
-        // Cloud delete — fire and forget. Local delete is the source of truth.
-        deleteShiftCloud(id);
         setConfirm(null);
         showToast("Shift deleted");
         setScreen("log");
@@ -11553,47 +6104,12 @@ export default function GigTrack() {
   const editTrip    = trips.find(t => t.id === editId);
 
   const isPro = !!user?.isPro;
-  const isBeta = BETA_MODE && (user?.plan === "beta" || !!user?.isBeta);
-  // CREDITS-ONLY MODEL: there is no Pro/free split. Every user has every feature
-  // unlocked, always — the only paid mechanic is buying credits for imports.
-  // `unlocked` stays as the variable every former isPro/premium gate reads, so
-  // forcing it true opens them all without touching each call site. isPro/isBeta
-  // are kept only for any remaining incidental reads; they no longer gate access.
-  const unlocked = true; // permanently unlocked (Pro/free collapsed into one plan)
 
-  // ── Import metering ──
-  // Shifts are UNLIMITED (manual and timer cost nothing — they're just DB rows).
-  // Only imports are metered, via a CREDIT BALANCE: screenshot 1, weekly 2,
-  // CSV 10. This is the ONLY paid thing in the app.
-  const FREE_SCREENSHOT_LIMIT = 10;
-
-  // Screenshot/import metering by credit balance (screenshotCredits), which starts
-  // at FREE_SCREENSHOT_CREDITS and grows with one-time purchases. Applies to EVERY
-  // user now (no Pro bypass) — each import has a real cost (Claude API).
-  const canImportScreenshot = () => screenshotImportsUsed < screenshotCredits;
-  const screenshotsRemaining = () => Math.max(0, screenshotCredits - screenshotImportsUsed);
-  // NOTE: credits are granted SERVER-SIDE by the stripe-webhook after payment,
-  // then pulled into state via fetchProfile on checkout-return. There is
-  // deliberately no client-side "add credits" function — the browser must never
-  // grant its own credits.
-
-  // ── 30-day grace for benchmarks/live drivers ──
-  // Free users can see benchmarks for 30 days from signup, then it's gated.
-  // (Was 3 days — too short to be useful; a month gives them time to log enough
-  // shifts that the comparison actually means something.)
-  const BENCHMARK_GRACE_DAYS = 30;
-  // Credits-only model: benchmarks are free forever, so there is no grace-period
-  // countdown. Infinity makes benchmarksUnlocked always true and suppresses the
-  // "N days left of free benchmarks" nag (which would be false now).
-  const benchmarkDaysRemaining = Infinity;
-  const benchmarksUnlocked = true; // everything unlocked, always
-
-  // Credits-only model: every "gate" is a credit shortfall, so route to the
-  // top-up modal rather than a Pro paywall (which no longer exists). Kept named
-  // gateToPaywall so its callers don't need touching in this pass.
-  const gateToPaywall = (reason) => {
-    if (reason) showToast(reason);
-    setBetaCreditsOpen(true);
+  const upgradeToPro = () => {
+    const updated = { ...user, isPro: true, isGuest: false };
+    saveUser(updated);
+    setScreen("home");
+    showToast("Welcome to GigTrack Pro 🚀");
   };
 
   if (screen === "loading") return null;
@@ -11612,27 +6128,23 @@ export default function GigTrack() {
   return (
     <>
       <style>{css}</style>
-      {screen === "welcome" && (
-        <WelcomeScreen
-          onSignIn={() => setSignInOpen(true)}
+      {screen === "setup" && <SetupScreen onComplete={handleSetupComplete} />}
+      {screen === "paywall" && (
+        <PremiumPaywallScreen
+          onBack={() => setScreen("settings")}
+          onSubscribe={() => upgradeToPro()}
         />
       )}
-      {screen === "setup" && <SetupScreen onComplete={handleSetupComplete} />}
-      {/* Pro paywall route removed — credits-only model, no Pro to upgrade to.
-          Import shortfalls route to the credits top-up modal instead. */}
       {screen === "home" && (
         <HomeScreen
           user={user} trips={trips} kmPref={kmPref}
           activeShift={activeShift}
           weeklyGoal={weeklyGoal}
           region={region}
-          isPro={unlocked}
-          benchmarksUnlocked={benchmarksUnlocked}
-          benchmarkDaysRemaining={benchmarkDaysRemaining}
+          isPro={isPro}
           liveStatus={liveStatus}
           onGoOnline={() => setPlatformPickerOpen(true)}
           onGoOffline={() => {
-            updatePresence({ zone: presenceBucket(region), platform: liveStatus?.platform, online: false }); // fire-and-forget
             setLiveStatus(null);
             DB.remove("gt_live_status");
             showToast("You're offline");
@@ -11646,176 +6158,38 @@ export default function GigTrack() {
           onOrderSession={() => setScreen("ordersession")}
           onViewLog={() => setScreen("log")}
           onSettings={() => setScreen("settings")}
-          onUpgrade={() => setBetaCreditsOpen(true)}
+          onUpgrade={() => setScreen("paywall")}
           onLogShift={() => setScreen("logshift")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
-          onBenchmarks={() => setScreen("benchmarks")}
-          catchupTask={catchup}
-          catchupRemaining={catchupRemainingDays()}
-          onResumeCatchup={resumeCatchup}
-          onDismissCatchup={dismissCatchup}
-        />
-      )}
-      {screen === "benchmarks" && (
-        <BenchmarksScreen
-          region={region}
-          trips={trips}
-          initialScout={benchmarksScout}
-          onBack={() => { setBenchmarksScout(false); setScreen("home"); }}
-          onGoToSettings={() => setScreen("settings")}
         />
       )}
       {screen === "logshift" && (
         <LogShiftScreen
-          isPro={unlocked}
-          screenshotsRemaining={screenshotsRemaining()}
-          onBuyCredits={() => setBetaCreditsOpen(true)}
+          isPro={isPro}
           onBack={() => setScreen("home")}
-          onStartTimer={() => {
-            handleStartTimer();
-          }}
-          onNewTrip={() => {
-            setTimerPrefill(null); setEditId(null); setScreen("newtrip");
-          }}
-          onScreenshotImport={() => {
-            // Shifts are unlimited — only screenshot IMPORT is metered, because
-            // it's the only entry method with a real per-use cost (Claude API).
-            if (!canImportScreenshot()) {
-              if (BETA_MODE) {
-                setBetaCreditsOpen(true); // out of credits → buy a top-up pack
-              } else {
-                gateToPaywall(`You're out of credits. Top up to keep importing.`);
-              }
-              return;
-            }
-            setScreen("screenshotimport");
-          }}
-          onCsvImport={() => {
-            // Bulk import costs CREDIT_COST_CSV credits (charged on successful
-            // insert). Gate ENTRY on being able to afford it, mirroring the
-            // screenshot gate: short on credits → open the top-up modal.
-            if (screenshotsRemaining() < CREDIT_COST_CSV) {
-              if (BETA_MODE) {
-                setBetaCreditsOpen(true);
-              } else {
-                gateToPaywall(`Bulk import uses ${CREDIT_COST_CSV} credits. Top up to continue.`);
-              }
-              return;
-            }
-            setScreen("csvimport");
-          }}
-          onUpgrade={() => setBetaCreditsOpen(true)}
+          onStartTimer={() => { handleStartTimer(); }}
+          onNewTrip={() => { setTimerPrefill(null); setEditId(null); setScreen("newtrip"); }}
+          onVoiceEntry={() => setScreen("voiceentry")}
+          onUpgrade={() => setScreen("paywall")}
         />
       )}
-      {screen === "screenshotimport" && (
-        <ScreenshotImportScreen
+      {screen === "voiceentry" && (
+        <VoiceEntryScreen
           onBack={() => setScreen("logshift")}
-          onWeeklyDetected={(detection, previewUrl) => {
-            // The screenshot was a WHOLE-WEEK summary. Confirm intent, then
-            // (on accept) charge CREDIT_COST_WEEKLY and open the catch-up flow.
-            // The single-shift 1-credit charge is NOT run for this path.
-            const dayCount = Array.isArray(detection.days) ? detection.days.length : 0;
-            const platLabel = detection.platform === "doordash" ? "DoorDash" : "Uber";
-            // Guard: weekly costs 2 credits. If the user can't afford 2 (they may
-            // have started with just 1), send them to top up instead of charging.
-            if (screenshotsRemaining() < CREDIT_COST_WEEKLY) {
-              if (BETA_MODE) setBetaCreditsOpen(true);
-              else gateToPaywall(`A weekly import uses ${CREDIT_COST_WEEKLY} credits. Top up to continue.`);
-              setScreen("logshift");
-              return;
-            }
-            // Only ONE catch-up can be active at a time (single slot). If one is
-            // already open and unfinished, warn that accepting REPLACES it — the
-            // warning is part of the SAME accept decision, so we never charge and
-            // then discard. Days already saved from the old task stay as shifts;
-            // only the unfinished task tracker is replaced.
-            const existingLeft = catchup ? catchupRemainingDays() : 0;
-            const replaceNote = existingLeft > 0
-              ? ` ⚠️ You have an unfinished catch-up with ${existingLeft} day${existingLeft === 1 ? "" : "s"} left — starting this one replaces it (days you've already logged are kept).`
-              : "";
-            setConfirm({
-              title: existingLeft > 0 ? "Replace your catch-up?" : "Catch up the week?",
-              sub: `This looks like a ${platLabel} weekly summary${dayCount ? ` with ${dayCount} day${dayCount === 1 ? "" : "s"} to log` : ""}. We'll set up a task so you can fill in each day. This uses ${CREDIT_COST_WEEKLY} credits.${replaceNote}`,
-              confirmLabel: existingLeft > 0 ? `Replace (${CREDIT_COST_WEEKLY} credits)` : `Yes, catch up (${CREDIT_COST_WEEKLY} credits)`,
-              cancelLabel: existingLeft > 0 ? "Keep current" : "Not now",
-              onConfirm: () => {
-                setConfirm(null);
-                // Charge the 2 credits ONCE, server-side, at accept.
-                incrementScreenshotImportsUsed(CREDIT_COST_WEEKLY).then(newCount => {
-                  if (newCount != null) setScreenshotImportsUsed(newCount);
-                });
-                // Attach the screenshot for the catch-up thumbnail, then open.
-                openCatchup({ ...detection, screenshotUrl: previewUrl || null });
-              },
-              onCancel: () => { setConfirm(null); setScreen("logshift"); },
-            });
-          }}
-          onParsed={(finalValues) => {
-            // finalValues comes from the editable preview with keys:
-            // earned, tips, bonus, dels, mins, activeMin, km, activeKm, platform, shiftDate, notes
-            // Build a complete trip record, save locally + cloud, route home.
-
-            const earned   = Number(finalValues.earned)   || 0;
-            const tip      = Number(finalValues.tips)     || 0;
-            const bonus    = Number(finalValues.bonus)    || 0;
-            const base     = Math.max(0, earned - tip - bonus);  // base = total minus tip and bonus
-            const dels     = parseInt(finalValues.dels)   || 0;
-            const totalMin = parseInt(finalValues.mins)   || 0;
-            const activeMin = finalValues.activeMin != null ? parseInt(finalValues.activeMin) : null;
-            const totalKm  = Number(finalValues.km)       || 0;
-            const activeKm = finalValues.activeKm != null ? Number(finalValues.activeKm) : null;
-            const platform = finalValues.platform || null;
-            const notes    = finalValues.notes || null;
-
-            // Build timestamp timezone-safe from explicit LOCAL components.
-            // NEVER use new Date("YYYY-MM-DD") — JS parses a bare date as UTC,
-            // which in AEST (UTC+10) shifts the displayed time/day. Constructing
-            // new Date(y, m-1, d, hh, mm) always uses the device's local zone.
-            let ts;
-            if (finalValues.shiftDate) {
-              const [y, mo, d] = finalValues.shiftDate.split("-").map(Number);
-              ts = new Date(y, (mo || 1) - 1, d || 1, 0, 0, 0).toISOString();
-            } else {
-              ts = new Date().toISOString();
-            }
-
-            const inputs = {
-              base, tip, bonus,
-              tDel: totalMin, tWait: 0,
-              activeMin, activeKmInput: activeKm,
-              kmDel: totalKm, kmWait: 0,
-              dels, expenses: 0,
-            };
-            const c = computeTrip(inputs, targets);
-
-            const record = {
-              id: Date.now(),
-              ts,
-              platform,
-              base, tip, bonus,
-              totalEarned: earned,
-              tDel: totalMin, tWait: 0,
-              totalMin, totalHrs: c.totalHrs,
-              activeMin, activeMins: c.activeMins,
-              kmDel: totalKm, kmWait: 0,
-              totalKm, activeKm,
-              dels, expenses: 0,
-              hourly: c.hourly, perDel: c.perDel, perKm: c.perKm,
-              ratioT: c.ratioA, ratioK: c.ratioK,
-              score: c.score,
-              deduction: totalKm * atoRateForDate(ts),
-              notes,
-              imported_from_screenshot: true,  // Flag for screenshot-count gate
-            };
-
-            // Only burn a screenshot-import credit if the shift is ACTUALLY saved.
-            // Screenshots almost never include km, so the 0-km warning fires most
-            // times — backing out of it must not cost the user one of their imports.
-            handleSaved(record, false, () => {
-              incrementScreenshotImportsUsed().then(newCount => {
-                if (newCount != null) setScreenshotImportsUsed(newCount);
-              });
-            });
+          onParsed={(parsed) => {
+            // Stash parsed values in localStorage so NewTripScreen picks them up
+            const prefill = {};
+            if (parsed.earned   != null) prefill.earned   = parsed.earned;
+            if (parsed.tips     != null) prefill.tips     = parsed.tips;
+            if (parsed.bonus    != null) prefill.bonus    = parsed.bonus;
+            if (parsed.km       != null) prefill.km       = parsed.km;
+            if (parsed.dels     != null) prefill.dels     = parsed.dels;
+            if (parsed.mins     != null) prefill.mins     = parsed.mins;
+            if (parsed.platform != null) prefill.platform = parsed.platform;
+            DB.set("gt_voice_prefill", prefill);
+            setTimerPrefill(null);
+            setEditId(null);
+            setScreen("newtrip");
           }}
         />
       )}
@@ -11825,7 +6199,6 @@ export default function GigTrack() {
           onPause={handlePauseTimer}
           onResume={handleResumeTimer}
           onEnd={handleEndTimer}
-          onBack={() => setScreen("home")}
         />
       )}
       {screen === "ordersession" && (
@@ -11835,57 +6208,35 @@ export default function GigTrack() {
           atoRate={atoRate}
         />
       )}
-      {screen === "confirm" && (
-        <ConfirmShiftScreen
-          timerPrefill={timerPrefill}
-          onSaved={handleSaved}
-          onAddDetails={() => setScreen("newtrip")}
-          onBack={() => { setTimerPrefill(null); setScreen("home"); }}
-          kmPref={kmPref}
-          atoRate={atoRate}
-          targets={targets}
-          showScoring={showScoring}
-        />
-      )}
       {screen === "newtrip" && (
         <NewTripScreen
-          onBack={() => {
-            setEditId(null); setTimerPrefill(null);
-            const pend = DB.get("gt_catchup_pending_date");
-            if (pend && catchup) { DB.remove("gt_catchup_pending_date"); DB.remove("gt_entry_prefill"); setScreen("catchup"); return; }
-            setScreen(editId ? "detail" : "home");
-          }}
-          onSaved={(rec, isEdit, onCommitted) => {
-            const pend = DB.get("gt_catchup_pending_date");
-            handleSaved(rec, isEdit, () => {
-              if (onCommitted) onCommitted();
-              // Mark this day done. Do NOT remove gt_catchup_pending_date here —
-              // handleSaved's delayed navigation reads it to return to the
-              // catch-up list; the catch-up screen clears it on mount.
-              if (pend && catchup) {
-                setCatchupSaved(prev => prev.includes(pend) ? prev : [...prev, pend]);
-              }
-            });
-          }}
+          onBack={() => { setEditId(null); setTimerPrefill(null); setScreen(editId ? "detail" : "home"); }}
+          onSaved={handleSaved}
           editTrip={editId ? editTrip : null}
           kmPref={kmPref}
           atoRate={atoRate}
           timerPrefill={timerPrefill}
           targets={targets}
-          isPro={unlocked}
+          fuelEfficiency={fuelEfficiency}
+          fuelPrice={fuelPrice}
+          isPro={isPro}
+          onFuelSave={(fe, fp) => {
+            if (fe > 0) { setFuelEfficiency(fe); DB.set("gt_fuel_efficiency", fe); }
+            if (fp > 0) { setFuelPrice(fp); DB.set("gt_fuel_price", fp); }
+          }}
           onGoToSettings={() => setScreen("settings")}
-          onUpgrade={() => setBetaCreditsOpen(true)}
-          showScoring={showScoring}
+          onUpgrade={() => setScreen("paywall")}
         />
       )}
       {screen === "log" && (
         <TripLogScreen
           trips={trips} kmPref={kmPref} user={user}
-          isPro={unlocked}
+          fuelEfficiency={fuelEfficiency}
+          fuelPrice={fuelPrice}
+          isPro={isPro}
           onBack={() => setScreen("home")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
-          onUpgrade={() => setBetaCreditsOpen(true)}
-          showScoring={showScoring}
+          onUpgrade={() => setScreen("paywall")}
         />
       )}
       {screen === "detail" && (
@@ -11893,18 +6244,20 @@ export default function GigTrack() {
           trip={currentTrip} kmPref={kmPref}
           targets={targets}
           trips={trips}
+          fuelEfficiency={fuelEfficiency}
+          fuelPrice={fuelPrice}
           onBack={() => setScreen("log")}
           onEdit={handleEdit}
           onDelete={handleDelete}
           onGoToSettings={() => setScreen("settings")}
-          showScoring={showScoring}
         />
       )}
       {screen === "insights" && (
         <InsightsScreen
           trips={trips}
           kmPref={kmPref}
-          showScoring={showScoring}
+          fuelEfficiency={fuelEfficiency}
+          fuelPrice={fuelPrice}
         />
       )}
       {screen === "settings" && (
@@ -11912,30 +6265,23 @@ export default function GigTrack() {
           user={user}
           trips={trips}
           onBack={() => setScreen("home")}
-          onCompareRegion={() => { setBenchmarksScout(true); setScreen("benchmarks"); }}
-          onWhatsNew={() => setWhatsNewOpen(true)}
-          isBeta={isBeta}
-          onBuyCredits={() => setBetaCreditsOpen(true)}
-          onPurchaseHistory={() => setScreen("purchasehistory")}
-          onInstallHelp={() => setScreen("installhelp")}
-          screenshotsRemaining={screenshotsRemaining()}
-          onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
           kmPref={kmPref}
-          onKmPref={(p) => { setKmPref(p); DB.set("gt_kmpref", p); syncProfile({ kmPref: p }); }}
+          onKmPref={(p) => { setKmPref(p); DB.set("gt_kmpref", p); }}
           atoRate={atoRate}
           onAtoRate={(r) => { setAtoRate(r); DB.set("gt_atorate", r); }}
           targets={targets}
           onTargets={(t) => { setTargets(t); DB.set("gt_targets", t); }}
           weeklyGoal={weeklyGoal}
-          onWeeklyGoal={(g) => { setWeeklyGoal(g); DB.set("gt_weeklygoal", g); syncProfile({ weeklyGoal: g }); }}
-          showScoring={showScoring}
-          onShowScoring={saveShowScoring}
+          onWeeklyGoal={(g) => { setWeeklyGoal(g); DB.set("gt_weeklygoal", g); }}
+          fuelEfficiency={fuelEfficiency}
+          onFuelEfficiency={(v) => { setFuelEfficiency(v); DB.set("gt_fuel_efficiency", v); }}
+          fuelPrice={fuelPrice}
+          onFuelPrice={(v) => { setFuelPrice(v); DB.set("gt_fuel_price", v); }}
           region={region}
           onRegion={(r) => {
             setRegion(r);
             DB.set("gt_region", r);
-            syncProfile({ region: r });
             // If region changed while online, go offline (presence is zone-specific)
             if (liveStatus?.online && liveStatus.zone !== r) {
               setLiveStatus(null);
@@ -11943,204 +6289,15 @@ export default function GigTrack() {
             }
           }}
           onDeleteAccount={handleDeleteAccount}
-          isPro={unlocked}
-          onUpgrade={() => setBetaCreditsOpen(true)}
+          isPro={isPro}
+          onUpgrade={() => setScreen("paywall")}
           theme={theme}
           onTheme={setTheme}
-          authUser={authUser}
-          onSignIn={() => setSignInOpen(true)}
-          onSignOut={() => {
-            setConfirm({
-              title: "Sign out?",
-              sub: "Your data stays safely in the cloud. Sign back in anytime with the same email to access it.",
-              onConfirm: async () => {
-                setConfirm(null);
-                await signOut();
-                showToast("Signed out");
-              },
-            });
-          }}
-        />
-      )}
-      {screen === "purchasehistory" && (
-        <PurchaseHistoryScreen onBack={() => setScreen("settings")} />
-      )}
-      {screen === "installhelp" && (
-        <InstallHelpScreen onBack={() => setScreen("settings")} />
-      )}
-      {screen === "catchup" && catchup && (
-        <WeeklyCatchupScreen
-          detection={catchup}
-          savedDates={catchupSaved}
-          trips={trips}
-          onAddDay={addCatchupDay}
-          onBack={() => setScreen("home")}
-        />
-      )}
-      {screen === "csvimport" && (
-        <CsvImportScreen
-          onBack={() => setScreen("logshift")}
-          onPreview={({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform }) => {
-            // DRY RUN — builds records and counts outcomes WITHOUT inserting or
-            // charging. Returns everything the preview stage needs; the actual
-            // insert + 10-credit charge only happens later in onImport (on the
-            // user's explicit confirm). This is the "preview before you pay" step.
-            const deps = {
-              mapping, odoMode, odoCols, timeUnit, splitCols, filePlatform: platform, headers,
-              region: region ?? null, owner: authUser?.id || null,
-              computeTrip, rateForDate: (d) => atoRate || atoRateForDate(d),
-            };
-            const keyOf = (ts, plat, earned) => {
-              const d = new Date(ts);
-              const dk = `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
-              return `${dk}|${plat||""}|${Math.round((earned||0)*100)}`;
-            };
-            const existingKeys = new Set(trips.map(t => keyOf(t.ts, t.platform, t.totalEarned)));
-
-            const toAdd = [];
-            let dupes = 0, incomplete = 0, noOnline = 0;
-            const seenInFile = new Set();
-            rows.forEach(row => {
-              const built = buildTripFromCsvRow(row, deps);
-              if (built.error) {
-                if (built.error === "no_online") noOnline++;
-                else incomplete++;
-                return;
-              }
-              const rec = built.record;
-              const k = keyOf(rec.ts, rec.platform, rec.totalEarned);
-              if (existingKeys.has(k) || seenInFile.has(k)) { dupes++; return; }
-              seenInFile.add(k);
-              toAdd.push(rec);
-            });
-
-            return { toAdd, dupes, incomplete, noOnline };
-          }}
-          onImport={(toAdd) => {
-            // COMMIT — receives the already-built clean records from the preview
-            // and does the real work: charge CREDIT_COST_CSV (server-side, once),
-            // insert, persist, cloud-sync. Only reached via the confirm button, so
-            // toAdd is guaranteed non-empty (the preview blocks an empty import).
-            incrementScreenshotImportsUsed(CREDIT_COST_CSV).then(newCount => {
-              if (newCount != null) setScreenshotImportsUsed(newCount);
-            });
-
-            const updated = [...trips, ...toAdd];
-            setTrips(updated);
-            DB.set("gt_trips", updated);
-
-            Promise.all(toAdd.map(r => syncShift(r).then(res => res.ok ? r.id : null).catch(() => null)))
-              .then(okIds => {
-                const okSet = new Set(okIds.filter(Boolean));
-                if (okSet.size === 0) return;
-                setTrips(prev => {
-                  const next = prev.map(t => okSet.has(t.id) ? { ...t, _synced: true } : t);
-                  DB.set("gt_trips", next);
-                  return next;
-                });
-              });
-
-            showToast(`Imported ${toAdd.length} shift${toAdd.length === 1 ? "" : "s"}`);
-            setScreen("home");
-          }}
         />
       )}
       <ConfirmDialog
         show={!!confirm} title={confirm?.title || ""} sub={confirm?.sub || ""}
-        confirmLabel={confirm?.confirmLabel} cancelLabel={confirm?.cancelLabel}
-        onConfirm={confirm?.onConfirm} onCancel={confirm?.onCancel || (() => setConfirm(null))}
-      />
-      {installBanner && (
-        <div
-          role="status"
-          style={{
-            position:"fixed", left:"12px", right:"12px", bottom:"84px", zIndex:400,
-            background:"var(--coral)", color:"var(--on-coral)",
-            borderRadius:"14px", padding:"12px 14px",
-            display:"flex", alignItems:"center", gap:"12px",
-            boxShadow:"0 10px 30px -8px rgba(240,86,46,.5)",
-          }}
-        >
-          <span style={{flexShrink:0,fontSize:"20px"}}>📲</span>
-          <div style={{flex:1, minWidth:0}}>
-            <div style={{fontSize:"13px", fontWeight:"800", lineHeight:1.3}}>Add GigTrack to your home screen</div>
-            <div style={{fontSize:"11px", opacity:.9, marginTop:"2px"}}>Open it like an app — one tap, no browser.</div>
-          </div>
-          <button
-            onClick={() => { setInstallBanner(false); DB.set("gt_install_nudge_done", true); setScreen("installhelp"); }}
-            style={{
-              flexShrink:0, border:"none", cursor:"pointer",
-              background:"var(--on-coral)", color:"var(--coral)",
-              borderRadius:"10px", padding:"9px 13px",
-              fontSize:"12px", fontWeight:"800",
-            }}
-          >
-            Show me
-          </button>
-          <button
-            onClick={dismissInstallBanner}
-            aria-label="Dismiss"
-            style={{
-              flexShrink:0, border:"none", cursor:"pointer", background:"transparent",
-              color:"var(--on-coral)", opacity:.8, fontSize:"18px", lineHeight:1, padding:"2px 4px",
-            }}
-          >
-            ×
-          </button>
-        </div>
-      )}
-      {updateReady && (
-        <div
-          role="status"
-          style={{
-            position:"fixed", left:"12px", right:"12px", bottom:"84px", zIndex:400,
-            background:"var(--text)", color:"var(--bg)",
-            borderRadius:"14px", padding:"12px 14px",
-            display:"flex", alignItems:"center", gap:"12px",
-            boxShadow:"0 10px 30px -8px rgba(0,0,0,.45)",
-          }}
-        >
-          <div style={{flex:1, minWidth:0}}>
-            <div style={{fontSize:"13px", fontWeight:"700", lineHeight:1.3}}>Update available</div>
-            <div style={{fontSize:"11px", opacity:.75, marginTop:"2px"}}>A new version of GigTrack is ready.</div>
-          </div>
-          <button
-            onClick={() => applyUpdate()}
-            style={{
-              flexShrink:0, border:"none", cursor:"pointer",
-              background:"var(--green)", color:"#fff",
-              borderRadius:"10px", padding:"9px 14px",
-              fontSize:"12px", fontWeight:"700",
-            }}
-          >
-            Refresh
-          </button>
-        </div>
-      )}
-      <WhatsNewModal open={whatsNewOpen} onClose={dismissWhatsNew} />
-      <ChangePasswordModal
-        open={changePasswordOpen}
-        onClose={() => setChangePasswordOpen(false)}
-        onSave={async (pw) => await updatePassword(pw)}
-      />
-      <BetaCreditsModal
-        open={betaCreditsOpen}
-        remaining={screenshotsRemaining()}
-        onClose={() => setBetaCreditsOpen(false)}
-        onBuy={async (pack) => {
-          // Real Stripe checkout. Ask the Edge Function for a hosted checkout
-          // URL, then redirect the browser to it. Credits are NOT granted here —
-          // the stripe-webhook grants them after Stripe confirms payment, and
-          // the app picks up the new balance on return (see checkout-return
-          // handler in the boot effect). If this fails, surface a toast and
-          // leave the modal open so the user can retry.
-          const { url, error } = await startCreditCheckout(pack.id);
-          if (error || !url) {
-            showToast("Couldn't start checkout — please try again");
-            return;
-          }
-          window.location.href = url; // leaves the app; Stripe returns to ?checkout=success
-        }}
+        onConfirm={confirm?.onConfirm} onCancel={() => setConfirm(null)}
       />
       <Toast msg={toast} />
       <PlatformPickerModal
@@ -12152,22 +6309,12 @@ export default function GigTrack() {
             platform,
             zone: region,
             since: Date.now(),
-            lastPing: Date.now(), // seeds the idle-expiry check
           };
           setLiveStatus(status);
           DB.set("gt_live_status", status);
-          updatePresence({ zone: presenceBucket(region), platform, online: true }); // fire-and-forget
           setPlatformPickerOpen(false);
           showToast("You're online — visible to drivers in your zone");
         }}
-      />
-      <SignInModal
-        open={signInOpen}
-        onClose={() => setSignInOpen(false)}
-        onSendLink={async (email) => await sendMagicLink(email)}
-        onPasswordSignIn={async (email, pw) => await signInWithPassword(email, pw)}
-        onPasswordSignUp={async (email, pw) => await signUpWithPassword(email, pw)}
-        onPasswordReset={async (email) => await sendPasswordReset(email)}
       />
       {showNav && (
         <BottomNav
