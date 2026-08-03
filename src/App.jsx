@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.141";
+const CURRENT_VERSION = "ALPHA 0.15.142";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
@@ -11758,11 +11758,20 @@ export default function GigTrack() {
               setScreen("logshift");
               return;
             }
+            // Only ONE catch-up can be active at a time (single slot). If one is
+            // already open and unfinished, warn that accepting REPLACES it — the
+            // warning is part of the SAME accept decision, so we never charge and
+            // then discard. Days already saved from the old task stay as shifts;
+            // only the unfinished task tracker is replaced.
+            const existingLeft = catchup ? catchupRemainingDays() : 0;
+            const replaceNote = existingLeft > 0
+              ? ` ⚠️ You have an unfinished catch-up with ${existingLeft} day${existingLeft === 1 ? "" : "s"} left — starting this one replaces it (days you've already logged are kept).`
+              : "";
             setConfirm({
-              title: "Catch up the week?",
-              sub: `This looks like a ${platLabel} weekly summary${dayCount ? ` with ${dayCount} day${dayCount === 1 ? "" : "s"} to log` : ""}. We'll set up a task so you can fill in each day. This uses ${CREDIT_COST_WEEKLY} credits.`,
-              confirmLabel: `Yes, catch up (${CREDIT_COST_WEEKLY} credits)`,
-              cancelLabel: "Not now",
+              title: existingLeft > 0 ? "Replace your catch-up?" : "Catch up the week?",
+              sub: `This looks like a ${platLabel} weekly summary${dayCount ? ` with ${dayCount} day${dayCount === 1 ? "" : "s"} to log` : ""}. We'll set up a task so you can fill in each day. This uses ${CREDIT_COST_WEEKLY} credits.${replaceNote}`,
+              confirmLabel: existingLeft > 0 ? `Replace (${CREDIT_COST_WEEKLY} credits)` : `Yes, catch up (${CREDIT_COST_WEEKLY} credits)`,
+              cancelLabel: existingLeft > 0 ? "Keep current" : "Not now",
               onConfirm: () => {
                 setConfirm(null);
                 // Charge the 2 credits ONCE, server-side, at accept.
