@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.136";
+const CURRENT_VERSION = "ALPHA 0.14.137";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -6562,8 +6562,24 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
   const [errors, setErrors] = useState({});
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [valMsg, setValMsg] = useState("");
+  // Light view: optional fields (tips, bonuses, active time, active km, expenses,
+  // notes) start collapsed behind an "Add detail" toggle so the form shows just
+  // the 5 required fields + date. Auto-opens below if any optional field already
+  // carries a value (editing a shift, or a screenshot/CSV/timer prefill).
+  const [showOptional, setShowOptional] = useState(false);
 
   const n = (v) => Math.max(0, parseFloat(v) || 0);
+
+  // Reveal the optional section on mount if anything optional came pre-filled,
+  // so a prefill/edit never hides values the user expects to see.
+  useEffect(() => {
+    const anyOptional =
+      n(tip) > 0 || n(bonus) > 0 ||
+      n(activeHrsPart) > 0 || n(activeMinsPart) > 0 ||
+      n(activeKmInput) > 0 || n(expenses) > 0 ||
+      (typeof notes === "string" && notes.trim() !== "");
+    if (anyOptional) setShowOptional(true);
+  }, []);
 
   // Base is derived: Total Earned − Tip − Bonus (floored at 0)
   const derivedBase = Math.max(0, n(totalEarned) - n(tip) - n(bonus));
@@ -6689,16 +6705,20 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
               onChange={(v) => { setTotalEarned(v); if (saveAttempted) setErrors(e => ({...e, totalEarned: false})); }}
               type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
             />
-            <ManualFieldRow
-              label="Tips" value={tip}
-              onChange={setTip}
-              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
-            />
-            <ManualFieldRow
-              label="Bonuses" value={bonus}
-              onChange={setBonus}
-              type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
-            />
+            {showOptional && (
+              <>
+                <ManualFieldRow
+                  label="Tips" value={tip}
+                  onChange={setTip}
+                  type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
+                />
+                <ManualFieldRow
+                  label="Bonuses" value={bonus}
+                  onChange={setBonus}
+                  type="number" min="0" step="0.01" placeholder="0.00" suffix="$"
+                />
+              </>
+            )}
           </div>
           {(n(totalEarned) > 0 || n(tip) > 0 || n(bonus) > 0) && (
             <div style={{
@@ -6765,6 +6785,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
             </div>
 
             {/* Active time — hours + minutes (optional) */}
+            {showOptional && (
             <div style={{
               display:"flex",alignItems:"center",gap:"10px",
               padding:"10px 13px",background:"var(--surface)",
@@ -6808,6 +6829,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
                 <span style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)"}}>m</span>
               </div>
             </div>
+            )}
           </div>
           {derivedActiveMin > 0 && derivedTotalMin > 0 && (
             <div style={{
@@ -6885,12 +6907,14 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
                 )}
               </>
             )}
+            {showOptional && (
             <ManualFieldRow
               label="Active km" sublabel="optional"
               value={activeKmInput}
               onChange={setActiveKmInput}
               type="number" min="0" step="0.1" placeholder="0.0" suffix="km"
             />
+            )}
           </div>
           </ManualCard>
 
@@ -6956,6 +6980,27 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
 
           {/* ── OTHER ── */}
           </ManualCard>
+
+          {/* Light-view toggle: reveal all optional fields (tips, bonuses, active
+              time/km, expenses, notes). Collapsed by default so the form shows
+              just the required essentials. */}
+          {!showOptional && (
+            <button
+              onClick={() => setShowOptional(true)}
+              style={{
+                width:"100%",padding:"13px",marginTop:"2px",cursor:"pointer",
+                background:"var(--elevated)",border:"0.5px dashed var(--muted2)",
+                borderRadius:"12px",color:"var(--muted)",
+                fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
+                display:"flex",alignItems:"center",justifyContent:"center",gap:"7px",
+              }}
+            >
+              <span style={{fontSize:"15px"}}>+</span> Add detail
+              <span style={{fontSize:"11px",fontWeight:"500",color:"var(--muted2)"}}>· tips, active time, notes</span>
+            </button>
+          )}
+
+          {showOptional && (
           <ManualCard>
           <ManualGroupHeader>Other</ManualGroupHeader>
           <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
@@ -6995,6 +7040,7 @@ function NewTripScreen({ onBack, onSaved, editTrip, kmPref, atoRate, timerPrefil
 
           </div>
           </ManualCard>
+          )}
 
         </div>
 {/* ─── END COMPACT FORM ─── */}
