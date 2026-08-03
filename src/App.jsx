@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.140";
+const CURRENT_VERSION = "ALPHA 0.15.141";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
@@ -9225,8 +9225,9 @@ function InstallHelpScreen({ onBack }) {
 // where the user adjusts the column→field mapping and sees a preview. The actual
 // bulk insert + credit charge + Tasks review-queue come in Stage 2. `onImport`
 // receives the parsed rows + final mapping when the user confirms.
-function CsvImportScreen({ onImport, onBack }) {
-  const [stage, setStage] = useState("pick");   // pick | mapping | error
+function CsvImportScreen({ onImport, onPreview, onBack }) {
+  const [stage, setStage] = useState("pick");   // pick | mapping | preview | error
+  const [previewResult, setPreviewResult] = useState(null); // dry-run output
   const [fileName, setFileName] = useState("");
   const [headers, setHeaders] = useState([]);
   const [rows, setRows] = useState([]);          // array of arrays (data rows)
@@ -9637,13 +9638,109 @@ function CsvImportScreen({ onImport, onBack }) {
             )}
 
             <button
-              onClick={() => canImport && onImport({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform: filePlatform, fileName })}
+              onClick={() => {
+                if (!canImport) return;
+                const result = onPreview({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform: filePlatform, fileName });
+                setPreviewResult(result);
+                setStage("preview");
+              }}
               disabled={!canImport}
               style={{width:"100%",marginTop:"8px",padding:"15px",border:"none",borderRadius:"14px",cursor:canImport ? "pointer" : "default",background:canImport ? "var(--coral)" : "var(--border)",color:canImport ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
             >Preview import ({rows.length} row{rows.length === 1 ? "" : "s"})</button>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted2)",textAlign:"center",marginTop:"10px"}}>Nothing is imported yet — you'll confirm on the next step.</div>
           </>
         )}
+
+        {stage === "preview" && previewResult && (() => {
+          const { toAdd = [], dupes = 0, incomplete = 0, noOnline = 0 } = previewResult;
+          const canCommit = toAdd.length > 0;
+          const sample = toAdd.slice(0, 5);
+          const platLabel = (p) => p === "doordash" ? "DoorDash" : p === "both" ? "Both" : p === "uber_eats" ? "Uber" : "—";
+          const fmtMin = (m) => m == null ? "—" : `${Math.floor(m/60)}h${String(Math.round(m%60)).padStart(2,"0")}`;
+          const fmtNum = (v, d=0) => v == null ? "—" : Number(v).toFixed(d);
+          const fmtDate = (ts) => { try { return new Date(ts).toLocaleDateString("en-AU", { day:"numeric", month:"short" }); } catch { return "—"; } };
+          // High-risk columns first (the ones a mismap corrupts most visibly),
+          // optional/extra columns after — so what you most want to verify is on
+          // screen before you swipe.
+          const cols = [
+            { h:"Date",     w:58,  align:"left",  get:(r)=>fmtDate(r.ts) },
+            { h:"Earned",   w:60,  align:"right", get:(r)=>`$${fmtNum(r.totalEarned,2)}` },
+            { h:"Online",   w:52,  align:"right", get:(r)=>fmtMin(r.totalMin) },
+            { h:"Km",       w:46,  align:"right", get:(r)=>fmtNum(r.totalKm,1) },
+            { h:"Dels",     w:40,  align:"right", get:(r)=>fmtNum(r.dels) },
+            { h:"Tips",     w:48,  align:"right", get:(r)=>`$${fmtNum(r.tip,2)}` },
+            { h:"Bonus",    w:52,  align:"right", get:(r)=>`$${fmtNum(r.bonus,2)}` },
+            { h:"Active",   w:52,  align:"right", get:(r)=>fmtMin(r.activeMins) },
+            { h:"Act km",   w:52,  align:"right", get:(r)=>fmtNum(r.activeKm,1) },
+            { h:"Platform", w:64,  align:"right", get:(r)=>platLabel(r.platform) },
+          ];
+          const tableWidth = cols.reduce((s,c)=>s+c.w,0) + 16;
+          return (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"800",color:"var(--text)",marginBottom:"12px"}}>Ready to import</div>
+
+            {/* Counts summary */}
+            <div style={{display:"flex",gap:"7px",marginBottom:"16px"}}>
+              <div style={{flex:1,background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",padding:"11px 6px",textAlign:"center"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"21px",fontWeight:"800",color:"var(--pos)"}}>{toAdd.length}</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)"}}>new</div>
+              </div>
+              <div style={{flex:1,background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",padding:"11px 6px",textAlign:"center"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"21px",fontWeight:"800",color:"var(--muted2)"}}>{dupes}</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)"}}>duplicate{dupes===1?"":"s"}</div>
+              </div>
+              <div style={{flex:1,background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",padding:"11px 6px",textAlign:"center"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"21px",fontWeight:"800",color:"var(--red)"}}>{noOnline + incomplete}</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",color:"var(--muted)"}}>skipped</div>
+              </div>
+            </div>
+
+            {(noOnline > 0 || incomplete > 0) && (
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",marginBottom:"16px",lineHeight:"1.5"}}>
+                {noOnline > 0 && `${noOnline} row${noOnline===1?"":"s"} skipped for missing online time. `}
+                {incomplete > 0 && `${incomplete} row${incomplete===1?"":"s"} skipped for missing required data.`}
+              </div>
+            )}
+
+            {/* Sample rows — verify the columns mapped correctly before you commit */}
+            {sample.length > 0 && (
+              <>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".04em",textTransform:"uppercase",color:"var(--muted2)",marginBottom:"6px"}}>
+                  First {sample.length} row{sample.length===1?"":"s"}, as read · swipe →
+                </div>
+                <div style={{background:"var(--surface)",border:"0.5px solid var(--border)",borderRadius:"11px",overflowX:"auto",marginBottom:"8px"}}>
+                  <div style={{minWidth:`${tableWidth}px`}}>
+                    <div style={{display:"flex",padding:"7px 8px",background:"var(--elevated)"}}>
+                      {cols.map(c => (
+                        <div key={c.h} style={{width:`${c.w}px`,flexShrink:0,textAlign:c.align,fontFamily:"'Inter',sans-serif",fontSize:"9px",fontWeight:"800",color:"var(--muted2)",textTransform:"uppercase",letterSpacing:".03em"}}>{c.h}</div>
+                      ))}
+                    </div>
+                    {sample.map((r, i) => (
+                      <div key={i} style={{display:"flex",padding:"8px",borderTop:"0.5px solid var(--border)"}}>
+                        {cols.map(c => (
+                          <div key={c.h} style={{width:`${c.w}px`,flexShrink:0,textAlign:c.align,fontFamily:"'Inter',sans-serif",fontSize:"10.5px",fontWeight:"600",color:"var(--text)",fontVariantNumeric:"tabular-nums"}}>{c.get(r)}</div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:"11px",color:"var(--muted)",textAlign:"center",marginBottom:"18px"}}>Check the columns look right before importing ↑</div>
+              </>
+            )}
+
+            {/* Confirm — THIS is what charges the credits + inserts */}
+            <button
+              onClick={() => canCommit && onImport(toAdd)}
+              disabled={!canCommit}
+              style={{width:"100%",padding:"15px",border:"none",borderRadius:"14px",cursor:canCommit ? "pointer" : "default",background:canCommit ? "var(--coral)" : "var(--border)",color:canCommit ? "var(--on-coral)" : "var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"15px",fontWeight:"800"}}
+            >{canCommit ? `Import ${toAdd.length} shift${toAdd.length===1?"":"s"} · ${CREDIT_COST_CSV} credits` : "Nothing to import"}</button>
+            <button
+              onClick={() => { setStage("mapping"); setPreviewResult(null); }}
+              style={{width:"100%",marginTop:"8px",padding:"12px",border:"none",borderRadius:"12px",cursor:"pointer",background:"transparent",color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700"}}
+            >← Back to fix mapping</button>
+          </>
+          );
+        })()}
       </div>
     </div>
   );
@@ -11908,19 +12005,16 @@ export default function GigTrack() {
       {screen === "csvimport" && (
         <CsvImportScreen
           onBack={() => setScreen("logshift")}
-          onImport={({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform, fileName }) => {
-            // Real batch insert of clean rows. Dupes and incomplete rows are
-            // COUNTED for now (reported to the user); routing them to a review
-            // queue comes with the permanent Tasks screen (Needs #5/#6). Clean
-            // rows import via the same record shape as manual entry.
-            // CREDITS: a successful import charges CREDIT_COST_CSV, ONCE, after
-            // the insert lands — never when nothing imports (see empty path).
+          onPreview={({ rows, headers, mapping, odoMode, odoCols, timeUnit, splitCols, platform }) => {
+            // DRY RUN — builds records and counts outcomes WITHOUT inserting or
+            // charging. Returns everything the preview stage needs; the actual
+            // insert + 10-credit charge only happens later in onImport (on the
+            // user's explicit confirm). This is the "preview before you pay" step.
             const deps = {
               mapping, odoMode, odoCols, timeUnit, splitCols, filePlatform: platform, headers,
               region: region ?? null, owner: authUser?.id || null,
               computeTrip, rateForDate: (d) => atoRate || atoRateForDate(d),
             };
-            // Existing shift keys for dup detection: date|platform|earned.
             const keyOf = (ts, plat, earned) => {
               const d = new Date(ts);
               const dk = `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
@@ -11940,35 +12034,26 @@ export default function GigTrack() {
               }
               const rec = built.record;
               const k = keyOf(rec.ts, rec.platform, rec.totalEarned);
-              if (existingKeys.has(k) || seenInFile.has(k)) { dupes++; return; } // skip dup for now
+              if (existingKeys.has(k) || seenInFile.has(k)) { dupes++; return; }
               seenInFile.add(k);
               toAdd.push(rec);
             });
 
-            if (toAdd.length === 0) {
-              // Nothing imported → NO credit charge (charge only on a real result).
-              const bits = [];
-              if (dupes) bits.push(`${dupes} duplicate(s)`);
-              if (noOnline) bits.push(`${noOnline} missing online time`);
-              if (incomplete) bits.push(`${incomplete} need attention`);
-              showToast(`No new shifts imported${bits.length ? " — " + bits.join(", ") : ""}`);
-              setScreen("logshift");
-              return;
-            }
-
-            // Successful import → charge CREDIT_COST_CSV credits, server-side.
-            // Cloud-authoritative: the browser never sets the counter itself.
+            return { toAdd, dupes, incomplete, noOnline };
+          }}
+          onImport={(toAdd) => {
+            // COMMIT — receives the already-built clean records from the preview
+            // and does the real work: charge CREDIT_COST_CSV (server-side, once),
+            // insert, persist, cloud-sync. Only reached via the confirm button, so
+            // toAdd is guaranteed non-empty (the preview blocks an empty import).
             incrementScreenshotImportsUsed(CREDIT_COST_CSV).then(newCount => {
               if (newCount != null) setScreenshotImportsUsed(newCount);
             });
 
-            // ONE batched state update + persist (not per-row handleSaved).
             const updated = [...trips, ...toAdd];
             setTrips(updated);
             DB.set("gt_trips", updated);
 
-            // Fire-and-forget cloud sync for each new record; reconcile flags as
-            // they land (Pass 4 boot reconciliation catches any that fail).
             Promise.all(toAdd.map(r => syncShift(r).then(res => res.ok ? r.id : null).catch(() => null)))
               .then(okIds => {
                 const okSet = new Set(okIds.filter(Boolean));
@@ -11980,11 +12065,7 @@ export default function GigTrack() {
                 });
               });
 
-            const extras = [];
-            if (dupes) extras.push(`${dupes} duplicate(s) skipped`);
-            if (noOnline) extras.push(`${noOnline} missing online time`);
-            if (incomplete) extras.push(`${incomplete} need attention`);
-            showToast(`Imported ${toAdd.length} shift${toAdd.length === 1 ? "" : "s"}${extras.length ? " · " + extras.join(" · ") : ""}`);
+            showToast(`Imported ${toAdd.length} shift${toAdd.length === 1 ? "" : "s"}`);
             setScreen("home");
           }}
         />
