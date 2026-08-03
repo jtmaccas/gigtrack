@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.135";
+const CURRENT_VERSION = "ALPHA 0.14.136";
 const CHANGELOG = [
   {
     version: "ALPHA 0.14",
@@ -5801,6 +5801,33 @@ function ScreenshotMergeStage({ mergeData, firstPreviewUrl, secondPreviewUrl, on
 // Stage 1: pick — user selects an image file
 // Stage 2: progress — uploading + AI parsing (animated %)
 // Stage 3: preview — per-field green/red indicators + confirm
+// Turn an image File into a compact, self-contained base64 data-URL suitable for
+// persisting in localStorage (unlike a blob: URL, which dies with the session).
+// Downscaled to a max width and JPEG-compressed so the catch-up thumbnail stays
+// small — a full-res data-URL could blow the ~5MB localStorage budget on its own.
+function makeThumbDataUrl(file, maxW = 900, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    if (!file) { reject(new Error("no file")); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxW / (img.naturalWidth || maxW));
+        const w = Math.round((img.naturalWidth || maxW) * scale);
+        const h = Math.round((img.naturalHeight || maxW) * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      } catch (e) { URL.revokeObjectURL(url); reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("image load failed")); };
+    img.src = url;
+  });
+}
+
 function ScreenshotImportScreen({ onBack, onParsed, onWeeklyDetected }) {
   const [stage, setStage] = useState("pick"); // pick | progress | preview | merge | error
   const [pickedFile, setPickedFile] = useState(null);
@@ -5910,13 +5937,19 @@ function ScreenshotImportScreen({ onBack, onParsed, onWeeklyDetected }) {
       // Final flourish to 100%
       setProgressPct(100);
       setProgressStep("Done");
-      setTimeout(() => {
+      setTimeout(async () => {
         // WEEKLY branch: the Edge Function classified this as a whole-week
         // summary. Hand it up to the app (accept-confirm + credit charge +
         // catch-up flow) instead of the single-shift preview. Single-shift
         // (type !== "weekly", incl. legacy responses with no type) is unchanged.
         if (result.parsed && result.parsed.type === "weekly" && onWeeklyDetected) {
-          onWeeklyDetected(result.parsed, previewUrl);
+          // Pass a COMPACT base64 data-URL (not the blob previewUrl): the catch-up
+          // task is persisted to localStorage and re-read across reloads, and a
+          // blob: URL dies with the session (was why the thumbnail vanished).
+          // A downscaled JPEG data-URL is self-contained and small enough to store.
+          let thumb = null;
+          try { thumb = await makeThumbDataUrl(pickedFile || file); } catch { /* thumbnail is best-effort */ }
+          onWeeklyDetected(result.parsed, thumb);
           return;
         }
         setParsed(result.parsed);
