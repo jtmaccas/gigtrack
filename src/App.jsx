@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.142";
+const CURRENT_VERSION = "ALPHA 0.15.143";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
@@ -11565,22 +11565,24 @@ export default function GigTrack() {
   const editTrip    = trips.find(t => t.id === editId);
 
   const isPro = !!user?.isPro;
-  // Beta plan: while BETA_MODE is on, beta users get everything unlocked (except
-  // screenshots). "unlocked" is the flag every former isPro gate should use.
   const isBeta = BETA_MODE && (user?.plan === "beta" || !!user?.isBeta);
-  const unlocked = isPro || isBeta; // premium features open (NOT screenshots)
+  // CREDITS-ONLY MODEL: there is no Pro/free split. Every user has every feature
+  // unlocked, always — the only paid mechanic is buying credits for imports.
+  // `unlocked` stays as the variable every former isPro/premium gate reads, so
+  // forcing it true opens them all without touching each call site. isPro/isBeta
+  // are kept only for any remaining incidental reads; they no longer gate access.
+  const unlocked = true; // permanently unlocked (Pro/free collapsed into one plan)
 
-  // ── Free-tier gates ──
-  // Shifts are UNLIMITED on free (manual and timer both cost nothing to run —
-  // they're just DB rows). Only screenshot import is metered, because it's the one
-  // entry method with a real per-use cost (Claude API, ~1.3c per import).
+  // ── Import metering ──
+  // Shifts are UNLIMITED (manual and timer cost nothing — they're just DB rows).
+  // Only imports are metered, via a CREDIT BALANCE: screenshot 1, weekly 2,
+  // CSV 10. This is the ONLY paid thing in the app.
   const FREE_SCREENSHOT_LIMIT = 10;
 
-  // Screenshot import is metered by a CREDIT BALANCE (screenshotCredits), which
-  // starts at FREE_SCREENSHOT_CREDITS and grows with one-time purchases. This is
-  // the one feature NOT unlocked by beta/pro, because each import has a real cost.
-  // Pre-beta Pro users (BETA_MODE off) still get unlimited.
-  const canImportScreenshot = () => (!BETA_MODE && isPro) || screenshotImportsUsed < screenshotCredits;
+  // Screenshot/import metering by credit balance (screenshotCredits), which starts
+  // at FREE_SCREENSHOT_CREDITS and grows with one-time purchases. Applies to EVERY
+  // user now (no Pro bypass) — each import has a real cost (Claude API).
+  const canImportScreenshot = () => screenshotImportsUsed < screenshotCredits;
   const screenshotsRemaining = () => Math.max(0, screenshotCredits - screenshotImportsUsed);
   // NOTE: credits are granted SERVER-SIDE by the stripe-webhook after payment,
   // then pulled into state via fetchProfile on checkout-return. There is
@@ -11592,21 +11594,18 @@ export default function GigTrack() {
   // (Was 3 days — too short to be useful; a month gives them time to log enough
   // shifts that the comparison actually means something.)
   const BENCHMARK_GRACE_DAYS = 30;
-  const benchmarkDaysRemaining = (() => {
-    if (isPro) return Infinity; // Pro always has access
-    if (!accountCreatedAt) return BENCHMARK_GRACE_DAYS; // unknown, give full grace
-    const created = new Date(accountCreatedAt);
-    const now = new Date();
-    const msPerDay = 1000 * 60 * 60 * 24;
-    const daysSince = (now - created) / msPerDay;
-    return Math.max(0, Math.ceil(BENCHMARK_GRACE_DAYS - daysSince));
-  })();
-  const benchmarksUnlocked = isPro || benchmarkDaysRemaining > 0;
+  // Credits-only model: benchmarks are free forever, so there is no grace-period
+  // countdown. Infinity makes benchmarksUnlocked always true and suppresses the
+  // "N days left of free benchmarks" nag (which would be false now).
+  const benchmarkDaysRemaining = Infinity;
+  const benchmarksUnlocked = true; // everything unlocked, always
 
-  // Routes to a paywall with optional reason text
+  // Credits-only model: every "gate" is a credit shortfall, so route to the
+  // top-up modal rather than a Pro paywall (which no longer exists). Kept named
+  // gateToPaywall so its callers don't need touching in this pass.
   const gateToPaywall = (reason) => {
     if (reason) showToast(reason);
-    setScreen("paywall");
+    setBetaCreditsOpen(true);
   };
 
   const upgradeToPro = () => {
@@ -11680,10 +11679,10 @@ export default function GigTrack() {
           onOrderSession={() => setScreen("ordersession")}
           onViewLog={() => setScreen("log")}
           onSettings={() => setScreen("settings")}
-          onUpgrade={() => setScreen("paywall")}
+          onUpgrade={() => setBetaCreditsOpen(true)}
           onLogShift={() => setScreen("logshift")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
-          onBenchmarks={() => benchmarksUnlocked ? setScreen("benchmarks") : setScreen("paywall")}
+          onBenchmarks={() => setScreen("benchmarks")}
           catchupTask={catchup}
           catchupRemaining={catchupRemainingDays()}
           onResumeCatchup={resumeCatchup}
@@ -11718,7 +11717,7 @@ export default function GigTrack() {
               if (BETA_MODE) {
                 setBetaCreditsOpen(true); // out of credits → buy a top-up pack
               } else {
-                gateToPaywall(`You've used all your screenshot imports. Upgrade to Pro for more.`);
+                gateToPaywall(`You're out of credits. Top up to keep importing.`);
               }
               return;
             }
@@ -11738,7 +11737,7 @@ export default function GigTrack() {
             }
             setScreen("csvimport");
           }}
-          onUpgrade={() => BETA_MODE ? setBetaCreditsOpen(true) : setScreen("paywall")}
+          onUpgrade={() => setBetaCreditsOpen(true)}
         />
       )}
       {screen === "screenshotimport" && (
@@ -11908,7 +11907,7 @@ export default function GigTrack() {
           targets={targets}
           isPro={unlocked}
           onGoToSettings={() => setScreen("settings")}
-          onUpgrade={() => setScreen("paywall")}
+          onUpgrade={() => setBetaCreditsOpen(true)}
           showScoring={showScoring}
         />
       )}
@@ -11918,7 +11917,7 @@ export default function GigTrack() {
           isPro={unlocked}
           onBack={() => setScreen("home")}
           onDetail={(id) => { setDetailId(id); setScreen("detail"); }}
-          onUpgrade={() => setScreen("paywall")}
+          onUpgrade={() => setBetaCreditsOpen(true)}
           showScoring={showScoring}
         />
       )}
@@ -11978,7 +11977,7 @@ export default function GigTrack() {
           }}
           onDeleteAccount={handleDeleteAccount}
           isPro={unlocked}
-          onUpgrade={() => setScreen("paywall")}
+          onUpgrade={() => setBetaCreditsOpen(true)}
           theme={theme}
           onTheme={setTheme}
           authUser={authUser}
