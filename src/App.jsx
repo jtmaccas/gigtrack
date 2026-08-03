@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.143";
+const CURRENT_VERSION = "ALPHA 0.15.144";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
@@ -10255,33 +10255,31 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
               <div
                 className="settings-item"
                 style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
-                onClick={isPro ? () => exportPDF(trips, user) : onUpgrade}
+                onClick={() => exportPDF(trips, user)}
               >
                 <div className="settings-item-left">
                   <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    {!isPro && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>}
                     Export as PDF
                   </div>
                   <div className="settings-item-sub">
-                    {isPro ? "ATO-ready shift log report" : "Upgrade to Pro for PDF export"}
+                    ATO-ready shift log report
                   </div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
               </div>
 
-              {/* Export as CSV (Pro only) */}
+              {/* Export as CSV */}
               <div
                 className="settings-item"
                 style={{cursor:"pointer"}}
-                onClick={isPro ? () => exportCSV(trips, user) : onUpgrade}
+                onClick={() => exportCSV(trips, user)}
               >
                 <div className="settings-item-left">
                   <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                    {!isPro && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>}
                     Export as CSV
                   </div>
                   <div className="settings-item-sub">
-                    {isPro ? "Raw shift data for spreadsheets & accountants" : "Upgrade to Pro for CSV export"}
+                    Raw shift data for spreadsheets & accountants
                   </div>
                 </div>
                 <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
@@ -10467,17 +10465,14 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 <div
                   className="settings-item"
                   style={{borderBottom:"0.5px solid var(--border)", cursor: isPro ? "default" : "pointer"}}
-                  onClick={() => { if (!isPro) onUpgrade?.(); }}
+                  onClick={() => {}}
                 >
                   <div className="settings-item-left">
                     <div className="settings-item-label">
                       Weekly Earnings Goal
-                      {!isPro && <span style={{marginLeft:"6px",fontSize:"11px"}}>🔒</span>}
                     </div>
                     <div className="settings-item-sub">
-                      {isPro
-                        ? "Shown as progress on home screen"
-                        : "Upgrade to Pro to set your own goal"}
+                      Shown as progress on home screen
                     </div>
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
@@ -10487,10 +10482,8 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                       type="number"
                       min="0"
                       step="50"
-                      value={isPro ? goalInput : "800"}
-                      disabled={!isPro}
-                      onChange={e => { if (isPro) setGoalInput(e.target.value); }}
-                      style={{opacity: isPro ? 1 : 0.6, cursor: isPro ? "text" : "not-allowed"}}
+                      value={goalInput}
+                      onChange={e => setGoalInput(e.target.value)}
                     />
                   </div>
                 </div>
@@ -10498,14 +10491,9 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 {/* Scoring targets */}
                 <div style={{padding:"13px 15px"}}>
                   <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"10px"}}>
-                    Scoring Targets {!isPro && <span style={{fontSize:"10px",color:"var(--purple)",background:"var(--purple-dim)",padding:"2px 7px",borderRadius:"10px",marginLeft:"6px"}}>Pro</span>}
+                    Scoring Targets
                   </div>
-                  {!isPro ? (
-                    <div style={{textAlign:"center",padding:"12px 0"}}>
-                      <div style={{fontSize:"12px",color:"var(--muted)",marginBottom:"10px"}}>Unlock custom scoring targets with Pro.</div>
-                      <button onClick={onUpgrade} style={{padding:"9px 20px",background:"var(--green)",color:"var(--on-coral)",border:"none",borderRadius:"8px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Upgrade to Pro →</button>
-                    </div>
-                  ) : (
+                  {(
                     <>
                       {/* Pro-only: show/hide scoring display. Calcs always run. */}
                       <div style={{padding:"4px 0 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -11608,23 +11596,6 @@ export default function GigTrack() {
     setBetaCreditsOpen(true);
   };
 
-  const upgradeToPro = () => {
-    const updated = { ...user, isPro: true, isGuest: false };
-    saveUser(updated);
-    // Sync to cloud — fire-and-forget
-    saveProfile({
-      name: updated.name,
-      region,
-      kmPref,
-      weeklyGoal,
-      isPro: true,
-      isGuest: false,
-      startOdo: updated.startOdo,
-    }).catch(() => {});
-    setScreen("home");
-    showToast("Welcome to GigTrack Pro");
-  };
-
   if (screen === "loading") return null;
 
   const mainScreens = ["home", "log", "insights", "settings"];
@@ -11647,12 +11618,8 @@ export default function GigTrack() {
         />
       )}
       {screen === "setup" && <SetupScreen onComplete={handleSetupComplete} />}
-      {screen === "paywall" && (
-        <PremiumPaywallScreen
-          onBack={() => setScreen("settings")}
-          onSubscribe={() => upgradeToPro()}
-        />
-      )}
+      {/* Pro paywall route removed — credits-only model, no Pro to upgrade to.
+          Import shortfalls route to the credits top-up modal instead. */}
       {screen === "home" && (
         <HomeScreen
           user={user} trips={trips} kmPref={kmPref}
