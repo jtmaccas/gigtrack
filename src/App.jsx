@@ -973,8 +973,18 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.14.137";
+const CURRENT_VERSION = "ALPHA 0.15.139";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.15",
+    date: "3/8/26",
+    items: [
+      { tag: "NEW", text: "Weekly catch-up is here: import a weekly earnings screenshot and GigTrack sets up a task to log each day, right from the Log Shift screen." },
+      { tag: "NEW", text: "Bulk import your past shifts from a spreadsheet (CSV or Excel) — map your columns once and add them all at once." },
+      { tag: "NEW", text: "Faster shift entry: the form now shows just the essentials, with an 'Add detail' button for tips, active time, notes and more." },
+      { tag: "FIXED", text: "The bottom menu bar now sits flush on phones with a home-indicator bar — no more gap or overlap at the bottom of the screen." },
+    ],
+  },
   {
     version: "ALPHA 0.14",
     date: "29/7/26",
@@ -1538,7 +1548,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .topbar-back{width:34px;height:34px;border-radius:var(--rs);background:var(--elevated);border:0.5px solid var(--border);color:var(--muted);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all var(--tr);flex-shrink:0;}
 .topbar-back:hover{border-color:var(--green);color:var(--green);}
 .topbar-title{font-size:18px;font-weight:600;color:var(--text);}
-.scroll-area{flex:1;overflow-y:auto;padding-bottom:80px;background:var(--bg);}
+.scroll-area{flex:1;overflow-y:auto;padding-bottom:calc(88px + env(safe-area-inset-bottom));background:var(--bg);}
 
 /* Buttons */
 .btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 22px;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:all var(--tr);}
@@ -1552,7 +1562,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .btn-edit-style:hover{background:var(--blue-dim);}
 .btn-save{width:100%;padding:16px;background:var(--green-grad);color:var(--on-coral);border:none;border-radius:var(--r);font-family:'Inter',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);box-shadow:var(--shadow-green);}
 .btn-save:hover{background:var(--coral-press);}
-.save-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px 20px;background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
+.save-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px max(20px, calc(12px + env(safe-area-inset-bottom)));background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
 .val-msg{font-size:12px;color:var(--red);padding:10px 14px;background:var(--red-dim);border:0.5px solid var(--red-border);border-radius:var(--rs);margin-bottom:10px;display:none;}
 .val-msg.show{display:block;}
 
@@ -1841,7 +1851,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .order-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;display:flex;align-items:flex-end;justify-content:center;backdrop-filter:blur(4px);}
 .order-modal{background:var(--surface);border-radius:18px 18px 0 0;padding:24px 18px 36px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 32px rgba(0,0,0,.15);}
 .order-modal-title{font-size:19px;font-weight:800;color:var(--text);margin-bottom:16px;letter-spacing:-.02em;}
-.finish-shift-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px 20px;background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
+.finish-shift-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px max(20px, calc(12px + env(safe-area-inset-bottom)));background:linear-gradient(transparent,var(--bg) 35%);z-index:100;}
 .finish-shift-btn{width:100%;padding:16px;background:var(--green);color:var(--on-coral);border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all var(--tr);}
 .finish-shift-btn:hover{background:var(--coral-press);}
 .finish-shift-btn:disabled{background:var(--elevated);color:var(--muted2);cursor:not-allowed;}
@@ -1894,7 +1904,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .confirm-btns{display:flex;flex-direction:column;gap:8px;}
 
 /* Toast */
-.toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(16px);background:var(--surface);border:0.5px solid var(--green-border);color:var(--text);padding:11px 22px;border-radius:30px;font-size:13px;font-weight:600;z-index:400;opacity:0;pointer-events:none;transition:all .28s ease;white-space:nowrap;box-shadow:0 4px 24px rgba(0,0,0,.4);}
+.toast{position:fixed;bottom:calc(96px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%) translateY(16px);background:var(--surface);border:0.5px solid var(--green-border);color:var(--text);padding:11px 22px;border-radius:30px;font-size:13px;font-weight:600;z-index:400;opacity:0;pointer-events:none;transition:all .28s ease;white-space:nowrap;box-shadow:0 4px 24px rgba(0,0,0,.4);}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 
 /* Timer card */
@@ -1952,12 +1962,18 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .bottom-nav{
   position:fixed;bottom:0;left:0;right:0;
   height:76px;
+  /* Extend the nav's own height into the home-indicator safe area so it fills to
+     the physical screen edge (viewport-fit=cover means content runs edge-to-edge).
+     Without this the nav pins to bottom:0 but the OS home indicator leaves a gap
+     below it / overlaps the labels. max() keeps the original 8px on devices with
+     no inset. box-sizing:content-box so the inset ADDS to the 76px, not eats it. */
+  box-sizing:content-box;
   background:var(--nav-bg);
   -webkit-backdrop-filter:saturate(180%) blur(20px);
   backdrop-filter:saturate(180%) blur(20px);
   border-top:0.5px solid var(--border);
   display:flex;align-items:stretch;z-index:200;
-  padding-bottom:8px;
+  padding-bottom:max(8px, env(safe-area-inset-bottom));
 }
 .bottom-nav-item{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
