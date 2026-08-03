@@ -973,7 +973,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.139";
+const CURRENT_VERSION = "ALPHA 0.15.140";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
@@ -9243,6 +9243,10 @@ function CsvImportScreen({ onImport, onBack }) {
   const [splitCols, setSplitCols] = useState({ totalMin: { hr: null, min: null }, activeMins: { hr: null, min: null } });
   const TIME_FIELDS = ["totalMin", "activeMins"]; // fields that support the unit picker
   const [errMsg, setErrMsg] = useState("");
+  // Lighter mapping view: show only the fields needed to import (required + any
+  // the fuzzy-matcher already filled). Everything else (optional, unmatched) sits
+  // behind a "Show optional columns" toggle so the screen isn't a long scroll.
+  const [showOptionalCols, setShowOptionalCols] = useState(false);
   const fileRef = useRef(null);
 
   const handleFile = async (file) => {
@@ -9375,10 +9379,23 @@ function CsvImportScreen({ onImport, onBack }) {
               <span style={{flex:1,fontFamily:"'Inter',sans-serif",fontSize:"11px",fontWeight:"700",color:"var(--muted)",textAlign:"center",textTransform:"uppercase",letterSpacing:".04em"}}>Goes to (fixed)</span>
             </div>
 
-            {CSV_GROUPS.map(group => (
+            {CSV_GROUPS.map(group => {
+              const groupFields = CSV_FIELDS.filter(f => f.group === group).filter(f => {
+                if (showOptionalCols) return true;
+                if (f.required) return true;
+                // Keep an optional field visible if it's already mapped/configured
+                // (the fuzzy-matcher found it, or the user set it) — hiding a matched
+                // column would be confusing. Otherwise tuck it behind the toggle.
+                const mapped = mapping[f.key] != null;
+                const odoOn = ODO_FIELDS.includes(f.key) && odoMode[f.key];
+                const splitOn = TIME_FIELDS.includes(f.key) && (timeUnit[f.key] === "split");
+                return mapped || odoOn || splitOn;
+              });
+              if (groupFields.length === 0) return null;
+              return (
               <div key={group} style={{marginBottom:"20px"}}>
                 <div style={{fontFamily:"'Inter',sans-serif",fontSize:"10px",fontWeight:"800",letterSpacing:".08em",textTransform:"uppercase",color:"var(--coral)",marginBottom:"10px"}}>{group}</div>
-                {CSV_FIELDS.filter(f => f.group === group).map(f => {
+                {groupFields.map(f => {
               const isOdoField = ODO_FIELDS.includes(f.key);
               const odoOn = isOdoField && odoMode[f.key];
               const odoStart = odoCols[f.key]?.start;
@@ -9554,7 +9571,39 @@ function CsvImportScreen({ onImport, onBack }) {
               );
                 })}
               </div>
-            ))}
+              );
+            })}
+
+            {/* Toggle to reveal the optional, unmatched columns kept hidden for a
+                lighter default view. Count = optional fields not required and not
+                already mapped/configured. */}
+            {(() => {
+              const hiddenCount = CSV_FIELDS.filter(f => {
+                if (f.required) return false;
+                const mapped = mapping[f.key] != null;
+                const odoOn = ODO_FIELDS.includes(f.key) && odoMode[f.key];
+                const splitOn = TIME_FIELDS.includes(f.key) && (timeUnit[f.key] === "split");
+                return !(mapped || odoOn || splitOn);
+              }).length;
+              if (showOptionalCols && hiddenCount === 0) return null;
+              return (
+                <button
+                  onClick={() => setShowOptionalCols(v => !v)}
+                  style={{
+                    width:"100%",padding:"12px",marginBottom:"18px",cursor:"pointer",
+                    background:"var(--elevated)",border:"0.5px dashed var(--muted2)",
+                    borderRadius:"12px",color:"var(--muted)",
+                    fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"700",
+                    display:"flex",alignItems:"center",justifyContent:"center",gap:"7px",
+                  }}
+                >
+                  {showOptionalCols
+                    ? <>Hide optional columns</>
+                    : <><span style={{fontSize:"15px"}}>+</span> Show optional columns
+                        {hiddenCount > 0 && <span style={{fontSize:"11px",fontWeight:"500",color:"var(--muted2)"}}>· {hiddenCount} more</span>}</>}
+                </button>
+              );
+            })()}
 
             {/* File-wide platform — only shown when NO platform column is mapped.
                 If the sheet has a platform column, the user maps it above and each
