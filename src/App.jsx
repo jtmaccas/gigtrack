@@ -1108,7 +1108,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.16.156";
+const CURRENT_VERSION = "ALPHA 0.16.157";
 const CHANGELOG = [
   {
     version: "ALPHA 0.16",
@@ -9383,6 +9383,151 @@ function InstallHelpScreen({ onBack }) {
   );
 }
 
+// ─── HOW TO USE GIGTRACK ─── In-app guide. Mirrors InstallHelpScreen's pattern:
+// a grid of feature "hero" squares; tapping one reveals a short what-it-does
+// blurb plus numbered steps below. Purely presentational — no new state beyond
+// which feature is selected.
+function HowToScreen({ onBack }) {
+  const [feature, setFeature] = useState(null);
+
+  const FEATURES = [
+    {
+      id: "log",
+      label: "Log a shift",
+      blurb: "Record what you earned, how long you were online, your distance and deliveries — by timer or straight from memory.",
+      icon: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4"/><path d="M5 8h14"/><rect x="4" y="6" width="16" height="16" rx="2"/><path d="M9 14l2 2 4-4"/></svg>,
+      steps: [
+        "Tap the big Log Shift button in the bottom bar.",
+        "Choose a live timer (start it when you go online, stop when you finish) or manual entry if you're logging after the fact.",
+        "Fill the essentials: what you earned, your online time, distance and deliveries. Tap 'Add detail' for tips, active time or notes.",
+        "Save. Your shift appears in the Shift Log and your week's totals update on the home screen.",
+      ],
+    },
+    {
+      id: "screenshot",
+      label: "Screenshot import",
+      blurb: "Turn a photo of your earnings summary into a logged shift automatically — no typing the numbers in yourself.",
+      icon: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M8 5l1-2h6l1 2"/></svg>,
+      steps: [
+        "On the Log Shift screen, tap Screenshot import.",
+        "Pick the earnings-summary screenshot from your Uber Eats or DoorDash app.",
+        "GigTrack reads the numbers and shows you a filled-in shift to check.",
+        "Confirm and save. Each screenshot import uses 1 credit — you only pay on a successful read, never a failed one.",
+      ],
+    },
+    {
+      id: "weekly",
+      label: "Weekly catch-up",
+      blurb: "Behind on logging? Import a weekly earnings summary and GigTrack sets up a task to log each day of that week.",
+      icon: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="M8 2v4M16 2v4"/><path d="M8 15h3"/></svg>,
+      steps: [
+        "On the Log Shift screen, tap Weekly catch-up.",
+        "Import your weekly summary screenshot. GigTrack works out which days you drove.",
+        "A task appears on your home screen with a card for each day still to account for.",
+        "Work through the days whenever it suits — the task waits for you and shows what's left. A weekly import uses 2 credits.",
+      ],
+    },
+    {
+      id: "csv",
+      label: "Bulk import",
+      blurb: "Bring in your whole history at once from a spreadsheet, so the app is full of your real shifts from day one.",
+      icon: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16v16H4z"/><path d="M4 9h16M4 14h16M9 4v16"/></svg>,
+      steps: [
+        "Export your shift history from your platform into a spreadsheet (CSV or Excel).",
+        "On the Log Shift screen, tap Bulk import from a file and pick it.",
+        "Match your columns to GigTrack's fields once — it auto-matches most for you — then preview to check it looks right.",
+        "Import. Every shift lands at once. A bulk import uses 5 credits no matter how many shifts.",
+      ],
+    },
+    {
+      id: "benchmarks",
+      label: "Benchmarks",
+      blurb: "See how your earnings compare to other drivers in your actual area — your zone, your state, or nationally.",
+      icon: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/></svg>,
+      steps: [
+        "Set your zone in Settings so GigTrack knows your area.",
+        "Open Benchmarks from the home screen zone card, or the Insights tab.",
+        "See where you sit against your zone's spread, the median, and the top 10% — plus which days pay best.",
+        "Figures are built from real shifts logged by drivers in your zone. The more people log, the sharper the comparison gets.",
+      ],
+    },
+    {
+      id: "tax",
+      label: "Tax & ATO report",
+      blurb: "Track your ATO cents-per-kilometre deduction automatically and export a tidy report at tax time.",
+      icon: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg>,
+      steps: [
+        "Every shift's deduction is worked out for you using the ATO cents-per-km rate for that financial year.",
+        "Choose in Settings whether the deduction counts delivery kilometres only or all shift kilometres (Distance Unit).",
+        "Open the Shift Log and tap Export to generate a PDF report of your shifts and total deduction.",
+        "Save or share the PDF for your tax return. GigTrack isn't tax advice — confirm figures with a registered tax agent.",
+      ],
+    },
+  ];
+
+  const current = FEATURES.find(f => f.id === feature);
+
+  return (
+    <div className="view active" style={{background:"var(--bg)"}}>
+      <div className="topbar">
+        <button className="topbar-back" onClick={onBack}>←</button>
+        <div className="topbar-title">How to use GigTrack</div>
+      </div>
+      <div className="scroll-area" style={{padding:"18px"}}>
+
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--muted)",lineHeight:"1.55",marginBottom:"20px"}}>
+          A quick guide to what GigTrack can do. Tap any feature to see what it does and how to use it.
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"22px"}}>
+          {FEATURES.map(f => (
+            <button
+              key={f.id}
+              onClick={() => setFeature(f.id)}
+              style={{
+                display:"flex",flexDirection:"column",alignItems:"flex-start",gap:"10px",
+                padding:"18px 14px",cursor:"pointer",textAlign:"left",
+                background:feature === f.id ? "var(--coral-dim)" : "var(--elevated)",
+                border:feature === f.id ? "1.5px solid var(--coral)" : "1px solid var(--border)",
+                borderRadius:"16px",transition:"all var(--tr)",
+              }}
+            >
+              <span style={{color:feature === f.id ? "var(--coral)" : "var(--muted)"}}>{f.icon}</span>
+              <span style={{fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",color:"var(--text)",lineHeight:"1.3"}}>{f.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {current && (
+          <>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",lineHeight:"1.55",marginBottom:"14px",padding:"0 2px"}}>
+              {current.blurb}
+            </div>
+            <div style={{
+              background:"var(--elevated)",border:"1px solid var(--border)",borderRadius:"16px",padding:"6px 4px",
+            }}>
+              {current.steps.map((step, i) => (
+                <div key={i} style={{
+                  display:"flex",gap:"14px",alignItems:"flex-start",padding:"14px 14px",
+                  borderBottom:i < current.steps.length - 1 ? "0.5px solid var(--border)" : "none",
+                }}>
+                  <div style={{
+                    flexShrink:0,width:"24px",height:"24px",borderRadius:"100px",
+                    background:"var(--coral)",color:"var(--on-coral)",
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"800",
+                  }}>{i + 1}</div>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:"13px",color:"var(--text)",lineHeight:"1.5",paddingTop:"2px"}}>{step}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── WEEKLY CATCH-UP ─── Turns a weekly summary into per-day shift entries.
 // Platform-aware: DoorDash days arrive with real earnings pre-filled (read from
 // the printed dash list); Uber days arrive blank (we only detected which days
@@ -10109,7 +10254,7 @@ function WeeklyCatchupScreen({ detection, savedDates = [], trips = [], onAddDay,
   );
 }
 
-function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
+function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew, onChangePassword, onBuyCredits, onPurchaseHistory, onInstallHelp, onHowTo, screenshotsRemaining, isBeta = false, onUpdateUser, kmPref, onKmPref, atoRate, onAtoRate, targets, onTargets, weeklyGoal, onWeeklyGoal, region, onRegion, onDeleteAccount, isPro = false, onUpgrade, theme = "light", onTheme, authUser = null, onSignIn, onSignOut, showScoring = true, onShowScoring }) {
   // ── State ──────────────────────────────────────────────────────────────────
   const [name,      setName]      = useState(user?.name || "");
   const [regionVal, setRegionVal] = useState(region || "");
@@ -10530,6 +10675,22 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
           <div>
             <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Feedback</div>
             <SettingsSectionCard>
+              {/* How to use GigTrack — in-app feature guide */}
+              <div
+                className="settings-item"
+                style={{borderBottom:"0.5px solid var(--border)",cursor:"pointer"}}
+                onClick={onHowTo}
+              >
+                <div className="settings-item-left">
+                  <div className="settings-item-label" style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+                    How to use GigTrack
+                  </div>
+                  <div className="settings-item-sub">A quick guide to logging, imports, benchmarks and tax</div>
+                </div>
+                <span style={{fontSize:"14px",color:"var(--muted2)"}}>›</span>
+              </div>
+
               {/* Add to home screen — install instructions per platform */}
               <div
                 className="settings-item"
@@ -12079,6 +12240,7 @@ export default function GigTrack() {
           onBuyCredits={() => setBetaCreditsOpen(true)}
           onPurchaseHistory={() => setScreen("purchasehistory")}
           onInstallHelp={() => setScreen("installhelp")}
+          onHowTo={() => setScreen("howto")}
           screenshotsRemaining={screenshotsRemaining()}
           onChangePassword={() => setChangePasswordOpen(true)}
           onUpdateUser={saveUser}
@@ -12128,6 +12290,9 @@ export default function GigTrack() {
       )}
       {screen === "installhelp" && (
         <InstallHelpScreen onBack={() => setScreen("settings")} />
+      )}
+      {screen === "howto" && (
+        <HowToScreen onBack={() => setScreen("settings")} />
       )}
       {screen === "catchup" && catchup && (
         <WeeklyCatchupScreen
