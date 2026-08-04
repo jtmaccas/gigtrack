@@ -1108,7 +1108,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.16.155";
+const CURRENT_VERSION = "ALPHA 0.16.156";
 const CHANGELOG = [
   {
     version: "ALPHA 0.16",
@@ -2317,7 +2317,7 @@ function RatioBar({ ratio, label }) {
 const PREMIUM_FEATURES = [
   { icon:"📷", title:"Screenshot Import",   desc:"Pop a screenshot of your shift summary and we'll fill in the details for you. You get 10 free imports, then top up any time with one-time credit packs — no subscription." },
   { icon:"📍", title:"Local Benchmarks & Live Drivers", desc:"See how you stack up against real GigTrack drivers in your region — hourly rate, $ per delivery, plus live driver count by zone." },
-  { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target. Free users are locked at $800/week — Pro lets you set whatever target suits your goals." },
+  { icon:"🎯", title:"Custom Weekly Goal",             desc:"Set your own weekly earnings target and track your progress towards it right on the home screen." },
   { icon:"📊", title:"PDF & CSV Export",     desc:"Export an ATO-ready PDF report of your shifts, or raw CSV data perfect for sending to your accountant. Both are Pro." },
   { icon:"⚡", title:"Custom Scoring Targets",          desc:"Dial in your own hourly rate, $/delivery, and active time targets so your shift score reflects your personal benchmarks." },
 ];
@@ -10156,13 +10156,12 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
       activeTime: parseFloat(tActiveTime) || DEFAULT_TARGETS.activeTime,
     };
     onTargets(newTargets);
-    if (isPro) {
-      const g = parseFloat(goalInput);
-      if (!isNaN(g) && g > 0) onWeeklyGoal(g);
-    } else {
-      // Free users locked at $800 regardless of input
-      onWeeklyGoal(800);
-    }
+    // Weekly goal: honour whatever the user entered. (Previously this was gated
+    // behind isPro and forced $800 for "free" users — a leftover from the old
+    // Pro/free model. Since everyone is now on the credits model, that else
+    // branch ran on every save and silently reset the goal to 800.)
+    const g = parseFloat(goalInput);
+    if (!isNaN(g) && g > 0) onWeeklyGoal(g);
     onRegion(regionVal || null);
     DB.set("gt_default_platform", defaultPlatform);
     setSaved(true);
