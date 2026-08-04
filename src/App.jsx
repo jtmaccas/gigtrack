@@ -132,9 +132,14 @@ const FREE_SCREENSHOT_CREDITS = 10;
 // Per-action credit costs (credit model §0.6). One shared credit pool; different
 // actions spend at different rates. Charged ONLY on a successful, completed
 // result (a saved shift / a completed bulk insert) — never on a failed attempt.
+// CSV is deliberately cheaper than its "value" because its job is ONBOARDING
+// DATA DENSITY: get a user's whole history into the app on day one so it feels
+// real, leaving free-tier credits over to form the screenshot habit. CSV also
+// costs ~$0 in API (pure client-side parse, no Claude call), so cheap CSV imports
+// don't meaningfully add to cost exposure — screenshots are what meter real spend.
 const CREDIT_COST_SCREENSHOT = 1;
 const CREDIT_COST_WEEKLY = 2;
-const CREDIT_COST_CSV = 10;
+const CREDIT_COST_CSV = 5;
 // One-time top-up packs (credits added to the running balance).
 const SCREENSHOT_PACKS = [
   { id: "pack20", credits: 20, price: 2.99, label: "20 credits" },
@@ -973,7 +978,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.145";
+const CURRENT_VERSION = "ALPHA 0.15.146";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
