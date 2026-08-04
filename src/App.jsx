@@ -1108,8 +1108,20 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.16.157";
+const CURRENT_VERSION = "ALPHA 0.16.154";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.16",
+    date: "5/8/26",
+    items: [
+      { tag: "NEW", text: "Local benchmark zones now cover all of Australia — every state and territory, from capital-city suburbs to regional hubs, so you compare against drivers in your actual area." },
+      { tag: "NEW", text: "Weekly catch-up: import a weekly earnings screenshot and GigTrack sets up a task to log each day, right from the Log Shift screen." },
+      { tag: "NEW", text: "Bulk import your past shifts from a spreadsheet (CSV or Excel) — map your columns once and add them all at once." },
+      { tag: "NEW", text: "Faster shift entry: the form shows just the essentials, with an 'Add detail' button for tips, active time, notes and more." },
+      { tag: "FIXED", text: "Your weekly earnings goal now sticks after fully closing and reopening the app." },
+      { tag: "FIXED", text: "The tax report (PDF) now correctly labels shifts where you drove both platforms in a day." },
+    ],
+  },
   {
     version: "ALPHA 0.15",
     date: "3/8/26",
