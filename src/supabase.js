@@ -130,7 +130,6 @@ export const saveScreenshotCredits = async (credits) => {
 };
 
 export const saveProfile = async (profile) => {
-  console.log("[GigTrack] saveProfile called", profile);
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
@@ -142,13 +141,19 @@ export const saveProfile = async (profile) => {
       name:         profile.name ?? null,
       email:        user.email ?? null,
       region:       profile.region ?? null,
-      km_pref:      profile.kmPref ?? "active",
-      weekly_goal:  profile.weeklyGoal ?? 800,
       is_pro:       !!profile.isPro,
       is_guest:     !!profile.isGuest,
       start_odo:    profile.startOdo ?? null,
-      show_scoring: profile.showScoring ?? true,
     };
+    // Only write these when actually provided. syncProfile() sends the whole
+    // profile object from a state closure, so a partial update triggered by some
+    // OTHER setting (region, km pref, scoring…) could carry a stale/undefined
+    // value here and clobber the real one with a default. Guarding each field
+    // means a save only touches what was genuinely passed. (Bug: weekly goal kept
+    // resetting to 800 on reopen because an unrelated sync overwrote it.)
+    if (profile.weeklyGoal !== undefined && profile.weeklyGoal !== null) row.weekly_goal = profile.weeklyGoal;
+    if (profile.kmPref !== undefined)      row.km_pref = profile.kmPref ?? "active";
+    if (profile.showScoring !== undefined) row.show_scoring = !!profile.showScoring;
     // Beta plan + screenshot credits — only include when provided so a partial
     // save (e.g. just credits) doesn't overwrite other fields with defaults.
     if (profile.plan !== undefined)             row.plan = profile.plan;

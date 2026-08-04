@@ -399,20 +399,52 @@ const csvAutoMap = (headers, threshold = 0.6) => {
 // (Darwin/Hobart) so we collapse those to 2. Canberra's zones are spread
 // across 2- and 3-segment ids, so it's grouped explicitly. 2-segment ids
 // (e.g. "nsw-newcastle") are already their own bucket.
-const BUCKET_COLLAPSE_TO_CITY = new Set(["nt-darwin", "tas-hob", "qld-ipswich"]);
+const BUCKET_COLLAPSE_TO_CITY = new Set([
+  "nt-darwin", "tas-hob", "qld-ipswich",
+  // Sunshine Coast: 5 zones collapse to one qld-sc bucket for counting (kept
+  // separate from regional — it's its own populated area).
+  "qld-sc",
+  // Regional QLD families collapse to their prefix, then BUCKET_MERGE routes
+  // them into the shared qld-regional counting bucket.
+  "qld-dd", "qld-widebay", "qld-mackay", "qld-fnq", "qld-nw",
+  // Regional NSW: the 6 far-regional zones collapse to one nsw-reg prefix, then
+  // BUCKET_MERGE routes them into the shared nsw-regional counting bucket.
+  // (Central Coast, Blue Mountains, Newcastle, Wollongong stay their own buckets.)
+  "nsw-reg",
+  // Regional VIC: 6 zones collapse to vic-reg → merged to vic-regional for
+  // counting. (Geelong, Ballarat stay their own buckets.)
+  "vic-reg",
+  // Regional SA: 5 zones collapse to sa-reg → merged to sa-regional.
+  "sa-reg",
+  // Regional WA: 4 hub zones collapse to wa-reg → merged to wa-regional (shared
+  // with the North/South catch-alls) for counting.
+  "wa-reg",
+]);
 // Beta-only: merge whole buckets into another for COUNTING purposes (adjacent
 // areas that are sparse on their own). Real zone IDs, labels, benchmarks and
 // dropdown position are untouched — counting only.
 //   - Ipswich/Springfield → Brisbane West (adjacent to outer west Brisbane)
 //   - Gold Coast Far South (Palm Beach/Coolangatta) → Gold Coast South
-//   - Toowoomba + Regional Central + Regional North → one "QLD Regional" bucket
-//     (Sunshine Coast deliberately kept separate — it's its own populated area)
+//   - Darling Downs + Wide Bay + Mackay + FNQ + Central/North/NW → one "QLD
+//     Regional" counting bucket (each keeps its own label/benchmark; sparse
+//     areas just count together for presence). Sunshine Coast deliberately
+//     kept separate (qld-sc) — it's its own populated area.
 const BUCKET_MERGE = {
   "qld-ipswich":         "qld-bne-w",
   "qld-gc-fs":           "qld-gc-s",
-  "qld-dd-toowoomba":    "qld-regional",
+  "qld-dd":              "qld-regional",
+  "qld-widebay":         "qld-regional",
+  "qld-mackay":          "qld-regional",
+  "qld-fnq":             "qld-regional",
+  "qld-nw":              "qld-regional",
   "qld-regional-central":"qld-regional",
   "qld-regional-north":  "qld-regional",
+  "nsw-reg":             "nsw-regional",
+  "vic-reg":             "vic-regional",
+  "sa-reg":              "sa-regional",
+  "wa-reg":              "wa-regional",
+  "wa-regional-south":   "wa-regional",
+  "wa-regional-north":   "wa-regional",
 };
 const presenceBucket = (zoneId) => {
   if (!zoneId) return zoneId;
@@ -498,11 +530,30 @@ const REGIONS = [
   // (Palm Beach/Coolangatta — grouped under Gold Coast South)
   { id: "qld-gc-fs-palmbeach",       label: "Palm Beach & Coolangatta",       state: "QLD", group: "Gold Coast South" },
   // Darling Downs
-  { id: "qld-dd-toowoomba",          label: "Toowoomba & Surrounds",          state: "QLD", group: "Darling Downs" },
-  // Other QLD (kept for now until rezoned)
-  { id: "qld-sunshine-coast",        label: "Sunshine Coast",                 state: "QLD" },
-  { id: "qld-regional-central",      label: "Regional Central QLD",           state: "QLD" },
-  { id: "qld-regional-north",        label: "Regional North QLD",             state: "QLD" },
+  { id: "qld-dd-toowoomba",          label: "Toowoomba",                     state: "QLD", group: "Darling Downs" },
+  { id: "qld-dd-warwick",            label: "Warwick & Stanthorpe",          state: "QLD", group: "Darling Downs" },
+  { id: "qld-dd-dalby",              label: "Dalby & Chinchilla",            state: "QLD", group: "Darling Downs" },
+  // Sunshine Coast
+  { id: "qld-sc-noosa",              label: "Noosa & Tewantin",              state: "QLD", group: "Sunshine Coast" },
+  { id: "qld-sc-nambour",            label: "Nambour & Hinterland",          state: "QLD", group: "Sunshine Coast" },
+  { id: "qld-sc-maroochydore",       label: "Maroochydore & Mooloolaba",     state: "QLD", group: "Sunshine Coast" },
+  { id: "qld-sc-caloundra",          label: "Caloundra & Kawana",            state: "QLD", group: "Sunshine Coast" },
+  { id: "qld-sc-beerwah",            label: "Beerwah & Glass House Mtns",    state: "QLD", group: "Sunshine Coast" },
+  // Wide Bay
+  { id: "qld-widebay-bundaberg",     label: "Bundaberg",                     state: "QLD", group: "Wide Bay" },
+  { id: "qld-widebay-hervey",        label: "Hervey Bay & Maryborough",      state: "QLD", group: "Wide Bay" },
+  { id: "qld-widebay-gympie",        label: "Gympie",                        state: "QLD", group: "Wide Bay" },
+  // Mackay & Whitsundays
+  { id: "qld-mackay-mackay",         label: "Mackay & Sarina",               state: "QLD", group: "Mackay & Whitsundays" },
+  { id: "qld-mackay-whitsundays",    label: "Airlie Beach & Whitsundays",    state: "QLD", group: "Mackay & Whitsundays" },
+  // Far North Queensland
+  { id: "qld-fnq-cairns",            label: "Cairns & Northern Beaches",     state: "QLD", group: "Far North Queensland" },
+  { id: "qld-fnq-portdouglas",       label: "Port Douglas",                  state: "QLD", group: "Far North Queensland" },
+  // Regional QLD (broad catch-alls, kept)
+  { id: "qld-regional-central",      label: "Central QLD (Rockhampton & Gladstone)", state: "QLD", group: "Regional QLD" },
+  { id: "qld-regional-north",        label: "North QLD (Townsville)",        state: "QLD", group: "Regional QLD" },
+  { id: "qld-nw-mountisa",           label: "Mount Isa & North West",        state: "QLD", group: "Regional QLD" },
+  { id: "qld-regional",              label: "QLD Regional (other)",          state: "QLD", group: "Regional QLD" },
   // ── NSW ──────────────────────────────────────────────────
   // Sydney Inner
   { id: "nsw-syd-i-cbd",             label: "Sydney CBD & Surry Hills",        state: "NSW", group: "Sydney Inner" },
@@ -539,10 +590,21 @@ const REGIONS = [
   { id: "nsw-syd-s-hurstville",      label: "Hurstville & Kogarah",            state: "NSW", group: "Sydney South" },
   { id: "nsw-syd-s-sutherland",      label: "Sutherland & Miranda",            state: "NSW", group: "Sydney South" },
   { id: "nsw-syd-s-cronulla",        label: "Cronulla & Surrounds",            state: "NSW", group: "Sydney South" },
-  // Other NSW (kept for now)
-  { id: "nsw-newcastle",             label: "Newcastle & Hunter",              state: "NSW" },
-  { id: "nsw-wollongong",            label: "Wollongong & Illawarra",          state: "NSW" },
-  { id: "nsw-regional",              label: "NSW Regional",                    state: "NSW" },
+  // Other NSW major (own buckets)
+  { id: "nsw-newcastle",             label: "Newcastle & Hunter",              state: "NSW", group: "Newcastle & Hunter" },
+  { id: "nsw-wollongong",            label: "Wollongong & Illawarra",          state: "NSW", group: "Illawarra" },
+  { id: "nsw-centralcoast",          label: "Central Coast (Gosford & Wyong)", state: "NSW", group: "Central Coast" },
+  { id: "nsw-bluemtns",              label: "Blue Mountains",                  state: "NSW", group: "Blue Mountains" },
+  // Regional NSW (grouped for beta counting; each keeps its own benchmark)
+  { id: "nsw-reg-midnorth",          label: "Mid North Coast (Port Macquarie & Coffs)", state: "NSW", group: "Regional NSW" },
+  { id: "nsw-reg-northrivers",       label: "Northern Rivers (Byron & Lismore)", state: "NSW", group: "Regional NSW" },
+  { id: "nsw-reg-centralwest",       label: "Central West (Bathurst, Orange & Dubbo)", state: "NSW", group: "Regional NSW" },
+  { id: "nsw-reg-riverina",          label: "Riverina (Wagga Wagga)",          state: "NSW", group: "Regional NSW" },
+  { id: "nsw-reg-newengland",        label: "New England (Tamworth & Armidale)", state: "NSW", group: "Regional NSW" },
+  { id: "nsw-reg-murray",            label: "Murray (Albury)",                 state: "NSW", group: "Regional NSW" },
+  { id: "nsw-reg-southcoast",        label: "South Coast (Nowra & Batemans Bay)", state: "NSW", group: "Regional NSW" },
+  // Catch-all for anywhere in NSW not covered above
+  { id: "nsw-regional",              label: "NSW Regional (other)",            state: "NSW", group: "Regional NSW" },
   // ── VIC ──────────────────────────────────────────────────
   // Melbourne Inner
   { id: "vic-mel-i-cbd",             label: "Melbourne CBD & Docklands",       state: "VIC", group: "Melbourne Inner" },
@@ -562,6 +624,7 @@ const REGIONS = [
   { id: "vic-mel-se-caulfield",      label: "Caulfield & Bentleigh",           state: "VIC", group: "Melbourne South-East" },
   { id: "vic-mel-se-oakleigh",       label: "Oakleigh & Clayton",              state: "VIC", group: "Melbourne South-East" },
   { id: "vic-mel-se-dandenong",      label: "Dandenong & Surrounds",           state: "VIC", group: "Melbourne South-East" },
+  { id: "vic-mel-se-casey",          label: "Berwick, Narre Warren & Pakenham", state: "VIC", group: "Melbourne South-East" },
   // Melbourne Bayside
   { id: "vic-mel-b-brighton",        label: "Brighton & Hampton",              state: "VIC", group: "Melbourne Bayside" },
   { id: "vic-mel-b-cheltenham",      label: "Cheltenham & Mentone",            state: "VIC", group: "Melbourne Bayside" },
@@ -575,10 +638,18 @@ const REGIONS = [
   { id: "vic-mel-n-essendon",        label: "Essendon & Moonee Ponds",         state: "VIC", group: "Melbourne North" },
   { id: "vic-mel-n-broadmeadows",    label: "Broadmeadows & Craigieburn",      state: "VIC", group: "Melbourne North" },
   { id: "vic-mel-n-epping",          label: "Epping & Mernda",                 state: "VIC", group: "Melbourne North" },
-  // Other VIC (kept for now)
-  { id: "vic-geelong",               label: "Geelong",                         state: "VIC" },
-  { id: "vic-ballarat",              label: "Ballarat & Central Vic",          state: "VIC" },
-  { id: "vic-regional",              label: "VIC Regional",                    state: "VIC" },
+  // Other VIC major (own buckets)
+  { id: "vic-geelong",               label: "Geelong & Surf Coast",            state: "VIC", group: "Geelong & Surf Coast" },
+  { id: "vic-ballarat",              label: "Ballarat & Central Highlands",    state: "VIC", group: "Central Highlands" },
+  // Regional VIC (grouped for beta counting; each keeps its own benchmark)
+  { id: "vic-reg-bendigo",           label: "Bendigo",                         state: "VIC", group: "Regional VIC" },
+  { id: "vic-reg-mildura",           label: "Mildura",                         state: "VIC", group: "Regional VIC" },
+  { id: "vic-reg-shepparton",        label: "Shepparton & Goulburn Valley",    state: "VIC", group: "Regional VIC" },
+  { id: "vic-reg-gippsland",         label: "Gippsland (Traralgon, Morwell & Sale)", state: "VIC", group: "Regional VIC" },
+  { id: "vic-reg-warrnambool",       label: "Warrnambool & South West",        state: "VIC", group: "Regional VIC" },
+  { id: "vic-reg-wodonga",           label: "Wodonga & Wangaratta",            state: "VIC", group: "Regional VIC" },
+  // Catch-all for anywhere in VIC not covered above
+  { id: "vic-regional",              label: "VIC Regional (other)",            state: "VIC", group: "Regional VIC" },
   // ── WA ───────────────────────────────────────────────────
   // Perth Inner
   { id: "wa-perth-i-cbd",            label: "Perth CBD & Northbridge",         state: "WA",  group: "Perth Inner" },
@@ -605,9 +676,14 @@ const REGIONS = [
   // Perth Hills
   { id: "wa-perth-h-kalamunda",      label: "Kalamunda & Lesmurdie",           state: "WA",  group: "Perth Hills" },
   { id: "wa-perth-h-mundaring",      label: "Mundaring & Surrounds",           state: "WA",  group: "Perth Hills" },
-  // Other WA (kept for now)
-  { id: "wa-regional-south",         label: "Regional WA — South",             state: "WA"  },
-  { id: "wa-regional-north",         label: "Regional WA — North",             state: "WA"  },
+  // Regional WA hubs (grouped for beta counting; each keeps its own benchmark)
+  { id: "wa-reg-southwest",          label: "South West (Bunbury, Busselton & Margaret River)", state: "WA", group: "Regional WA" },
+  { id: "wa-reg-midwest",            label: "Mid West (Geraldton)",            state: "WA",  group: "Regional WA" },
+  { id: "wa-reg-goldfields",         label: "Goldfields (Kalgoorlie)",         state: "WA",  group: "Regional WA" },
+  { id: "wa-reg-greatsouthern",      label: "Great Southern (Albany)",         state: "WA",  group: "Regional WA" },
+  // Catch-alls for anywhere in WA not covered above
+  { id: "wa-regional-south",         label: "Regional WA — South (other)",     state: "WA",  group: "Regional WA" },
+  { id: "wa-regional-north",         label: "Regional WA — North (other)",     state: "WA",  group: "Regional WA" },
   // ── SA ───────────────────────────────────────────────────
   // Adelaide Inner
   { id: "sa-adel-i-cbd",             label: "Adelaide CBD & North Adelaide",   state: "SA",  group: "Adelaide Inner" },
@@ -629,8 +705,14 @@ const REGIONS = [
   // Adelaide West
   { id: "sa-adel-w-westlakes",       label: "West Lakes & Henley Beach",       state: "SA",  group: "Adelaide West" },
   { id: "sa-adel-w-portadel",        label: "Port Adelaide & Semaphore",       state: "SA",  group: "Adelaide West" },
-  // Other SA (kept for now)
-  { id: "sa-regional",               label: "SA Regional",                     state: "SA"  },
+  // Regional SA (grouped for beta counting; each keeps its own benchmark)
+  { id: "sa-reg-murraylands",        label: "Murraylands (Murray Bridge)",     state: "SA",  group: "Regional SA" },
+  { id: "sa-reg-fleurieu",           label: "Fleurieu Peninsula (Victor Harbor)", state: "SA", group: "Regional SA" },
+  { id: "sa-reg-limestone",          label: "Limestone Coast (Mount Gambier)", state: "SA",  group: "Regional SA" },
+  { id: "sa-reg-spencer",            label: "Spencer Gulf (Port Pirie & Whyalla)", state: "SA", group: "Regional SA" },
+  { id: "sa-reg-eyre",               label: "Eyre Peninsula (Port Lincoln)",   state: "SA",  group: "Regional SA" },
+  // Catch-all for anywhere in SA not covered above
+  { id: "sa-regional",               label: "SA Regional (other)",             state: "SA",  group: "Regional SA" },
   // ── ACT ──────────────────────────────────────────────────
   { id: "act-canberra-central",      label: "Canberra Central (Civic & City)", state: "ACT" },
   { id: "act-canberra-i-north",      label: "Inner North (Braddon & Dickson)", state: "ACT" },
@@ -645,15 +727,17 @@ const REGIONS = [
   { id: "tas-hob-glenorchy",         label: "Glenorchy & Surrounds",           state: "TAS", group: "Hobart" },
   { id: "tas-hob-kingston",          label: "Kingston & Blackmans Bay",        state: "TAS", group: "Hobart" },
   { id: "tas-hob-eastern",           label: "Eastern Shore (Bellerive & Howrah)",state:"TAS",group: "Hobart" },
-  // Other TAS (kept for now)
-  { id: "tas-launceston",            label: "Launceston",                      state: "TAS" },
-  { id: "tas-regional",              label: "TAS Regional",                    state: "TAS" },
+  // Other TAS
+  { id: "tas-launceston",            label: "Launceston & Northern Tasmania",  state: "TAS", group: "Northern Tasmania" },
+  { id: "tas-northwest",             label: "North West (Devonport & Burnie)", state: "TAS", group: "North West Tasmania" },
+  { id: "tas-regional",              label: "TAS Regional (other)",            state: "TAS", group: "Regional TAS" },
   // ── NT ───────────────────────────────────────────────────
   { id: "nt-darwin-cbd",             label: "Darwin CBD & Stuart Park",        state: "NT" },
   { id: "nt-darwin-north",           label: "Northern Suburbs (Casuarina & Nightcliff)", state: "NT" },
   { id: "nt-darwin-palmerston",      label: "Palmerston & Surrounds",          state: "NT" },
   { id: "nt-darwin-outer",           label: "Outer Darwin (Howard Springs & Humpty Doo)",state: "NT" },
   { id: "nt-alice-springs",          label: "Alice Springs",                   state: "NT" },
+  { id: "nt-regional",               label: "NT Regional (other)",             state: "NT" },
 ];
 
 // Beta bucket helpers (depend on REGIONS, so defined after it).
@@ -748,10 +832,29 @@ const REGION_BASE = {
   "qld-gc-fs-palmbeach":       { hourly: 28.7, perDel: 11.7, score: 92  },
   // Darling Downs
   "qld-dd-toowoomba":          { hourly: 25.4, perDel: 10.7, score: 84  },
-  // Other QLD
-  "qld-sunshine-coast":        { hourly: 27.8, perDel: 11.6, score: 92  },
+  "qld-dd-warwick":            { hourly: 23.6, perDel: 10.2, score: 79  },
+  "qld-dd-dalby":              { hourly: 23.2, perDel: 10.1, score: 78  },
+  // Sunshine Coast
+  "qld-sc-noosa":              { hourly: 28.4, perDel: 11.9, score: 94  },
+  "qld-sc-nambour":            { hourly: 26.6, perDel: 11.1, score: 88  },
+  "qld-sc-maroochydore":       { hourly: 28.1, perDel: 11.7, score: 93  },
+  "qld-sc-caloundra":          { hourly: 27.5, perDel: 11.5, score: 91  },
+  "qld-sc-beerwah":            { hourly: 26.0, perDel: 10.9, score: 86  },
+  // Wide Bay
+  "qld-widebay-bundaberg":     { hourly: 24.0, perDel: 10.4, score: 82  },
+  "qld-widebay-hervey":        { hourly: 24.4, perDel: 10.6, score: 83  },
+  "qld-widebay-gympie":        { hourly: 23.8, perDel: 10.3, score: 81  },
+  // Mackay & Whitsundays
+  "qld-mackay-mackay":         { hourly: 24.6, perDel: 10.7, score: 84  },
+  "qld-mackay-whitsundays":    { hourly: 25.2, perDel: 11.0, score: 86  },
+  // Far North Queensland
+  "qld-fnq-cairns":            { hourly: 25.0, perDel: 10.9, score: 85  },
+  "qld-fnq-portdouglas":       { hourly: 25.8, perDel: 11.2, score: 87  },
+  // Regional QLD
   "qld-regional-central":      { hourly: 24.2, perDel: 10.6, score: 83  },
   "qld-regional-north":        { hourly: 23.8, perDel: 10.4, score: 81  },
+  "qld-nw-mountisa":           { hourly: 24.8, perDel: 10.8, score: 84  },
+  "qld-regional":              { hourly: 23.8, perDel: 10.3, score: 81  },
 
   // ── NSW ──────────────────────────────────────────────────
   // Sydney Inner
@@ -792,6 +895,15 @@ const REGION_BASE = {
   // Other NSW
   "nsw-newcastle":             { hourly: 27.6, perDel: 11.5, score: 91  },
   "nsw-wollongong":            { hourly: 26.8, perDel: 11.2, score: 89  },
+  "nsw-centralcoast":          { hourly: 26.2, perDel: 11.0, score: 87  },
+  "nsw-bluemtns":              { hourly: 25.4, perDel: 10.7, score: 84  },
+  "nsw-reg-midnorth":          { hourly: 24.8, perDel: 10.6, score: 83  },
+  "nsw-reg-northrivers":       { hourly: 25.2, perDel: 10.8, score: 85  },
+  "nsw-reg-centralwest":       { hourly: 24.2, perDel: 10.4, score: 82  },
+  "nsw-reg-riverina":          { hourly: 24.0, perDel: 10.3, score: 81  },
+  "nsw-reg-newengland":        { hourly: 23.8, perDel: 10.2, score: 80  },
+  "nsw-reg-murray":            { hourly: 24.4, perDel: 10.5, score: 82  },
+  "nsw-reg-southcoast":        { hourly: 24.6, perDel: 10.6, score: 83  },
   "nsw-regional":              { hourly: 25.0, perDel: 10.7, score: 85  },
 
   // ── VIC ──────────────────────────────────────────────────
@@ -813,6 +925,7 @@ const REGION_BASE = {
   "vic-mel-se-caulfield":      { hourly: 30.1, perDel: 12.3, score: 97  },
   "vic-mel-se-oakleigh":       { hourly: 28.9, perDel: 11.9, score: 94  },
   "vic-mel-se-dandenong":      { hourly: 27.6, perDel: 11.4, score: 91  },
+  "vic-mel-se-casey":          { hourly: 27.0, perDel: 11.2, score: 89  },
   // Melbourne Bayside
   "vic-mel-b-brighton":        { hourly: 30.6, perDel: 12.5, score: 99  },
   "vic-mel-b-cheltenham":      { hourly: 29.2, perDel: 11.9, score: 95  },
@@ -829,6 +942,12 @@ const REGION_BASE = {
   // Other VIC
   "vic-geelong":               { hourly: 26.5, perDel: 11.1, score: 88  },
   "vic-ballarat":              { hourly: 25.2, perDel: 10.8, score: 85  },
+  "vic-reg-bendigo":           { hourly: 24.8, perDel: 10.6, score: 83  },
+  "vic-reg-mildura":           { hourly: 23.8, perDel: 10.2, score: 80  },
+  "vic-reg-shepparton":        { hourly: 24.2, perDel: 10.4, score: 82  },
+  "vic-reg-gippsland":         { hourly: 24.4, perDel: 10.5, score: 82  },
+  "vic-reg-warrnambool":       { hourly: 24.0, perDel: 10.3, score: 81  },
+  "vic-reg-wodonga":           { hourly: 24.0, perDel: 10.3, score: 81  },
   "vic-regional":              { hourly: 24.0, perDel: 10.4, score: 82  },
 
   // ── WA ───────────────────────────────────────────────────
@@ -858,6 +977,10 @@ const REGION_BASE = {
   "wa-perth-h-kalamunda":      { hourly: 25.8, perDel: 10.8, score: 86  },
   "wa-perth-h-mundaring":      { hourly: 24.6, perDel: 10.5, score: 83  },
   // Other WA
+  "wa-reg-southwest":          { hourly: 25.0, perDel: 10.7, score: 85  },
+  "wa-reg-midwest":            { hourly: 24.0, perDel: 10.3, score: 81  },
+  "wa-reg-goldfields":         { hourly: 24.6, perDel: 10.6, score: 83  },
+  "wa-reg-greatsouthern":      { hourly: 24.2, perDel: 10.4, score: 82  },
   "wa-regional-south":         { hourly: 24.4, perDel: 10.5, score: 83  },
   "wa-regional-north":         { hourly: 23.2, perDel: 10.1, score: 79  },
 
@@ -883,6 +1006,11 @@ const REGION_BASE = {
   "sa-adel-w-westlakes":       { hourly: 27.6, perDel: 11.4, score: 91  },
   "sa-adel-w-portadel":        { hourly: 26.9, perDel: 11.1, score: 89  },
   // Other SA
+  "sa-reg-murraylands":        { hourly: 23.8, perDel: 10.3, score: 81  },
+  "sa-reg-fleurieu":           { hourly: 24.0, perDel: 10.4, score: 82  },
+  "sa-reg-limestone":          { hourly: 23.6, perDel: 10.2, score: 80  },
+  "sa-reg-spencer":            { hourly: 23.4, perDel: 10.1, score: 79  },
+  "sa-reg-eyre":               { hourly: 23.2, perDel: 10.0, score: 78  },
   "sa-regional":               { hourly: 23.5, perDel: 10.2, score: 80  },
 
   // ── ACT ──────────────────────────────────────────────────
@@ -901,6 +1029,7 @@ const REGION_BASE = {
   "tas-hob-kingston":          { hourly: 25.8, perDel: 10.8, score: 86  },
   "tas-hob-eastern":           { hourly: 26.5, perDel: 11.0, score: 87  },
   "tas-launceston":            { hourly: 25.4, perDel: 10.8, score: 86  },
+  "tas-northwest":             { hourly: 24.2, perDel: 10.4, score: 82  },
   "tas-regional":              { hourly: 23.0, perDel: 10.0, score: 78  },
 
   // ── NT ───────────────────────────────────────────────────
@@ -909,6 +1038,7 @@ const REGION_BASE = {
   "nt-darwin-palmerston":      { hourly: 26.2, perDel: 10.9, score: 87  },
   "nt-darwin-outer":           { hourly: 25.1, perDel: 10.5, score: 84  },
   "nt-alice-springs":          { hourly: 24.6, perDel: 10.6, score: 83  },
+  "nt-regional":               { hourly: 23.4, perDel: 10.1, score: 79  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -978,7 +1108,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.148";
+const CURRENT_VERSION = "ALPHA 0.15.156";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
