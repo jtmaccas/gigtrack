@@ -29,9 +29,9 @@ const corsHeaders = {
 // amountCents must match the Price amount (it feeds the pending-purchase row /
 // receipt). The previous 249/399/599 prices were archived.
 const PACKS: Record<string, { priceId: string; credits: number; amountCents: number }> = {
-  pack20:  { priceId: "price_1TzvfGDVwzbt4ggwSaqKQBv3", credits: 20,  amountCents: 299 },
-  pack50:  { priceId: "price_1TzvfeDVwzbt4ggw3rePsB5I", credits: 50,  amountCents: 599 },
-  pack100: { priceId: "price_1Tzvg2DVwzbt4ggwzgGv51ae", credits: 100, amountCents: 999 },
+  pack20:  { priceId: "price_1U0TcAD5GMnveSsOMWVsxFo2", credits: 20,  amountCents: 299 },
+  pack50:  { priceId: "price_1U0TcMD5GMnveSsOoMvDOSzV", credits: 50,  amountCents: 599 },
+  pack100: { priceId: "price_1U0TcZD5GMnveSsO6p4z9Pjt", credits: 100, amountCents: 999 },
 };
 
 Deno.serve(async (req) => {
