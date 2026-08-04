@@ -1108,7 +1108,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.16.154";
+const CURRENT_VERSION = "ALPHA 0.16.155";
 const CHANGELOG = [
   {
     version: "ALPHA 0.16",
@@ -10132,7 +10132,6 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
     setTActiveKm(String(DEFAULT_TARGETS.activeKm)); setTActiveTime(String(DEFAULT_TARGETS.activeTime));
   };
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [saved,   setSaved]   = useState(false);
   const [deleteStep, setDeleteStep] = useState(0);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -10324,12 +10323,87 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 </div>
               </div>
 
-              {/* Currency */}
+              {/* Weekly Earnings Goal (moved up from Advanced — everyday setting) */}
               <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
                 <div className="settings-item-left">
-                  <div className="settings-item-label">Currency</div>
+                  <div className="settings-item-label">Weekly Earnings Goal</div>
+                  <div className="settings-item-sub">Shown as progress on home screen</div>
                 </div>
-                <span style={{fontSize:"13px",color:"var(--muted)"}}>AUD ($)</span>
+                <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                  <span style={{color:"var(--muted2)",fontSize:"13px"}}>$</span>
+                  <input
+                    className="settings-input"
+                    type="number"
+                    min="0"
+                    step="50"
+                    value={goalInput}
+                    onChange={e => setGoalInput(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* ATO Cents/km Rate (moved up from Advanced) */}
+              <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
+                <div className="settings-item-left">
+                  <div className="settings-item-label">ATO Cents/km Rate</div>
+                  <div className="settings-item-sub">FY{ATO_FY_LABEL} default: ${ATO_RATE_PER_KM.toFixed(2)}</div>
+                </div>
+                <input className="settings-input" type="number" step="0.01" min="0" value={rate} onChange={e => setRate(e.target.value)} />
+              </div>
+
+              {/* Scoring Targets (moved up from Advanced) */}
+              <div style={{padding:"13px 15px",borderBottom:"0.5px solid var(--border)"}}>
+                <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"10px"}}>
+                  Scoring Targets
+                </div>
+                <>
+                  {/* Show/hide scoring display. Calcs always run. */}
+                  <div style={{padding:"4px 0 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <div style={{flex:1,paddingRight:"12px"}}>
+                      <div style={{fontSize:"13px",fontWeight:"600",color:"var(--text)"}}>Show shift scoring</div>
+                      <div style={{fontSize:"11px",color:"var(--muted)",marginTop:"2px",lineHeight:1.35}}>
+                        Display the score badge and ratio bars on shifts and insights. Your data is still tracked either way.
+                      </div>
+                    </div>
+                    <button
+                      role="switch"
+                      aria-checked={showScoring}
+                      onClick={() => onShowScoring?.(!showScoring)}
+                      style={{
+                        flexShrink:0,width:"46px",height:"28px",borderRadius:"14px",border:"none",cursor:"pointer",
+                        background: showScoring ? "var(--green)" : "var(--border)",
+                        position:"relative",transition:"background .2s ease",padding:0,
+                      }}
+                    >
+                      <span style={{
+                        position:"absolute",top:"3px",left: showScoring ? "21px" : "3px",
+                        width:"22px",height:"22px",borderRadius:"50%",background:"#fff",
+                        transition:"left .2s ease",boxShadow:"0 1px 2px rgba(0,0,0,.3)",
+                      }} />
+                    </button>
+                  </div>
+
+                  <div style={{opacity: showScoring ? 1 : 0.45, pointerEvents: showScoring ? "auto" : "none", transition:"opacity .2s ease"}}>
+                  {[
+                    {label:"Hourly Rate",  value:tHourly,     set:setTHourly,     pre:"$",suf:"/hr"},
+                    {label:"Per Delivery", value:tPerDel,     set:setTPerDel,     pre:"$",suf:""},
+                    {label:"Active KM%",   value:tActiveKm,   set:setTActiveKm,   pre:"", suf:"%"},
+                    {label:"Active Time%", value:tActiveTime, set:setTActiveTime, pre:"", suf:"%"},
+                  ].map(({label,value,set,pre,suf}) => (
+                    <div key={label} className="settings-item" style={{padding:"10px 0",borderTop:"0.5px solid var(--border)"}}>
+                      <div className="settings-item-label" style={{fontSize:"12px"}}>{label}</div>
+                      <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                        {pre && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{pre}</span>}
+                        <input className="settings-input" type="number" min="0" step="0.5" value={value} onChange={e => set(e.target.value)} disabled={!showScoring} style={{width:"70px"}} />
+                        {suf && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{suf}</span>}
+                      </div>
+                    </div>
+                  ))}
+                  {isCustom && (
+                    <button className="btn btn-outline" style={{width:"100%",padding:"10px",fontSize:"12px",marginTop:"8px"}} onClick={resetTargets}>↺ Reset Defaults</button>
+                  )}
+                  </div>
+                </>
               </div>
 
               {/* Theme */}
@@ -10597,122 +10671,6 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 </div>
               </div>
             )}
-          </div>
-
-          {/* ── Advanced ── */}
-          <div>
-            <div style={{fontSize:"10px",fontWeight:"800",color:"var(--coral)",letterSpacing:".08em",textTransform:"uppercase",padding:"0 14px 8px"}}>Advanced</div>
-            <SettingsSectionCard>
-              {/* Toggle row */}
-              <div
-                className="settings-item"
-                style={{cursor:"pointer", borderBottom: showAdvanced ? "0.5px solid var(--border)" : "none"}}
-                onClick={() => setShowAdvanced(v => !v)}
-              >
-                <div className="settings-item-left">
-                  <div className="settings-item-label">ATO rate, goals & scoring</div>
-                  <div className="settings-item-sub">Tap to {showAdvanced ? "collapse" : "expand"}</div>
-                </div>
-                <span style={{fontSize:"14px",color:"var(--muted2)",transform: showAdvanced ? "rotate(90deg)" : "none",transition:"transform .2s ease",display:"inline-block"}}>›</span>
-              </div>
-
-            {showAdvanced && (
-              <>
-                {/* ATO Rate */}
-                <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
-                  <div className="settings-item-left">
-                    <div className="settings-item-label">ATO Cents/km Rate</div>
-                    <div className="settings-item-sub">FY{ATO_FY_LABEL} default: ${ATO_RATE_PER_KM.toFixed(2)}</div>
-                  </div>
-                  <input className="settings-input" type="number" step="0.01" min="0" value={rate} onChange={e => setRate(e.target.value)} />
-                </div>
-
-                {/* Weekly Goal — locked for free users */}
-                <div
-                  className="settings-item"
-                  style={{borderBottom:"0.5px solid var(--border)", cursor: isPro ? "default" : "pointer"}}
-                  onClick={() => {}}
-                >
-                  <div className="settings-item-left">
-                    <div className="settings-item-label">
-                      Weekly Earnings Goal
-                    </div>
-                    <div className="settings-item-sub">
-                      Shown as progress on home screen
-                    </div>
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
-                    <span style={{color:"var(--muted2)",fontSize:"13px"}}>$</span>
-                    <input
-                      className="settings-input"
-                      type="number"
-                      min="0"
-                      step="50"
-                      value={goalInput}
-                      onChange={e => setGoalInput(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                {/* Scoring targets */}
-                <div style={{padding:"13px 15px"}}>
-                  <div style={{fontSize:"12px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"10px"}}>
-                    Scoring Targets
-                  </div>
-                  {(
-                    <>
-                      {/* Pro-only: show/hide scoring display. Calcs always run. */}
-                      <div style={{padding:"4px 0 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                        <div style={{flex:1,paddingRight:"12px"}}>
-                          <div style={{fontSize:"13px",fontWeight:"600",color:"var(--text)"}}>Show shift scoring</div>
-                          <div style={{fontSize:"11px",color:"var(--muted)",marginTop:"2px",lineHeight:1.35}}>
-                            Display the score badge and ratio bars on shifts and insights. Your data is still tracked either way.
-                          </div>
-                        </div>
-                        <button
-                          role="switch"
-                          aria-checked={showScoring}
-                          onClick={() => onShowScoring?.(!showScoring)}
-                          style={{
-                            flexShrink:0,width:"46px",height:"28px",borderRadius:"14px",border:"none",cursor:"pointer",
-                            background: showScoring ? "var(--green)" : "var(--border)",
-                            position:"relative",transition:"background .2s ease",padding:0,
-                          }}
-                        >
-                          <span style={{
-                            position:"absolute",top:"3px",left: showScoring ? "21px" : "3px",
-                            width:"22px",height:"22px",borderRadius:"50%",background:"#fff",
-                            transition:"left .2s ease",boxShadow:"0 1px 2px rgba(0,0,0,.3)",
-                          }} />
-                        </button>
-                      </div>
-
-                      <div style={{opacity: showScoring ? 1 : 0.45, pointerEvents: showScoring ? "auto" : "none", transition:"opacity .2s ease"}}>
-                      {[
-                        {label:"Hourly Rate",  value:tHourly,     set:setTHourly,     pre:"$",suf:"/hr"},
-                        {label:"Per Delivery", value:tPerDel,     set:setTPerDel,     pre:"$",suf:""},
-                        {label:"Active KM%",   value:tActiveKm,   set:setTActiveKm,   pre:"", suf:"%"},
-                        {label:"Active Time%", value:tActiveTime, set:setTActiveTime, pre:"", suf:"%"},
-                      ].map(({label,value,set,pre,suf}) => (
-                        <div key={label} className="settings-item" style={{padding:"10px 0",borderTop:"0.5px solid var(--border)"}}>
-                          <div className="settings-item-label" style={{fontSize:"12px"}}>{label}</div>
-                          <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
-                            {pre && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{pre}</span>}
-                            <input className="settings-input" type="number" min="0" step="0.5" value={value} onChange={e => set(e.target.value)} disabled={!showScoring} style={{width:"70px"}} />
-                            {suf && <span style={{color:"var(--muted2)",fontSize:"13px"}}>{suf}</span>}
-                          </div>
-                        </div>
-                      ))}
-                      {isCustom && (
-                        <button className="btn btn-outline" style={{width:"100%",padding:"10px",fontSize:"12px",marginTop:"8px"}} onClick={resetTargets}>↺ Reset Defaults</button>
-                      )}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </>
-            )}
-            </SettingsSectionCard>
           </div>
 
           {/* ── Save button ── */}
