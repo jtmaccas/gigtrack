@@ -978,7 +978,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.146";
+const CURRENT_VERSION = "ALPHA 0.15.147";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
@@ -4877,11 +4877,14 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
   }, [activeShift?.resumedAt, activeShift?.paused, !!activeShift]);
 
   // Weekly stats for the 3-tile row (matches the hero earnings figure)
-  const weekActiveHrs  = weekTrips.reduce((s, t) => s + (t.activeMin || 0), 0);
+  // Online time (t.totalMin) is a REQUIRED field on every shift, so it always has
+  // a value — unlike active time, which the lighter form leaves optional (and so
+  // showed "—" on the home hero). The first hero uses Online, not Active.
+  const weekOnlineMin  = weekTrips.reduce((s, t) => s + (t.totalMin || 0), 0);
+  const weekOnlineHrs  = Math.floor(weekOnlineMin / 60);
+  const weekOnlineMins = weekOnlineMin % 60;
   const weekDeliveries = weekTrips.reduce((s, t) => s + (t.dels || 0), 0);
   const weekAvgPerDel  = weekDeliveries > 0 ? weekEarned / weekDeliveries : null;
-  const weekStatHrs    = Math.floor(weekActiveHrs / 60);
-  const weekStatMins   = weekActiveHrs % 60;
   const hasWeekData    = weekTrips.length > 0;
 
   // Week vs last week trend
@@ -5056,8 +5059,8 @@ function HomeScreen({ user, trips, onNewTrip, onViewLog, onSettings, kmPref, act
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",padding:"22px 16px 0"}}>
             {[
               {
-                label: "Active",
-                value: weekActiveHrs > 0 ? `${weekStatHrs}:${String(weekStatMins).padStart(2,"0")}` : "—",
+                label: "Online",
+                value: weekOnlineMin > 0 ? `${weekOnlineHrs}:${String(weekOnlineMins).padStart(2,"0")}` : "—",
                 color: "var(--green)", bg: "var(--green-dim)",
                 icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
               },
