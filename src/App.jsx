@@ -978,7 +978,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.147";
+const CURRENT_VERSION = "ALPHA 0.15.148";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
@@ -7920,7 +7920,10 @@ function exportPDF(trips, user) {
   y += 8;
 
   const body = sorted.map((t, i) => {
-    const platName = t.platform === "uber_eats" ? "Uber Eats" : t.platform === "doordash" ? "DoorDash" : "—";
+    const platName = t.platform === "uber_eats" ? "Uber Eats"
+      : t.platform === "doordash" ? "DoorDash"
+      : t.platform === "both" ? "Both"
+      : "—";
     const mins = Math.round((t.totalHrs || 0) * 60);
     const dur = `${Math.floor(mins/60)}h ${mins%60}m`;
     const tripDed = (t.totalKm || 0) * atoRateForDate(t.ts);
