@@ -1108,7 +1108,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.15.156";
+const CURRENT_VERSION = "ALPHA 0.16.157";
 const CHANGELOG = [
   {
     version: "ALPHA 0.15",
