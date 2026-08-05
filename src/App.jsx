@@ -1108,7 +1108,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.16.157";
+const CURRENT_VERSION = "ALPHA 0.16.158";
 const CHANGELOG = [
   {
     version: "ALPHA 0.16",
@@ -2640,7 +2640,7 @@ function SetupScreen({ onComplete }) {
       name: name.trim(),
       email: null,
       startOdo: 0,
-      kmPref: "active",
+      kmPref: "total",
       region: selectedRegion || null,
       plan: betaPlan ? "beta" : chosenPlan,
       isBeta: betaPlan,
@@ -7679,7 +7679,7 @@ function StatsTile({ trips, kmPref }) {
             <div className="ded-stat">
               <div className="ded-stat-label">EST. DEDUCTION — CENTS PER KM METHOD</div>
               <div className="ded-stat-value">{fmt$(s.deduction)}</div>
-              <div className="ded-stat-sub">{s.deductKm.toFixed(1)} business km · rate applied per financial year (currently ${ATO_RATE_PER_KM.toFixed(2)}/km) · cap {ATO_KM_CAP.toLocaleString()}km/yr · {kmPref === "active" ? "delivery km only" : "all shift km"}</div>
+              <div className="ded-stat-sub">{s.deductKm.toFixed(1)} work km · rate applied per financial year (currently ${ATO_RATE_PER_KM.toFixed(2)}/km) · cap {ATO_KM_CAP.toLocaleString()}km/yr</div>
             </div>
 
             {s.totalExp > 0 && (
@@ -9102,7 +9102,7 @@ function DetailScreen({ trip, onBack, onEdit, onDelete, kmPref, targets = DEFAUL
             <div>
               <div className="ded-label">Est. Deduction — Cents Per KM</div>
               <div className="ded-value">{fmt$(deduction)}</div>
-              <div className="ded-sub">{deductKm.toFixed(1)} km × ${tripAtoRate.toFixed(2)} · {kmPref==="active"?"delivery km only":"all shift km"}</div>
+              <div className="ded-sub">{deductKm.toFixed(1)} km × ${tripAtoRate.toFixed(2)} · work-related km</div>
             </div>
             <div className="ded-icon">🧾</div>
           </div>
@@ -9458,7 +9458,7 @@ function HowToScreen({ onBack }) {
       icon: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg>,
       steps: [
         "Every shift's deduction is worked out for you using the ATO cents-per-km rate for that financial year.",
-        "Choose in Settings whether the deduction counts delivery kilometres only or all shift kilometres (Distance Unit).",
+        "Your deduction uses every kilometre you drive while working — under the ATO cents-per-km method all your on-shift km are work-related, capped at 5,000km per year.",
         "Open the Shift Log and tap Export to generate a PDF report of your shifts and total deduction.",
         "Save or share the PDF for your tax return. GigTrack isn't tax advice — confirm figures with a registered tax agent.",
       ],
@@ -10446,27 +10446,6 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                 </div>
               </div>
 
-              {/* Distance Unit */}
-              <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
-                <div className="settings-item-left">
-                  <div className="settings-item-label">Distance Unit</div>
-                </div>
-                <div style={{display:"flex",gap:"6px"}}>
-                  {[["active","Active KMs"],["total","Total KMs"]].map(([v,l]) => (
-                    <button
-                      key={v}
-                      onClick={() => onKmPref(v)}
-                      style={{
-                        padding:"5px 10px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer",
-                        background: kmPref===v ? "var(--green-dim)" : "var(--elevated)",
-                        color: kmPref===v ? "var(--green)" : "var(--muted)",
-                        border: `0.5px solid ${kmPref===v ? "var(--green-border)" : "var(--border)"}`,
-                      }}
-                    >{l}</button>
-                  ))}
-                </div>
-              </div>
-
               {/* Weekly Earnings Goal (moved up from Advanced — everyday setting) */}
               <div className="settings-item" style={{borderBottom:"0.5px solid var(--border)"}}>
                 <div className="settings-item-left">
@@ -11026,7 +11005,13 @@ export default function GigTrack() {
   const [screenshotImportsUsed, setScreenshotImportsUsed] = useState(0); // Cloud-tracked cumulative counter
   const [screenshotCredits, setScreenshotCredits] = useState(FREE_SCREENSHOT_CREDITS); // total credits (free + purchased); cap on imports
   const [accountCreatedAt, setAccountCreatedAt] = useState(null); // ISO date from profile.created_at, used for the 30-day benchmark grace
-  const [kmPref, setKmPref]     = useState("active");
+  // Distance basis for the ATO deduction is ALWAYS total (online) km — for a
+  // delivery driver every km driven while working is a work-related km under the
+  // ATO cents-per-km method (including between-job travel), so "active/delivery
+  // km only" would under-claim. The old user-facing toggle was removed; this
+  // stays "total" and the kmPref plumbing is kept only so existing references
+  // resolve consistently to the total-km branch.
+  const [kmPref, setKmPref]     = useState("total");
   // null = no user override → each shift uses its own FY rate via atoRateForDate().
   const [atoRate, setAtoRate]   = useState(null);
   const [targets, setTargets]   = useState(DEFAULT_TARGETS);
@@ -11237,7 +11222,7 @@ export default function GigTrack() {
             setUser(null);
             setTrips([]);
             setRegion(null);
-            setKmPref("active");
+            setKmPref("total");
             setWeeklyGoal(800);
             setActiveShift(null);
             setLiveStatus(null);
@@ -11273,10 +11258,10 @@ export default function GigTrack() {
                 setRegion(profile.region);
                 DB.set("gt_region", profile.region);
               }
-              if (profile.km_pref) {
-                setKmPref(profile.km_pref);
-                DB.set("gt_kmpref", profile.km_pref);
-              }
+              // Distance basis is always total km now (see kmPref note). Ignore
+              // any legacy "active" saved on the profile and normalise to total.
+              setKmPref("total");
+              DB.set("gt_kmpref", "total");
               if (profile.weekly_goal != null) {
                 setWeeklyGoal(profile.weekly_goal);
                 DB.set("gt_weeklygoal", profile.weekly_goal);
@@ -11323,7 +11308,7 @@ export default function GigTrack() {
           setUser(null);
           setTrips([]);
           setRegion(null);
-          setKmPref("active");
+          setKmPref("total");
           setWeeklyGoal(800);
           setShowScoring(true);
           setScreenshotCredits(FREE_SCREENSHOT_CREDITS);
@@ -11493,7 +11478,7 @@ export default function GigTrack() {
 
     // Note: SEED_SHIFTS no longer auto-merged for new users.
     // Anyone with seed shifts already in localStorage keeps them; future installs start empty.
-    const k = DB.get("gt_kmpref") || "active";
+    const k = DB.get("gt_kmpref") || "total";
     // The rate is now derived from each shift's date, so a stored value is only
     // meaningful as a DELIBERATE user override. Existing users have last year's
     // default (0.88) sitting in localStorage — if we honoured that, they'd be
@@ -11651,7 +11636,7 @@ export default function GigTrack() {
     // Reset all app state
     setUser(null);
     setTrips([]);
-    setKmPref("active");
+    setKmPref("total");
     setAtoRate(null);
     setTargets(DEFAULT_TARGETS);
     setWeeklyGoal(800);
@@ -11669,8 +11654,8 @@ export default function GigTrack() {
   const handleSetupComplete = (data) => {
     const u = { name: data.name, email: data.email, startOdo: data.startOdo, isGuest: data.isGuest !== false, isPro: !!data.isPro, isBeta: !!data.isBeta, plan: data.plan || (data.isPro ? "pro" : "free") };
     saveUser(u);
-    setKmPref(data.kmPref);
-    DB.set("gt_kmpref", data.kmPref);
+    setKmPref("total");
+    DB.set("gt_kmpref", "total");
     if (data.region) { setRegion(data.region); DB.set("gt_region", data.region); }
     setScreen("home");
     // Sync profile to cloud — fire-and-forget
