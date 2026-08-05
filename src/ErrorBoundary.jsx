@@ -8,11 +8,11 @@ import React from "react";
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, errMsg: "" };
   }
 
-  static getDerivedStateFromError() {
-    return { hasError: true };
+  static getDerivedStateFromError(error) {
+    return { hasError: true, errMsg: error?.message || "Unknown error" };
   }
 
   componentDidCatch(error, info) {
@@ -36,6 +36,22 @@ export default class ErrorBoundary extends React.Component {
     const muted = dark ? "#A89E90" : "#8A8071";
     const coral = "#F0562E";
 
+    // Support links. The mailto pre-fills a subject and drops the captured error
+    // message into the body, so a crash report auto-carries the diagnostic without
+    // the user having to describe it (and no personal data is included).
+    const SUPPORT_EMAIL = "gigtracksupport@gmail.com";
+    const FEEDBACK_URL = "https://docs.google.com/forms/d/e/1FAIpQLSfLnW0Tf9zrTPZUV_IVzTo1SkalQwp_0NrD02dXoNfdwd1Edg/viewform";
+    const subject = encodeURIComponent("GigTrack crash report");
+    const body = encodeURIComponent(
+      `Hi GigTrack team,\n\nThe app hit an error. Details below:\n\nError: ${this.state.errMsg}\n\nWhat I was doing when it happened:\n(please describe)\n`
+    );
+    const mailto = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+
+    const linkStyle = {
+      color: coral, fontFamily: "'Inter', sans-serif", fontSize: "13px",
+      fontWeight: 600, textDecoration: "none",
+    };
+
     return (
       <div style={{
         minHeight: "100vh", display: "flex", flexDirection: "column",
@@ -57,6 +73,15 @@ export default class ErrorBoundary extends React.Component {
             fontFamily: "'Inter', sans-serif", fontSize: "14px", fontWeight: 700,
           }}
         >Reload GigTrack</button>
+
+        <div style={{ fontSize: "12px", color: muted, lineHeight: 1.55, maxWidth: "300px", marginTop: "28px" }}>
+          Still stuck? Let us know so we can fix it.
+        </div>
+        <div style={{ display: "flex", gap: "18px", marginTop: "10px", alignItems: "center" }}>
+          <a href={mailto} style={linkStyle}>Email support</a>
+          <span style={{ color: muted, fontSize: "12px" }}>·</span>
+          <a href={FEEDBACK_URL} target="_blank" rel="noopener noreferrer" style={linkStyle}>Send feedback</a>
+        </div>
       </div>
     );
   }
