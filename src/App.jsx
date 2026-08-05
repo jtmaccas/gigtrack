@@ -1108,8 +1108,20 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.16.158";
+const CURRENT_VERSION = "ALPHA 0.17.158";
 const CHANGELOG = [
+  {
+    version: "ALPHA 0.17",
+    date: "5/8/26",
+    items: [
+      { tag: "NEW", text: "In-app guide: a 'How to use GigTrack' page in Settings walks through logging, imports, benchmarks and tax." },
+      { tag: "IMPROVED", text: "Benchmark zones now cover even more of regional Australia, so more drivers can compare against their actual area." },
+      { tag: "IMPROVED", text: "Settings is simpler — everyday options like your weekly goal are now front and centre instead of hidden under Advanced." },
+      { tag: "IMPROVED", text: "Tax deduction now always uses every kilometre you drive while working, in line with the ATO cents-per-km method for delivery drivers." },
+      { tag: "FIXED", text: "Your weekly earnings goal now sticks after saving — no more resetting on its own." },
+      { tag: "FIXED", text: "Password reset is clearer and safer: you'll now set a new password after following a reset link, and the button won't fire off multiple emails." },
+    ],
+  },
   {
     version: "ALPHA 0.16",
     date: "5/8/26",
