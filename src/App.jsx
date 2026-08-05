@@ -3617,6 +3617,8 @@ function SignInModal({ open, onSendLink, onPasswordSignIn, onPasswordSignUp, onP
   const [status, setStatus] = useState("idle"); // idle | sending | sent | error
   const [errMsg, setErrMsg] = useState("");
   const [notice, setNotice] = useState("");
+  const [resetSending, setResetSending] = useState(false);
+  const [resetCooldown, setResetCooldown] = useState(0);
 
   if (!open) return null;
 
@@ -3653,9 +3655,6 @@ function SignInModal({ open, onSendLink, onPasswordSignIn, onPasswordSignUp, onP
       setStatus("error");
     }
   };
-
-  const [resetSending, setResetSending] = useState(false);
-  const [resetCooldown, setResetCooldown] = useState(0);
 
   const handleReset = async () => {
     if (resetSending || resetCooldown > 0) return; // guard against double-taps / spam
