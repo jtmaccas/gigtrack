@@ -3445,7 +3445,7 @@ function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
 }
 
 // ─── CHANGE PASSWORD MODAL ─── For signed-in users to set/update a password.
-function ChangePasswordModal({ open, onSave, onClose }) {
+function ChangePasswordModal({ open, onSave, onClose, recovery = false }) {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [status, setStatus] = useState("idle"); // idle | saving | done | error
@@ -3469,7 +3469,7 @@ function ChangePasswordModal({ open, onSave, onClose }) {
   };
 
   return (
-    <div onClick={onClose} style={{
+    <div onClick={recovery ? undefined : onClose} style={{
       position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
       display:"flex",alignItems:"flex-end",justifyContent:"center",
       zIndex:1000,backdropFilter:"blur(4px)",
@@ -3494,9 +3494,11 @@ function ChangePasswordModal({ open, onSave, onClose }) {
           </>
         ) : (
           <>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Change password</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>{recovery ? "Set a new password" : "Change password"}</div>
             <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"16px",lineHeight:"1.5"}}>
-              Set a new password for signing in. If you've only used magic links before, this gives you a password too.
+              {recovery
+                ? "You followed a password reset link. Set a new password now to secure your account — you'll use it to sign in from now on."
+                : "Set a new password for signing in. If you've only used magic links before, this gives you a password too."}
             </div>
 
             <div style={{fontSize:"10px",fontWeight:"700",color:"var(--muted2)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:"6px"}}>New password</div>
@@ -3527,10 +3529,12 @@ function ChangePasswordModal({ open, onSave, onClose }) {
               fontFamily:"'Inter',sans-serif",fontSize:"14px",fontWeight:"700",
             }}>{status === "saving" ? "Saving…" : "Save password"}</button>
 
-            <button onClick={onClose} style={{
-              width:"100%",marginTop:"10px",padding:"13px",background:"transparent",border:"none",cursor:"pointer",
-              color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
-            }}>Cancel</button>
+            {!recovery && (
+              <button onClick={onClose} style={{
+                width:"100%",marginTop:"10px",padding:"13px",background:"transparent",border:"none",cursor:"pointer",
+                color:"var(--muted2)",fontFamily:"'Inter',sans-serif",fontSize:"13px",fontWeight:"500",
+              }}>Cancel</button>
+            )}
           </>
         )}
       </div>
@@ -3650,12 +3654,30 @@ function SignInModal({ open, onSendLink, onPasswordSignIn, onPasswordSignUp, onP
     }
   };
 
+  const [resetSending, setResetSending] = useState(false);
+  const [resetCooldown, setResetCooldown] = useState(0);
+
   const handleReset = async () => {
+    if (resetSending || resetCooldown > 0) return; // guard against double-taps / spam
     if (!validEmail(email)) { setErrMsg("Enter your email first, then tap reset"); setStatus("error"); return; }
-    setErrMsg(""); setNotice("");
+    setErrMsg(""); setNotice("Sending reset email…");
+    setResetSending(true);
     const result = await onPasswordReset(email.trim());
-    if (result?.ok) setNotice("Password reset email sent — check your inbox.");
-    else setErrMsg(result?.error?.message || "Couldn't send reset email.");
+    setResetSending(false);
+    if (result?.ok) {
+      setNotice("Password reset email sent — check your inbox (including spam).");
+      setResetCooldown(30);
+      const iv = setInterval(() => {
+        setResetCooldown(c => {
+          if (c <= 1) { clearInterval(iv); return 0; }
+          return c - 1;
+        });
+      }, 1000);
+    } else {
+      setNotice("");
+      setErrMsg(result?.error?.message || "Couldn't send reset email.");
+      setStatus("error");
+    }
   };
 
   const inputStyle = (isErr) => ({
@@ -3765,10 +3787,14 @@ function SignInModal({ open, onSendLink, onPasswordSignIn, onPasswordSignUp, onP
                   color:"var(--coral)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"600",
                 }}>{mode==="signup" ? "Have an account? Sign in" : "New here? Create account"}</button>
                 {mode === "signin" && (
-                  <button onClick={handleReset} style={{
-                    background:"transparent",border:"none",cursor:"pointer",padding:"4px 0",
+                  <button onClick={handleReset} disabled={resetSending || resetCooldown > 0} style={{
+                    background:"transparent",border:"none",
+                    cursor: (resetSending || resetCooldown > 0) ? "default" : "pointer",
+                    padding:"4px 0",opacity: (resetSending || resetCooldown > 0) ? 0.5 : 1,
                     color:"var(--muted)",fontFamily:"'Inter',sans-serif",fontSize:"12px",fontWeight:"500",
-                  }}>Forgot password?</button>
+                  }}>
+                    {resetSending ? "Sending…" : resetCooldown > 0 ? `Sent · wait ${resetCooldown}s` : "Forgot password?"}
+                  </button>
                 )}
               </div>
             )}
@@ -11166,6 +11192,10 @@ export default function GigTrack() {
   // user doesn't need a changelog for a version they never saw the prior one of).
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  // Set true when a Supabase PASSWORD_RECOVERY event fires (user clicked a reset
+  // link). Forces a non-dismissable "set a new password" screen so the recovery
+  // link can't just act as a silent magic-link login.
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const [betaCreditsOpen, setBetaCreditsOpen] = useState(false);
   useEffect(() => {
     const seen = DB.get("gt_last_seen_version");
@@ -11217,6 +11247,15 @@ export default function GigTrack() {
     // Subscribe to future auth state changes (sign in/out)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
+      // PASSWORD RECOVERY: Supabase signs the user in when they click a reset link
+      // (it must, so they can set a password) and fires this event. Force the
+      // set-new-password screen — otherwise the reset link acts like a silent
+      // magic-link login, defeating the reset and posing a security risk.
+      if (event === "PASSWORD_RECOVERY") {
+        setRecoveryMode(true);
+        setChangePasswordOpen(true);
+        return;
+      }
       const newUser = session?.user || null;
       setAuthUser(prev => {
         // Detect sign-in (prev was null/undefined, now there's a user)
@@ -12453,7 +12492,8 @@ export default function GigTrack() {
       <WhatsNewModal open={whatsNewOpen} onClose={dismissWhatsNew} />
       <ChangePasswordModal
         open={changePasswordOpen}
-        onClose={() => setChangePasswordOpen(false)}
+        recovery={recoveryMode}
+        onClose={() => { setChangePasswordOpen(false); setRecoveryMode(false); }}
         onSave={async (pw) => await updatePassword(pw)}
       />
       <BetaCreditsModal
