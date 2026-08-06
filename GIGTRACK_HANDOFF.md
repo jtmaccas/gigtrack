@@ -1,6 +1,6 @@
 # GigTrack — Project Handoff
 
-_Last updated: alpha 0.17.158 · August 2026_
+_Last updated: alpha 0.17.159 · August 2026_
 
 This document is the single source of truth for the GigTrack project. It exists so a fresh chat (or a new collaborator) can get fully up to speed without re-deriving context. Read it top to bottom before making changes.
 
@@ -73,7 +73,12 @@ The target user is an **Australian Uber Eats / DoorDash driver** who wants to:
 ### Credit packs (Stripe, LIVE)
 - pack20 = 20 credits, **$2.99** — `price_1U0TcAD5GMnveSsOMWVsxFo2` (299c)
 - pack50 = 50 credits, **$5.99** — `price_1U0TcMD5GMnveSsOoMvDOSzV` (599c)
-- pack100 = 100 credits, **$9.99** — `price_1U0TcZD5GMnveSsO6p4z9Pjt` (999c)
+- pack100 = **150 credits** (early-user promo, was 100), **$9.99** — `price_1U0TcZD5GMnveSsO6p4z9Pjt` (999c)
+
+**⚠️ EARLY-USER PROMO — pack100 grants 150 credits for the same $9.99 (was 100).** The Stripe Price is unchanged ($9.99); only the *granted credit count* was bumped, so it's a pure "more credits, same price" bonus. **To end the promo you must revert it in THREE places (they must stay in sync):**
+1. `create-checkout-session/index.ts` → `PACKS.pack100.credits` back to `100`. (This is the authoritative grant amount — the webhook grants whatever the checkout wrote into the `purchases` row.)
+2. `src/App.jsx` → the `SCREENSHOT_PACKS` pack100 entry: `credits: 100`, `label: "100 credits"`, and drop the `strikeCredits` / `bonusBadge` fields (they drive the ~~100~~ strikethrough + "+50% BONUS" tag on the card).
+3. **Stripe Dashboard → Products** → the $9.99 product's Name ("150 GigTrack Credits") and Description (mentions "pay for 100, get 50 bonus"). Product ≠ Price, so editing the name/description is free and instant and doesn't touch the price.
 
 There is a leftover Pro/free model in the codebase (`isPro`, `BETA_MODE`) but it is **superseded** — a forced `unlocked = true` is passed to every screen so all former gates read as unlocked. See §8 for the audit.
 
@@ -125,7 +130,7 @@ Benchmarks are grouped into geographic **zones**. As of now there are **186 zone
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `CURRENT_VERSION` | `"ALPHA 0.17.158"` | ~line 1111. Bump per commit. |
+| `CURRENT_VERSION` | `"ALPHA 0.17.159"` | ~line 1115. Bump per commit. |
 | `FREE_SCREENSHOT_CREDITS` | `10` | Free credits on signup (~line 131) |
 | `CREDIT_COST_SCREENSHOT` | `1` | ~line 140 |
 | `CREDIT_COST_WEEKLY` | `2` | ~line 141 |
@@ -138,7 +143,12 @@ Benchmarks are grouped into geographic **zones**. As of now there are **186 zone
 
 ## 8. Current state & what's been done
 
-**Live version: ALPHA 0.17.158.**
+**Live version: ALPHA 0.17.159.**
+
+### Recently completed (0.17.159)
+- **Early-user promo:** pack100 now grants **150 credits for the same $9.99** (was 100). The $9.99 card shows ~~100~~ **150 credits** with a **+50% BONUS** tag (the old "Best value" pill was dropped in favour of the strikethrough). See §4 for the three-place unwind when the promo ends. Stripe Price unchanged; only the granted count changed.
+- **Paywall retitled "Screenshot credits" → "Credits"** and its subtext reworked: now "You have N credits left. Use them for screenshot, weekly and CSV imports." (credits aren't screenshot-only — they cover screenshot/weekly/CSV).
+- **Paywall footer reworked** — the old "Everything else is free during beta. Screenshots use AI… that's all we charge for." line was stale (implied AI was the only cost, and referenced beta). Now: "Everything in GigTrack is unlocked. Credits are only used for imports — screenshots, weekly catch-ups and spreadsheet uploads — which help cover the cost of reading them. Nothing else is charged."
 
 ### Recently completed (0.15 → 0.17)
 - **National zone expansion** — grew from ~130 to **186 zones**; split Sunshine Coast, Darling Downs; added Wide Bay, FNQ, Mount Isa, Mackay/Whitsundays (QLD); Central Coast, Blue Mountains + 6 regionals (NSW); Casey corridor + 6 regionals (VIC); 5 regionals (SA); 4 hubs (WA); North West (TAS); South Coast NSW; per-state "Regional (other)" catch-alls.
