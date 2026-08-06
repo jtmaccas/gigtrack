@@ -40,6 +40,12 @@ function tripToRow(trip, userId) {
 
     notes:         trip.notes ?? null,
     imported_from_screenshot: !!trip.imported_from_screenshot,
+    // Multi-timezone-correct local date (the day the driver picked, in their own
+    // timezone) + how the shift was created. Both may be undefined on older local
+    // trips; the DB columns are nullable and the Ops dashboard falls back to a
+    // Brisbane conversion of ts when shift_date is null.
+    shift_date:    trip.shift_date ?? null,
+    source:        trip.source ?? null,
   };
 }
 
@@ -194,6 +200,8 @@ function rowToTrip(row) {
     deduction:    row.deduction ?? null,
     notes:        row.notes ?? null,
     imported_from_screenshot: !!row.imported_from_screenshot,
+    shift_date:   row.shift_date ?? null,
+    source:       row.source ?? null,
     _synced:      true,
   };
 }

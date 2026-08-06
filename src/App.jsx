@@ -353,6 +353,8 @@ const buildTripFromCsvRow = (row, deps) => {
       notes: notesVal || null,
       ...inputs, ...c, deduction: totalKm * effectiveRate,
       _csvImport: true, // provenance flag
+      shift_date: localDateStr(date), // driver's local calendar date for this row
+      source: "csv",
     }
   };
 };
@@ -1112,7 +1114,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.17.160";
+const CURRENT_VERSION = "ALPHA 0.17.161";
 const CHANGELOG = [
   {
     version: "ALPHA 0.17",
@@ -11805,9 +11807,20 @@ export default function GigTrack() {
       d.setHours(0, 0, 0, 0); // local midnight
       return d.toISOString();
     };
+    // shift_date: the driver's own LOCAL calendar date for this shift (timezone-
+    // proof — a WA driver's "5 Aug" stays 5 Aug). source: how it was created.
+    // Preserve an existing source on edit; otherwise infer from provenance flags.
+    const shiftDateLocal = (tsIso) => {
+      const d = tsIso ? new Date(tsIso) : new Date();
+      return localDateStr(d);
+    };
+    const inferredSource = rawRecord.source
+      || (rawRecord.imported_from_screenshot ? "screenshot" : "manual");
     const record = {
       ...rawRecord,
       ts: dateOnlyTs(rawRecord.ts),
+      shift_date: shiftDateLocal(rawRecord.ts),
+      source: inferredSource,
       _owner: authUser?.id || null,
       region: isEdit ? (rawRecord.region ?? null) : (region ?? null),
     };
