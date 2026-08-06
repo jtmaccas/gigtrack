@@ -3452,7 +3452,7 @@ function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
         }}>Maybe later</button>
 
         <div style={{fontSize:"10px",color:"var(--muted2)",textAlign:"center",marginTop:"6px",lineHeight:"1.5"}}>
-          Everything else is free during beta. Screenshots use AI to read your summaries, which has a small cost — that's all we charge for.
+          Everything in GigTrack is unlocked. Credits are only used for imports — screenshots, weekly catch-ups and spreadsheet uploads — which help cover the cost of reading them. Nothing else is charged.
         </div>
       </div>
     </div>
