@@ -1,6 +1,6 @@
 # GigTrack — Project Handoff
 
-_Last updated: alpha 0.17.159 · August 2026_
+_Last updated: alpha 0.17.161 (app) · GigTrack Ops Phase 1 + Tier 1 + Tier 2 (full) live · August 2026_
 
 This document is the single source of truth for the GigTrack project. It exists so a fresh chat (or a new collaborator) can get fully up to speed without re-deriving context. Read it top to bottom before making changes.
 
@@ -145,6 +145,12 @@ Benchmarks are grouped into geographic **zones**. As of now there are **186 zone
 
 **Live version: ALPHA 0.17.159.**
 
+### Recently completed (0.17.161)
+- **Shift provenance + timezone-proof dates (Tier 2b):** every shift now records `shift_date` (the driver's own local calendar date — correct in any Australian timezone) and `source` (`screenshot`/`csv`/`manual`). Invisible to drivers; powers the GigTrack Ops dashboard (§13). Weekly-catch-up shifts save as manual/screenshot (see §12 limitation). Files: `App.jsx` (`handleSaved` + `buildTripFromCsvRow`), `cloudSync.js` (`tripToRow`/`rowToTrip`).
+
+### Recently completed (0.17.160)
+- **Password-reset refresh fix:** a durable `gt_pending_password_reset` localStorage flag now survives a page refresh, so following a reset link and refreshing keeps you on the forced set-password screen instead of silently logging in. Flag is set on the `PASSWORD_RECOVERY` event, restored on boot, and cleared ONLY on a successful `updatePassword`. (Delivered — confirm pushed.)
+
 ### Recently completed (0.17.159)
 - **Early-user promo:** pack100 now grants **150 credits for the same $9.99** (was 100). The $9.99 card shows ~~100~~ **150 credits** with a **+50% BONUS** tag (the old "Best value" pill was dropped in favour of the strikethrough). See §4 for the three-place unwind when the promo ends. Stripe Price unchanged; only the granted count changed.
 - **Paywall retitled "Screenshot credits" → "Credits"** and its subtext reworked: now "You have N credits left. Use them for screenshot, weekly and CSV imports." (credits aren't screenshot-only — they cover screenshot/weekly/CSV).
@@ -249,6 +255,7 @@ This is the single biggest recurring source of pain. Read carefully:
 ## 12. Open items / roadmap
 
 ### Near-term / backlog
+- **✅ DONE (0.17.161) — App write-path change: `shift_date` + `source` stamped on new shifts.** The app now writes both columns on every shift-creation path. Implementation: `cloudSync.js` `tripToRow`/`rowToTrip` map both fields (the single DB choke point every path flows through); in `App.jsx`, `handleSaved` sets `shift_date` (driver's local date via `localDateStr`) and infers `source` (`imported_from_screenshot` → `screenshot`, else `manual`) — this covers manual/screenshot/timer; `buildTripFromCsvRow` sets `shift_date` + `source='csv'`. **Known limitation:** weekly catch-up does NOT produce a `weekly` source — it creates per-day *tasks* that are then logged via the normal manual/screenshot flow, so those shifts save as `manual`/`screenshot`. Separating `weekly` would mean threading a flag through the task system (bigger job, deferred). So the source breakdown shows screenshot/csv/manual (+ unknown for pre-0.17.161 history), not weekly. Dates are now timezone-correct for all states going forward (Ops already reads the column via the hybrid).
 - **Refund request form** — Jaden is adding refund requests to the feedback form. Suggested dropdown reasons: charged-but-credits-didn't-arrive (highest priority), import-didn't-work, accidental purchase, bought-but-can't-use-feature, duplicate charge, not-satisfied, other. Pair with free-text for purchase date/amount.
 - Shift-log search / filter.
 - Notes field on shifts.
@@ -258,12 +265,58 @@ This is the single biggest recurring source of pain. Read carefully:
 - **Logbook tax method** — deferred to a future native (Apple/Android) app, where background GPS makes automatic business/personal trip tracking viable. Not feasible in a PWA.
 - **Live Drivers presence** — stays off (`LIVE_DRIVERS_ENABLED = false`) until real concurrent-user density. Benchmarks are already live nationally.
 - **Pro/free cleanup (Pass 3)** — removing the dead `PremiumPaywallScreen`, onboarding choose/paywall modes, and last "Upgrade to Pro" strings. Parked, gated on `BETA_MODE`'s fate. Don't touch the onboarding flow.
-- Wants: Australia map for benchmark scouting, badges/achievements, admin dashboard, abuse-detection bot.
+- **GigTrack Ops Phase 2 (Stripe revenue) + Phase 3 (Google Forms unactioned)** — see §13. Phase 2 needs a server-side Edge Function (Stripe secret key must never touch client). UX skin for Ops still undecided (previewed coral-on-dark / clean-light / warm-editorial / data-dense; currently on data-dense green).
+- **Ops: MFA + deploy** — Ops currently runs locally only (`npm run dev`). Fast-follow: deploy as a real repo + Vercel with Supabase MFA, so it's reachable (incl. phone) rather than local-only.
+- Wants: Australia map for benchmark scouting, badges/achievements, abuse-detection bot.
 
 ### Housekeeping reminders
 - Delete stale App.jsx files from Jaden's Downloads to stop the copy confusion.
 - Confirm `gigtracksupport@gmail.com` inbox is real and monitored (now surfaced on the crash screen).
 - Supabase free tier: main binding constraint is the 7-day idle pause (reliability) — upgrade to Pro (~$25/mo) around launch/growth, not for capacity.
+
+---
+
+## 13. GigTrack Ops (admin dashboard) — SEPARATE PROJECT
+
+A private, admin-only dashboard for Jaden to see how the app is doing at a glance.
+**Separate from the driver app on purpose** — its own project/folder, its own deploy,
+admin logic never ships in the driver app's public bundle. Reads the SAME Supabase
+project (`kpdhdlxuoatmwqdnrcbd`) through admin-only functions gated by an allowlist.
+
+### Where it lives / how to run
+- Local Vite + React project (same stack as the app): `gigtrack-admin/` (folder on Jaden's machine, unzipped from delivery). NOT yet a GitHub repo or deployed — runs locally only for now.
+- Run: `cd gigtrack-admin` → `npm run dev` → **http://localhost:5174** (5174 so it won't clash with the app's 5173). Sign in with an allowlisted admin account.
+- Config: `.env` holds `VITE_SUPABASE_URL` (filled) + `VITE_SUPABASE_ANON_KEY` (Jaden pasted his anon key; gitignored). Anon key is public-safe; the DB gate is what protects data.
+- Files: `src/App.jsx` (dashboard), `src/supabaseClient.js`, `src/regions.js` (zone id→label/state, extracted from app REGIONS), `src/styles.css` (dark "telemetry" theme — deliberately unlike the coral app so admin ≠ driver view at a glance).
+
+### Access / security model
+- **Admin allowlist (two accounts)**, hardcoded in the SQL `is_admin()` function:
+  - `bf380800-506b-421f-9e99-48ed2d5ae0d2` — jtmcintosh1440@gmail.com (primary, private)
+  - `e7d90198-8566-4350-960b-99e945e2632c` — gigtracksupport@gmail.com (backup)
+- Every `admin_*` SQL function is `SECURITY DEFINER` (reads across all users, bypassing RLS) but calls `is_admin()` first and raises `not authorised` for anyone else. Elevated access, gated by "are you Jaden?". Same safe pattern as `grant_screenshot_credits`.
+- In the Supabase SQL editor `auth.uid()` is NULL, so calling `admin_*` there raises `not authorised` — that's the gate working, not a bug. Test via the app while signed in, or use read-only equivalents.
+- MFA is planned (fast-follow, once deployed) — not yet in place.
+
+### SQL (applied in Supabase — files delivered)
+Run order: `admin_tier1.sql` → `admin_tier2a.sql` (both idempotent, `create or replace`).
+- `is_admin()` — allowlist gate.
+- `admin_overview_range(p_start, p_end)` — users (total + new-in-range), shifts, active drivers, gross/hours/km, active zones.
+- `admin_shifts_by_platform(p_start, p_end)` — Uber vs DoorDash: shifts, share, drivers, gross, hours.
+- `admin_shifts_by_geography(p_start, p_end)` — zone rollup (client groups by state via regions.js).
+- `admin_growth(p_start, p_end)` — daily new users + shifts, zero-filled.
+- `admin_import_source(p_start, p_end)` — source breakdown (mostly `unknown` until the app writes `source`).
+
+### Phase / Tier status
+- **Phase 1 (DONE, live):** top-line + geography + growth, allowlist-gated. Verified against real data (104 shifts, Brisbane + Parramatta).
+- **Tier 1 (DONE, live):** date-range picker (7d / 30d / 90d / This month / All time / Custom) driving everything; added by-platform breakdown and hours/km cards.
+- **Tier 2 Step A (DONE, safe half):** added `shifts.shift_date` (date) + `shifts.source` (text), backfilled `shift_date` from `ts` (Brisbane), backfilled `source='screenshot'` for the 1 flagged shift (rest `unknown`). Dashboard functions repointed to hybrid `COALESCE(shift_date, brisbane(ts))`. **Invisible on current data** (all-Brisbane history → same dates), lays groundwork for multi-timezone correctness.
+- **Tier 2 Step B (DONE, 0.17.161 — the app write-path change):** app now stamps `shift_date` + `source` on new shifts (see §12 for implementation detail + the weekly-source limitation). Dates are timezone-correct for all states going forward; source breakdown becomes real (screenshot/csv/manual) for shifts logged from 0.17.161 on.
+- **Phase 2 (Stripe revenue) / Phase 3 (Forms):** future. Phase 2 MUST be a server-side Edge Function (Stripe secret key never client-side).
+
+### TIMEZONE — important
+- Shifts store `ts` as **local midnight converted to UTC**, so a raw `ts::date` lands a day EARLY for Brisbane (UTC+10). All Ops date logic uses `(ts AT TIME ZONE 'Australia/Brisbane')::date` (or the hybrid with `shift_date`) so Ops agrees with what the app shows drivers.
+- The app itself derives shift dates in the **driver's device timezone** (`localDateStr`). As of 0.17.161 the app stores this as `shift_date` and Ops reads it via the hybrid, so dates are now correct across timezones (WA UTC+8, and Oct–Apr daylight saving where NSW/VIC/etc. → UTC+11 while QLD stays +10). Pre-0.17.161 shifts use the Brisbane-backfilled `shift_date` (correct, since all history was Brisbane-logged).
+
 
 ---
 
