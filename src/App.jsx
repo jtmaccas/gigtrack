@@ -3398,9 +3398,9 @@ function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
         width:"100%",maxWidth:"480px",padding:"20px 18px 28px",boxShadow:"0 -8px 32px rgba(0,0,0,0.3)",
       }}>
         <div style={{width:"36px",height:"4px",background:"var(--border2)",borderRadius:"2px",margin:"0 auto 18px"}} />
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Screenshot credits</div>
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:"18px",fontWeight:"800",color:"var(--text)",letterSpacing:"-.02em",marginBottom:"6px"}}>Credits</div>
         <div style={{fontFamily:"'Inter',sans-serif",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",lineHeight:"1.5"}}>
-          You have <strong style={{color: remaining === 0 ? "var(--red)" : "var(--pos)"}}>{remaining}</strong> screenshot import{remaining === 1 ? "" : "s"} left. Top up with a one-time pack — no subscription, credits never expire.
+          You have <strong style={{color: remaining === 0 ? "var(--red)" : "var(--pos)"}}>{remaining}</strong> credit{remaining === 1 ? "" : "s"} left. Use them for screenshot, weekly and CSV imports. Top up with a one-time pack — no subscription, credits never expire.
         </div>
 
         {SCREENSHOT_PACKS.map(pack => (
