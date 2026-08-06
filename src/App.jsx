@@ -1112,7 +1112,7 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.17.159";
+const CURRENT_VERSION = "ALPHA 0.17.160";
 const CHANGELOG = [
   {
     version: "ALPHA 0.17",
@@ -1124,7 +1124,7 @@ const CHANGELOG = [
       { tag: "IMPROVED", text: "Settings is simpler — everyday options like your weekly goal are now front and centre instead of hidden under Advanced." },
       { tag: "IMPROVED", text: "Tax deduction now always uses every kilometre you drive while working, in line with the ATO cents-per-km method for delivery drivers." },
       { tag: "FIXED", text: "Your weekly earnings goal now sticks after saving — no more resetting on its own." },
-      { tag: "FIXED", text: "Password reset is clearer and safer: you'll now set a new password after following a reset link, and the button won't fire off multiple emails." },
+      { tag: "FIXED", text: "Password reset is clearer and safer: you'll set a new password after following a reset link — even if you refresh the page — and the button won't fire off multiple emails." },
     ],
   },
   {
@@ -11249,6 +11249,15 @@ export default function GigTrack() {
   // ── Supabase auth + routing on boot ──
   useEffect(() => {
     let mounted = true;
+    // If a password reset was in progress and the user refreshed the page, the
+    // PASSWORD_RECOVERY event won't fire again (Supabase has already persisted a
+    // session). Re-enter recovery mode from the durable flag so the reset link
+    // still can't act as a silent login — the set-new-password screen is forced
+    // until they actually set a password (which clears the flag).
+    if (DB.get("gt_pending_password_reset")) {
+      setRecoveryMode(true);
+      setChangePasswordOpen(true);
+    }
     (async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
@@ -11266,6 +11275,12 @@ export default function GigTrack() {
       // set-new-password screen — otherwise the reset link acts like a silent
       // magic-link login, defeating the reset and posing a security risk.
       if (event === "PASSWORD_RECOVERY") {
+        // Persist a durable flag so a page refresh can't drop us back into a
+        // normal logged-in session (the event only fires once; on refresh
+        // Supabase has already persisted the session, so without this the reset
+        // link would act as a silent login). Cleared only on a successful
+        // password update — see ChangePasswordModal onSave below.
+        DB.set("gt_pending_password_reset", true);
         setRecoveryMode(true);
         setChangePasswordOpen(true);
         return;
@@ -12508,7 +12523,14 @@ export default function GigTrack() {
         open={changePasswordOpen}
         recovery={recoveryMode}
         onClose={() => { setChangePasswordOpen(false); setRecoveryMode(false); }}
-        onSave={async (pw) => await updatePassword(pw)}
+        onSave={async (pw) => {
+          const result = await updatePassword(pw);
+          // Clear the durable recovery flag ONLY on a genuine success. A failed
+          // attempt (or a refresh) leaves the flag set, keeping the user on the
+          // forced set-password screen until they actually set one.
+          if (result?.ok) DB.remove("gt_pending_password_reset");
+          return result;
+        }}
       />
       <BetaCreditsModal
         open={betaCreditsOpen}
