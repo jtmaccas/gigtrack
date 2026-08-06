@@ -144,7 +144,11 @@ const CREDIT_COST_CSV = 5;
 const SCREENSHOT_PACKS = [
   { id: "pack20", credits: 20, price: 2.99, label: "20 credits" },
   { id: "pack50", credits: 50, price: 5.99, label: "50 credits" },
-  { id: "pack100", credits: 100, price: 9.99, label: "100 credits", badge: "Best value" },
+  // EARLY-USER PROMO (revisit): 150 credits for the same $9.99 (was 100). To end
+  // the promo, set credits:100, drop strikeCredits/bonusBadge, and restore
+  // credits:100 in create-checkout-session PACKS.pack100. The Stripe Price is
+  // unchanged — this only changes the granted credit count + card display.
+  { id: "pack100", credits: 150, price: 9.99, label: "150 credits", strikeCredits: 100, bonusBadge: "+50% BONUS" },
 ];
 
 // ─── CSV/EXCEL BULK IMPORT — field definitions + fuzzy header matching ─────
@@ -1108,12 +1112,13 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.17.158";
+const CURRENT_VERSION = "ALPHA 0.17.159";
 const CHANGELOG = [
   {
     version: "ALPHA 0.17",
     date: "5/8/26",
     items: [
+      { tag: "NEW", text: "Early-user bonus: the $9.99 pack now gives 150 credits instead of 100 — 50% more, same price, for a limited time." },
       { tag: "NEW", text: "In-app guide: a 'How to use GigTrack' page in Settings walks through logging, imports, benchmarks and tax." },
       { tag: "IMPROVED", text: "Benchmark zones now cover even more of regional Australia, so more drivers can compare against their actual area." },
       { tag: "IMPROVED", text: "Settings is simpler — everyday options like your weekly goal are now front and centre instead of hidden under Advanced." },
@@ -3407,13 +3412,23 @@ function BetaCreditsModal({ open, remaining, onBuy, onClose }) {
               width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",
               padding:"16px",marginBottom:"10px",cursor:busy != null ? "default" : "pointer",
               background:"var(--elevated)",
-              border:pack.badge ? "1.5px solid var(--coral)" : "1px solid var(--coral-border)",
+              border:(pack.badge || pack.bonusBadge) ? "1.5px solid var(--coral)" : "1px solid var(--coral-border)",
               borderRadius:"14px",
             }}
           >
             <div style={{textAlign:"left"}}>
               <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                {pack.strikeCredits && (
+                  <span style={{fontSize:"15px",fontWeight:"700",color:"var(--muted2)",textDecoration:"line-through"}}>{pack.strikeCredits}</span>
+                )}
                 <span style={{fontSize:"15px",fontWeight:"800",color:"var(--text)"}}>{pack.credits} credits</span>
+                {pack.bonusBadge && (
+                  <span style={{
+                    fontSize:"9px",fontWeight:"800",letterSpacing:".04em",textTransform:"uppercase",
+                    color:"var(--on-coral)",background:"var(--coral)",
+                    padding:"2px 7px",borderRadius:"100px",
+                  }}>{pack.bonusBadge}</span>
+                )}
                 {pack.badge && (
                   <span style={{
                     fontSize:"9px",fontWeight:"800",letterSpacing:".04em",textTransform:"uppercase",

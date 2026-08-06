@@ -31,7 +31,11 @@ const corsHeaders = {
 const PACKS: Record<string, { priceId: string; credits: number; amountCents: number }> = {
   pack20:  { priceId: "price_1U0TcAD5GMnveSsOMWVsxFo2", credits: 20,  amountCents: 299 },
   pack50:  { priceId: "price_1U0TcMD5GMnveSsOoMvDOSzV", credits: 50,  amountCents: 599 },
-  pack100: { priceId: "price_1U0TcZD5GMnveSsO6p4z9Pjt", credits: 100, amountCents: 999 },
+  // EARLY-USER PROMO (revisit): pack100 grants 150 credits for the same $9.99.
+  // Stripe Price is unchanged ($9.99); only the granted credit count is bumped.
+  // To end the promo, set credits back to 100. Keep in sync with SCREENSHOT_PACKS
+  // in App.jsx (pack100.credits) so the checkout, receipt and UI all agree.
+  pack100: { priceId: "price_1U0TcZD5GMnveSsO6p4z9Pjt", credits: 150, amountCents: 999 },
 };
 
 Deno.serve(async (req) => {
