@@ -12546,8 +12546,7 @@ export default function GigTrack() {
               textAlign:"center",
             }}
           >
-            <div style={{fontSize:"34px", marginBottom:"10px"}}>👋</div>
-            <div style={{fontSize:"20px", fontWeight:"800", color:"var(--text)", letterSpacing:"-.02em", marginBottom:"8px"}}>
+            <div style={{fontSize:"20px", fontWeight:"800", color:"var(--text)", letterSpacing:"-.02em", marginBottom:"8px", marginTop:"4px"}}>
               Welcome to GigTrack
             </div>
             <div style={{fontSize:"13px", color:"var(--muted)", lineHeight:"1.6", marginBottom:"20px"}}>
@@ -12563,7 +12562,7 @@ export default function GigTrack() {
                   borderRadius:"12px", padding:"13px", fontSize:"14px", fontWeight:"800",
                 }}
               >
-                📖 See how GigTrack works
+                See how GigTrack works
               </button>
               <button
                 onClick={() => { dismissWelcome(); setScreen("installhelp"); }}
@@ -12573,7 +12572,7 @@ export default function GigTrack() {
                   borderRadius:"12px", padding:"13px", fontSize:"14px", fontWeight:"700",
                 }}
               >
-                📲 Add it to your phone like an app
+                Add it to your phone like an app
               </button>
               <button
                 onClick={dismissWelcome}
