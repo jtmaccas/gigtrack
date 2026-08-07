@@ -9473,6 +9473,22 @@ function InstallHelpScreen({ onBack }) {
           Install GigTrack on your phone so it opens like a normal app — full screen, one tap from your home screen. Pick your phone below.
         </div>
 
+        {/* In-app-browser warning — critical for users arriving from Facebook/
+            Instagram, whose in-app browsers can't "Add to Home Screen". */}
+        <div style={{
+          display:"flex", gap:"12px", alignItems:"flex-start",
+          background:"var(--coral-dim)", border:"1px solid var(--coral-border)",
+          borderRadius:"14px", padding:"13px 14px", marginBottom:"20px",
+        }}>
+          <span style={{flexShrink:0, fontSize:"16px", lineHeight:1.2}}>⚠️</span>
+          <div style={{fontFamily:"'Inter',sans-serif", fontSize:"12.5px", color:"var(--text)", lineHeight:"1.55"}}>
+            <strong>Opened this from Facebook, Instagram or another app?</strong> Those in-app
+            browsers can't add to your home screen. Tap the <strong>three dots (••• or ⋮) in the
+            top corner</strong> and choose <strong>"Open in external browser"</strong> (or "Open in
+            Chrome/Safari") first — then follow the steps below.
+          </div>
+        </div>
+
         <div style={{display:"flex",gap:"12px",marginBottom:"22px"}}>
           <PhoneButton id="ios" label="iPhone"
             icon={<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg>} />
