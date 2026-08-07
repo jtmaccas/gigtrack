@@ -4832,38 +4832,52 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                   <div style={{ fontSize: "14px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>Compare another region</div>
                   <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>Pick any region above to see its best times to drive, $/hr and peak days — handy if you're moving or travelling.</div>
                   {(() => {
-                    const top = (topZones || [])
-                      .filter(z => z.bucketKey && z.bucketKey !== ownActive && z.median != null)
-                      .slice(0, 5);
-                    if (!top.length) return null;
+                    const qualifying = (topZones || []).filter(z => z.bucketKey && z.median != null);
+                    if (!qualifying.length) return null;
+                    // Top 5 by $/hr. If the user's own zone qualifies but ranks
+                    // outside the top 5, append it so they always see their spot.
+                    let list = qualifying.slice(0, 5);
+                    const ownInList = list.some(z => z.bucketKey === ownActive);
+                    const ownRow = qualifying.find(z => z.bucketKey === ownActive);
+                    if (ownRow && !ownInList) list = [...list, ownRow];
+                    if (!list.length) return null;
+                    // Rank number reflects true national position within the qualifying set.
+                    const rankOf = (z) => qualifying.findIndex(q => q.bucketKey === z.bucketKey) + 1;
                     return (
                       <div style={{ marginTop: "22px", textAlign: "left" }}>
                         <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "10px", textAlign: "center" }}>
                           Top-earning areas right now
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                          {top.map((z, i) => (
-                            <div
-                              key={z.bucketKey}
-                              onClick={() => setScoutId(z.bucketKey)}
-                              role="button"
-                              style={{
-                                display: "flex", alignItems: "center", justifyContent: "space-between",
-                                background: "var(--surface-2, var(--bg))", border: "1px solid var(--hairline)",
-                                borderRadius: "12px", padding: "11px 13px", cursor: "pointer", gap: "10px",
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
-                                <span style={{ fontSize: "12px", fontWeight: "800", color: "var(--muted2)", flexShrink: 0, width: "14px" }}>{i + 1}</span>
-                                <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                  {bucketLabelFor(z.bucketKey) || z.bucketKey}
+                          {list.map((z) => {
+                            const isOwn = z.bucketKey === ownActive;
+                            return (
+                              <div
+                                key={z.bucketKey}
+                                onClick={() => setScoutId(isOwn ? null : z.bucketKey)}
+                                role="button"
+                                style={{
+                                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                                  background: isOwn ? "var(--coral-dim)" : "var(--surface-2, var(--bg))",
+                                  border: isOwn ? "1px solid var(--coral-border)" : "1px solid var(--hairline)",
+                                  borderRadius: "12px", padding: "11px 13px", cursor: "pointer", gap: "10px",
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+                                  <span style={{ fontSize: "12px", fontWeight: "800", color: isOwn ? "var(--coral)" : "var(--muted2)", flexShrink: 0, width: "14px" }}>{rankOf(z)}</span>
+                                  <span style={{ fontSize: "13px", fontWeight: isOwn ? "700" : "600", color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {bucketLabelFor(z.bucketKey) || z.bucketKey}
+                                  </span>
+                                  {isOwn && (
+                                    <span style={{ fontSize: "9px", fontWeight: "800", color: "var(--coral)", background: "var(--surface)", border: "1px solid var(--coral-border)", borderRadius: "100px", padding: "1px 7px", letterSpacing: ".04em", flexShrink: 0 }}>YOU</span>
+                                  )}
+                                </div>
+                                <span style={{ fontSize: "13px", fontWeight: "800", color: "var(--coral)", flexShrink: 0 }}>
+                                  ${z.median.toFixed(2)}<span style={{ fontSize: "9px", fontWeight: "600", color: "var(--muted)" }}>/hr</span>
                                 </span>
                               </div>
-                              <span style={{ fontSize: "13px", fontWeight: "800", color: "var(--coral)", flexShrink: 0 }}>
-                                ${z.median.toFixed(2)}<span style={{ fontSize: "9px", fontWeight: "600", color: "var(--muted)" }}>/hr</span>
-                              </span>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     );
