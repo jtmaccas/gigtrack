@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, startCreditCheckout, fetchPurchaseHistory, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, deleteMyAccount } from "./supabase.js";
+import { supabase, signInAnonymouslyIfNeeded, sendMagicLink, signInWithPassword, signUpWithPassword, sendPasswordReset, updatePassword, signOut, saveProfile, fetchProfile, incrementScreenshotImportsUsed, startCreditCheckout, fetchPurchaseHistory, updatePresence, fetchZonePresence, fetchZoneBenchmark, fetchBucketBenchmark, fetchZonePercentile, fetchStateLeaderboard, fetchStatePlatformSplit, fetchZoneDayOfWeek, fetchNationalOverview, fetchNationalStates, fetchNationalBenchmark, fetchNationalZoneLeaderboard, deleteMyAccount } from "./supabase.js";
 import { syncShift, deleteShiftCloud, reconcileShifts, fetchAllShifts } from "./cloudSync.js";
 import { onNeedRefresh, applyUpdate } from "./pwaUpdate.js";
 import { jsPDF } from "jspdf";
@@ -4415,6 +4415,19 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
   // breakdown instead of the user's own zone — without changing their setting.
   // During beta the scout target is a BUCKET id; post-beta it's a zone id.
   const [scoutId, setScoutId] = useState(initialScout && region ? "__pick__" : null);
+
+  // Top areas AUS-wide by median $/hr — shown in the scout "pick a region" empty
+  // state so users can jump straight into scouting the best-earning zones that
+  // have real data. Only buckets clearing the benchmark gate come back; excludes
+  // the user's own active bucket (no point scouting where you already are).
+  const [topZones, setTopZones] = useState(null); // null = loading, [] = none qualify
+  useEffect(() => {
+    let cancelled = false;
+    fetchNationalZoneLeaderboard(BENCHMARK_WINDOW_DAYS, BENCHMARK_MIN_SHIFTS, 6)
+      .then(rows => { if (!cancelled) setTopZones(rows || []); })
+      .catch(() => { if (!cancelled) setTopZones([]); });
+    return () => { cancelled = true; };
+  }, []);
   const scouting = scoutId != null && scoutId !== "__pick__";
   // Whether the "Compare a region" side is selected — true while picking
   // (__pick__) or after a region is chosen. Drives the toggle highlight so it
@@ -4817,6 +4830,43 @@ function BenchmarksScreen({ region, trips = [], onBack, onGoToSettings, initialS
                   <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "10px" }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
                   <div style={{ fontSize: "14px", fontWeight: "700", color: "var(--text)", marginBottom: "4px" }}>Compare another region</div>
                   <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>Pick any region above to see its best times to drive, $/hr and peak days — handy if you're moving or travelling.</div>
+                  {(() => {
+                    const top = (topZones || [])
+                      .filter(z => z.bucketKey && z.bucketKey !== ownActive && z.median != null)
+                      .slice(0, 5);
+                    if (!top.length) return null;
+                    return (
+                      <div style={{ marginTop: "22px", textAlign: "left" }}>
+                        <div style={{ fontSize: "9px", fontWeight: "700", color: "var(--muted2)", letterSpacing: ".06em", textTransform: "uppercase", marginBottom: "10px", textAlign: "center" }}>
+                          Top-earning areas right now
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {top.map((z, i) => (
+                            <div
+                              key={z.bucketKey}
+                              onClick={() => setScoutId(z.bucketKey)}
+                              role="button"
+                              style={{
+                                display: "flex", alignItems: "center", justifyContent: "space-between",
+                                background: "var(--surface-2, var(--bg))", border: "1px solid var(--hairline)",
+                                borderRadius: "12px", padding: "11px 13px", cursor: "pointer", gap: "10px",
+                              }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+                                <span style={{ fontSize: "12px", fontWeight: "800", color: "var(--muted2)", flexShrink: 0, width: "14px" }}>{i + 1}</span>
+                                <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                  {bucketLabelFor(z.bucketKey) || z.bucketKey}
+                                </span>
+                              </div>
+                              <span style={{ fontSize: "13px", fontWeight: "800", color: "var(--coral)", flexShrink: 0 }}>
+                                ${z.median.toFixed(2)}<span style={{ fontSize: "9px", fontWeight: "600", color: "var(--muted)" }}>/hr</span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : (
               <>

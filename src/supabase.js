@@ -397,6 +397,30 @@ export const fetchZonePercentile = async (regionIds, hourly, days = 30, minShift
 // ── Tier 2: real per-state bucket leaderboard ──
 // Pass a state code ('QLD'); SQL derives buckets and ranks them by median $/hr.
 // Returns [] when no buckets clear the gate.
+// ── Top zones AUS-wide by median $/hr (for the scout empty-state "top areas") ──
+// Mirrors fetchStateLeaderboard but national (no state filter). Returns only
+// buckets clearing the gate, ranked best-$/hr first, capped at `limit`. Returns
+// [] when nothing qualifies (UI falls back to the plain prompt).
+export const fetchNationalZoneLeaderboard = async (days = 30, minShifts = 2, limit = 5) => {
+  try {
+    const { data, error } = await supabase.rpc("get_national_zone_leaderboard", {
+      p_days: days,
+      p_min_shifts: minShifts,
+      p_limit: limit,
+    });
+    if (error) { console.warn("[GigTrack] fetchNationalZoneLeaderboard error:", error.message); return []; }
+    if (!Array.isArray(data)) return [];
+    return data.map(row => ({
+      bucketKey: row.bucket_key,
+      median: row.median_hourly != null ? Number(row.median_hourly) : null,
+      shifts: row.shift_count ?? 0,
+    }));
+  } catch (e) {
+    console.warn("[GigTrack] fetchNationalZoneLeaderboard threw:", e);
+    return [];
+  }
+};
+
 export const fetchStateLeaderboard = async (state, days = 30, minShifts = 2, limit = 8) => {
   if (!state) return [];
   try {
