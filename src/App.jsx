@@ -11241,6 +11241,13 @@ export default function GigTrack() {
   const [betaCreditsOpen, setBetaCreditsOpen] = useState(false);
   useEffect(() => {
     const seen = DB.get("gt_last_seen_version");
+    // If the first-login welcome hasn't been shown yet, this is effectively a new
+    // user's first run — don't stack the "What's new" changelog on top of the
+    // welcome. Silently record the version; the welcome carries the guidance.
+    if (!DB.get("gt_welcome_seen")) {
+      DB.set("gt_last_seen_version", CURRENT_VERSION);
+      return;
+    }
     if (seen == null) {
       DB.set("gt_last_seen_version", CURRENT_VERSION); // first launch: no modal
     } else if (seen !== CURRENT_VERSION) {
