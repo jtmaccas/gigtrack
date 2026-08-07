@@ -1114,8 +1114,17 @@ const wipeUserData = ({ keep = GT_WIPE_KEEP } = {}) => {
 // After a PWA update reloads the app, the "What's new" modal shows the entry for
 // CURRENT_VERSION once (tracked via gt_last_seen_version), then not again until
 // the next bump.
-const CURRENT_VERSION = "ALPHA 0.17.161";
+const CURRENT_VERSION = "BETA 1.0.0";
 const CHANGELOG = [
+  {
+    version: "BETA 1.0.0",
+    date: "8/8/26",
+    items: [
+      { tag: "NEW", text: "GigTrack is now in beta! Track your delivery earnings, sort your ATO tax deductions, and see how your area compares to other drivers." },
+      { tag: "NEW", text: "New here? To learn how everything works, head to Settings › How to use GigTrack." },
+      { tag: "NEW", text: "Add GigTrack to your phone like an app — open Settings › Install GigTrack for the steps." },
+    ],
+  },
   {
     version: "ALPHA 0.17",
     date: "5/8/26",
@@ -11100,6 +11109,23 @@ export default function GigTrack() {
   }, []);
   const [benchmarksScout, setBenchmarksScout] = useState(false);
 
+  // ── First-login welcome ── One-time welcome modal on the user's first visit
+  // to the app, greeting them and pointing to the How-to guide + install steps.
+  // One-and-done via gt_welcome_seen (mirrors the install-nudge pattern).
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const dismissWelcome = () => {
+    setWelcomeOpen(false);
+    DB.set("gt_welcome_seen", true); // never show again
+  };
+  // Show the welcome once, the first time a signed-in, named user lands on Home
+  // (covers both brand-new signups post-onboarding and existing users who
+  // haven't seen it). Isolated from the auth flow on purpose.
+  useEffect(() => {
+    if (user && user.name && screen === "home" && !DB.get("gt_welcome_seen")) {
+      setWelcomeOpen(true);
+    }
+  }, [user, screen]);
+
   // ── Install nudge ── After the 2nd shift, offer "add to home screen" ONCE
   // (one-and-done). Skipped entirely if already running as an installed PWA, or
   // if the user has previously seen/dismissed it (gt_install_nudge_done).
@@ -12501,6 +12527,65 @@ export default function GigTrack() {
           >
             ×
           </button>
+        </div>
+      )}
+      {welcomeOpen && (
+        <div
+          onClick={dismissWelcome}
+          style={{
+            position:"fixed", inset:0, zIndex:1200,
+            background:"rgba(0,0,0,0.55)", backdropFilter:"blur(4px)",
+            display:"flex", alignItems:"center", justifyContent:"center", padding:"20px",
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background:"var(--surface)", borderRadius:"20px", padding:"26px 22px 22px",
+              maxWidth:"400px", width:"100%", boxShadow:"0 20px 60px -12px rgba(0,0,0,0.5)",
+              textAlign:"center",
+            }}
+          >
+            <div style={{fontSize:"34px", marginBottom:"10px"}}>👋</div>
+            <div style={{fontSize:"20px", fontWeight:"800", color:"var(--text)", letterSpacing:"-.02em", marginBottom:"8px"}}>
+              Welcome to GigTrack
+            </div>
+            <div style={{fontSize:"13px", color:"var(--muted)", lineHeight:"1.6", marginBottom:"20px"}}>
+              Built by an Aussie delivery driver, for Aussie delivery drivers. Track your
+              earnings, sort your ATO tax deductions, and see how your area really compares
+              to other drivers. To get started, log a shift or import your history.
+            </div>
+            <div style={{display:"flex", flexDirection:"column", gap:"10px", marginBottom:"6px"}}>
+              <button
+                onClick={() => { dismissWelcome(); setScreen("howto"); }}
+                style={{
+                  border:"none", cursor:"pointer", background:"var(--coral)", color:"var(--on-coral)",
+                  borderRadius:"12px", padding:"13px", fontSize:"14px", fontWeight:"800",
+                }}
+              >
+                📖 See how GigTrack works
+              </button>
+              <button
+                onClick={() => { dismissWelcome(); setScreen("installhelp"); }}
+                style={{
+                  border:"1px solid var(--coral-border)", cursor:"pointer",
+                  background:"transparent", color:"var(--text)",
+                  borderRadius:"12px", padding:"13px", fontSize:"14px", fontWeight:"700",
+                }}
+              >
+                📲 Add it to your phone like an app
+              </button>
+              <button
+                onClick={dismissWelcome}
+                style={{
+                  border:"none", cursor:"pointer", background:"transparent", color:"var(--muted)",
+                  padding:"10px", fontSize:"13px", fontWeight:"600",
+                }}
+              >
+                I'll explore on my own
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {updateReady && (
