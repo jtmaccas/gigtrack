@@ -2637,14 +2637,14 @@ function SetupScreen({ onComplete }) {
   const RegionPicker = () => (
     <div className="input-group">
       <div className="input-row">
-        <div className="input-label">Select your region (optional)</div>
+        <div className="input-label">Select your region</div>
         <select
           className="input-field"
           value={selectedRegion}
           onChange={e => setSelectedRegion(e.target.value)}
           style={{colorScheme:"dark"}}
         >
-          <option value="">— Choose your region —</option>
+          <option value="" disabled>— Choose your region —</option>
           {Object.entries(regionsByState).map(([state, groups]) => (
             <React.Fragment key={state}>
               {Object.entries(groups).map(([groupName, regions]) => (
@@ -2808,6 +2808,7 @@ function SetupScreen({ onComplete }) {
       if (!name.trim()) { setErr("Please enter at least a first name."); return; }
       setErr(""); setNameStep(1);
     } else {
+      if (!selectedRegion) { setErr("Please choose your region to continue — it's how we match you to local benchmarks."); return; }
       finish(currentPlan);
     }
   };
@@ -10509,7 +10510,7 @@ function SettingsScreen({ user, trips = [], onBack, onCompareRegion, onWhatsNew,
                   onChange={e => setRegionVal(e.target.value)}
                   style={{width:"100%",fontSize:"14px",fontFamily:"'Inter',sans-serif",fontWeight:"600"}}
                 >
-                  <option value="">— No region selected —</option>
+                  <option value="" disabled>— Select your region —</option>
                   {Object.entries(regionsByState).map(([state, groups]) => (
                     <React.Fragment key={state}>
                       {Object.entries(groups).map(([groupName, regions]) => (
